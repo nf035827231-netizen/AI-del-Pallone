@@ -950,7 +950,7 @@ function render(cs){
  lastPicks=picks;
  renderAIPicks(picks);
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
- $("pick").innerHTML=picks.length?cards:'<div class="empty">🟡 Oggi non ci sono 3 scenari sufficientemente supportati. La Dritta mostra i migliori disponibili quando l'analisi supera la soglia minima, senza usare la quota come unico criterio.</div>';
+ $("pick").innerHTML=picks.length?cards:'<div class="empty">🟡 Oggi non ci sono 3 scenari sufficientemente supportati. La Dritta mostra i migliori disponibili quando l’analisi supera la soglia minima, senza usare la quota come unico criterio.</div>';
  $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Score</th></tr>'+cs.slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${x.score.toFixed(0)}</td></tr>`).join("")+'</table></div>';
 }
 
