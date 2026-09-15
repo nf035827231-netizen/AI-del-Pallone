@@ -1,0 +1,120 @@
+<!doctype html><html><body style="margin:0;background:#111"><script>function roundRect(ctx,x,y,w,h,r){
+ ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();
+}
+function wrapCanvasText(ctx,text,x,y,maxWidth,lineHeight,maxLines){
+ const words=String(text||'').split(' ');let line='',curY=y,lines=[];
+ for(const w of words){const test=line?line+' '+w:w;if(ctx.measureText(test).width>maxWidth&&line){lines.push(line);line=w;}else line=test;}
+ if(line)lines.push(line);
+ if(maxLines&&lines.length>maxLines){lines=lines.slice(0,maxLines);lines[maxLines-1]=lines[maxLines-1].replace(/\s*\S*$/,'')+'…';}
+ for(const l of lines){ctx.fillText(l,x,curY);curY+=lineHeight;}
+ return curY;
+}
+// Gli stemmi arrivano da domini esterni (football-data.org, api-football).
+// Se quel sito non concede il permesso CORS, disegnarlo sul canvas lo
+// "sporcherebbe" impedendo poi di esportare l'immagine: per questo lo
+// carico con crossOrigin e, se fallisce o va in timeout, uso un cerchio con
+// le iniziali invece di far fallire tutto il salvataggio.
+function loadImageSafe(url,timeoutMs){
+ return new Promise(resolve=>{
+   if(!url)return resolve(null);
+   const img=new Image();let done=false;
+   img.crossOrigin='anonymous';
+   img.onload=()=>{if(!done){done=true;resolve(img);}};
+   img.onerror=()=>{if(!done){done=true;resolve(null);}};
+   img.src=url;
+   setTimeout(()=>{if(!done){done=true;resolve(null);}},timeoutMs||3000);
+ });
+}
+function wrapCanvasText(ctx,text,x,y,maxWidth,lineHeight,maxLines){
+ const words=String(text||'').split(' ');let line='',curY=y,lines=[];
+ for(const w of words){const test=line?line+' '+w:w;if(ctx.measureText(test).width>maxWidth&&line){lines.push(line);line=w;}else line=test;}
+ if(line)lines.push(line);
+ if(maxLines&&lines.length>maxLines){lines=lines.slice(0,maxLines);lines[maxLines-1]=lines[maxLines-1].replace(/\s*\S*$/,'')+'…';}
+ for(const l of lines){ctx.fillText(l,x,curY);curY+=lineHeight;}
+ return curY;
+}
+function loadImageSafe(url,timeoutMs){
+ return new Promise(resolve=>{
+   if(!url)return resolve(null);
+   const img=new Image();let done=false;
+   img.crossOrigin='anonymous';
+   img.onload=()=>{if(!done){done=true;resolve(img);}};
+   img.onerror=()=>{if(!done){done=true;resolve(null);}};
+   img.src=url;
+   setTimeout(()=>{if(!done){done=true;resolve(null);}},timeoutMs||3000);
+ });
+}
+function drawTeamBadge(ctx,img,name,cx,cy,r){
+ ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.closePath();ctx.clip();
+ if(img){ctx.fillStyle='#0d1526';ctx.fillRect(cx-r,cy-r,r*2,r*2);ctx.drawImage(img,cx-r,cy-r,r*2,r*2);}
+ else{ctx.fillStyle='#1a2338';ctx.fillRect(cx-r,cy-r,r*2,r*2);}
+ ctx.restore();
+ ctx.strokeStyle='#26344b';ctx.lineWidth=4;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();
+ if(!img){ctx.fillStyle='#e0b84a';ctx.font=`700 ${Math.round(r*0.7)}px -apple-system,sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText((name||'?').slice(0,2).toUpperCase(),cx,cy+4);}
+}
+async function shareCandidateImageData(x){
+ try{
+   // Social card nativa 4:5: nessuna compressione verticale degli elementi.
+   const W=1080,H=1350,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;
+   const ctx=canvas.getContext('2d');ctx.textBaseline='alphabetic';
+   const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#071321');bg.addColorStop(.58,'#10213a');bg.addColorStop(1,'#07111f');
+   ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+   const glow=ctx.createRadialGradient(540,650,80,540,650,620);glow.addColorStop(0,'rgba(255,128,171,.16)');glow.addColorStop(1,'rgba(255,128,171,0)');ctx.fillStyle=glow;ctx.fillRect(0,0,W,H);
+   ctx.save();ctx.globalAlpha=.12;ctx.strokeStyle='#ffffff';ctx.lineWidth=2;
+   for(let k=0;k<8;k++){ctx.beginPath();ctx.moveTo(0+k*155,300);ctx.lineTo(180+k*120,1350);ctx.stroke();}ctx.restore();
+
+   const logo=await loadImageSafe(location.origin+'/logo-social.png');
+   if(logo)ctx.drawImage(logo,52,38,76,76);
+   ctx.textAlign='left';ctx.fillStyle='#f7f9fc';ctx.font='900 40px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',145,70);
+   ctx.fillStyle='#aebbd0';ctx.font='500 19px -apple-system,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',145,101);
+   ctx.textAlign='right';ctx.fillStyle='#ff80ab';ctx.font='italic 700 22px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',1025,68);
+
+   ctx.textAlign='left';ctx.fillStyle='#ff80ab';ctx.font='900 39px -apple-system,sans-serif';ctx.fillText('ESPERIMENTO STATISTICO AI',52,164);
+   ctx.fillStyle='#d8e2ee';ctx.font='500 21px -apple-system,sans-serif';ctx.fillText('Una lettura dei dati prima della partita',52,197);
+
+   let leagueLabel=x.leagueName||x.league||'CALCIO';
+   const leagueMap={SA:'SERIE A',PL:'PREMIER LEAGUE',PD:'LA LIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
+   leagueLabel=leagueMap[x.leagueCode]||leagueLabel||'CALCIO';
+   let dateLabel='OGGI';
+   if(x.kickoff){try{const d=new Date(x.kickoff);dateLabel=d.toLocaleDateString('it-IT',{day:'2-digit',month:'short'}).toUpperCase()+' · '+d.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});}catch{}}
+   ctx.fillStyle='#0b1728';roundRect(ctx,52,225,976,285,28);ctx.fill();ctx.strokeStyle='#2f4159';ctx.lineWidth=2;roundRect(ctx,52,225,976,285,28);ctx.stroke();
+   ctx.fillStyle='#ff80ab';ctx.font='900 19px -apple-system,sans-serif';ctx.textAlign='left';ctx.fillText(String(leagueLabel).toUpperCase(),78,258);
+   ctx.fillStyle='#aebbd0';ctx.textAlign='right';ctx.fillText(dateLabel,1002,258);
+   const homeImg=await loadImageSafe(x.homeLogo),awayImg=await loadImageSafe(x.awayLogo);
+   drawTeamBadge(ctx,homeImg,x.home,315,350,78);drawTeamBadge(ctx,awayImg,x.away,765,350,78);
+   ctx.textAlign='center';ctx.fillStyle='#ff80ab';ctx.font='900 34px -apple-system,sans-serif';ctx.fillText('VS',540,360);
+   ctx.fillStyle='#f7f9fc';ctx.font='800 25px -apple-system,sans-serif';wrapCanvasText(ctx,x.home,315,455,300,29,2);wrapCanvasText(ctx,x.away,765,455,300,29,2);
+
+   ctx.fillStyle='#f7f9fc';roundRect(ctx,90,545,900,275,28);ctx.fill();
+   ctx.textAlign='left';ctx.fillStyle='#ff80ab';ctx.font='900 22px -apple-system,sans-serif';ctx.fillText('SCENARIO SEGNALATO DALL’AI',125,585);
+   ctx.fillStyle='#111722';ctx.font='900 44px -apple-system,sans-serif';ctx.textAlign='center';wrapCanvasText(ctx,String(x.market||'Scenario statistico'),540,650,790,50,2);
+   ctx.fillStyle='#69758a';ctx.font='700 18px -apple-system,sans-serif';ctx.fillText('PROBABILITÀ STIMATA',540,735);
+   ctx.fillStyle='#ff80ab';ctx.font='900 63px -apple-system,sans-serif';ctx.fillText(`${Number(x.prob||0).toFixed(1)}%`,540,795);
+
+   const odds=Number(x.odds);ctx.fillStyle='#d8e2ee';ctx.textAlign='left';ctx.font='700 20px -apple-system,sans-serif';
+   ctx.fillText(`Quota analizzata: ${Number.isFinite(odds)&&odds>0?odds.toFixed(2):'—'}`,80,865);
+   if(Number.isFinite(x.edge))ctx.textAlign='right',ctx.fillText(`Edge stimato: ${x.edge>=0?'+':''}${Number(x.edge).toFixed(1)}%`,1000,865);
+
+   ctx.fillStyle='#0b1728';roundRect(ctx,52,900,976,255,26);ctx.fill();
+   ctx.textAlign='left';ctx.fillStyle='#ff80ab';ctx.font='900 21px -apple-system,sans-serif';ctx.fillText('PERCHÉ L’AI LO SEGNALA?',80,938);
+   ctx.fillStyle='#f3f6fb';ctx.font='500 20px -apple-system,sans-serif';wrapCanvasText(ctx,x.reason||'Lo scenario è stato selezionato sulla base dei dati disponibili.',80,980,900,29,4);
+   ctx.fillStyle='#6f8097';ctx.font='500 17px -apple-system,sans-serif';ctx.fillText('Analisi statistica · nessuna garanzia di risultato',80,1125);
+
+   ctx.textAlign='center';ctx.fillStyle='#ffffff';ctx.font='italic 800 27px -apple-system,sans-serif';ctx.fillText('Dati oggi. Risultati domani.',540,1210);
+   ctx.fillStyle='#ff80ab';ctx.font='900 21px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',540,1245);
+   ctx.fillStyle='#9aa9bd';ctx.font='500 16px -apple-system,sans-serif';ctx.fillText('Esperimento statistico · gioco responsabile · vietato ai minori',540,1280);
+
+   await new Promise(resolve=>canvas.toBlob(blob=>{
+     if(!blob){alert('Non sono riuscito a generare l’immagine. Riprova.');resolve();return;}
+     const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
+     a.download=`ai-del-pallone-esperimento-${(x.home+'-'+x.away).replace(/[^a-z0-9àèéìòù_-]+/gi,'-').toLowerCase()}-4x5.png`;
+     document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);resolve();
+   },'image/png'));
+ }catch(e){console.error(e);alert('Non sono riuscito a generare l’immagine. Riprova tra poco.');}
+}
+</script><script>
+window.addEventListener('load',async()=>{
+ const orig=HTMLCanvasElement.prototype.toBlob;
+ HTMLCanvasElement.prototype.toBlob=function(cb,type){document.body.innerHTML='';this.style.width='540px';this.style.height='675px';this.style.display='block';this.style.margin='0 auto';document.body.appendChild(this);cb(new Blob(['x'],{type:type||'image/png'}));};
+ try{await shareCandidateImageData({home:'Milan',away:'Roma',market:'Over 2.5',odds:2.10,prob:68.4,edge:9.2,leagueCode:'SA',kickoff:'2026-09-15T20:45:00',homeLogo:'/logo-social.png',awayLogo:'/logo-social.png',reason:'Le ultime partite mostrano una buona frequenza di gol e diversi segnali statistici coerenti con questo scenario.'});document.title='PASS';}catch(e){document.body.innerText='FAIL '+e.stack;document.title='FAIL';}
+});</script></body></html>
