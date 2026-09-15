@@ -891,37 +891,43 @@ function render(cs){
    $("pick").innerHTML='<div class="empty">🟡 Nessun candidato disponibile.</div>';
    $("candidates").innerHTML='<div class="empty">Nessun candidato.</div>';return;
  }
- const picks=[];const usedFixture=new Set();const usedMarket=new Set();const usedMatch=new Set();const exact=new Set();
- // Selezione a fasce: TOP 1 richiede uno score solido; TOP 2/3 possono essere
- // leggermente sotto 62, ma devono avere edge positivo. In questo modo non
- // scartiamo buoni candidati solo per pochi punti di score e non forziamo
- // giocate basate soltanto sulla quota.
- const MIN_SCORE_TOP=58;
- const MIN_SCORE_SECONDARY=52;
- const MIN_ANALYSIS_TOP=50;
- const MIN_ANALYSIS_SECONDARY=45;
+ const picks=[];const usedFixture=new Set();const usedMatch=new Set();const exact=new Set();
+ // Il TOP 1/2/3 viene scelto prima di tutto dalla PROBABILITÀ stimata.
+ // A parità o quasi, usiamo supporto analitico, edge e score come criteri
+ // secondari. Non limitiamo più il TOP 3 a un solo mercato o a una sola lega:
+ // l'unico divieto è proporre due scenari della stessa partita.
+ const MIN_SCORE_TOP=52;
+ const MIN_SCORE_SECONDARY=50;
+ const MIN_ANALYSIS_TOP=45;
+ const MIN_ANALYSIS_SECONDARY=40;
  const pool=[...cs].filter(v=>{
    const key=`${v.fixtureId}|${v.market}`;
    if(exact.has(key))return false;
    exact.add(key);
    return v.score>=MIN_SCORE_SECONDARY && Number(v.analysisSupport||0)>=MIN_ANALYSIS_SECONDARY;
+ }).sort((a,b)=>{
+   const pa=Number(a.prob)||0, pb=Number(b.prob)||0;
+   if(pb!==pa)return pb-pa;
+   const aa=Number(a.analysisSupport)||0, ab=Number(b.analysisSupport)||0;
+   if(ab!==aa)return ab-aa;
+   const ea=Number(a.edge)||0, eb=Number(b.edge)||0;
+   if(eb!==ea)return eb-ea;
+   return (Number(b.score)||0)-(Number(a.score)||0);
  });
  const matchKey=v=>`${String(v.home||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}|${String(v.away||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}`;
- const is1x2=v=>["1 (Casa)","X (Pareggio)","2 (Trasferta)","1","X","2"].includes(v.market);
  function take(predicate){const i=pool.findIndex(predicate);if(i>=0)return pool.splice(i,1)[0];}
  let x;
- const usedLeague=new Set();
- // TOP 1: scegliamo il migliore candidato realmente sopra la soglia forte,
- // dando priorità a un mercato 1X2 solo se ha edge positivo.
- const best1x2=pool.find(v=>is1x2(v)&&v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP);
- const bestTop=pool.find(v=>v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP);
- const first=best1x2&&best1x2.score>=Math.max(61,bestTop?.score-3)?best1x2:bestTop;
- if(first){const idx=pool.indexOf(first);if(idx>=0)pool.splice(idx,1);picks.push(first);usedFixture.add(first.fixtureId);usedMarket.add(first.market);usedLeague.add(first.leagueCode||first.league);usedMatch.add(matchKey(first));}
- // TOP 2/3: una sola indicazione per partita. Usiamo il confronto tra squadre
- // come chiave stabile perché lo stesso evento può arrivare da provider diversi
- // con fixtureId differenti.
- while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP&&!usedMatch.has(matchKey(v))&&!usedMarket.has(v.market)&&!usedLeague.has(v.leagueCode||v.league)))){picks.push(x);usedFixture.add(x.fixtureId);usedMarket.add(x.market);usedLeague.add(x.leagueCode||x.league);usedMatch.add(matchKey(x));}
- while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_SECONDARY&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_SECONDARY&&!usedMatch.has(matchKey(v))&&!usedMarket.has(v.market)))){picks.push(x);usedFixture.add(x.fixtureId);usedMarket.add(x.market);usedLeague.add(x.leagueCode||x.league);usedMatch.add(matchKey(x));}
+ // TOP 1: il primo candidato è quello con probabilità più alta tra gli
+ // scenari sufficientemente supportati. Nessuna priorità artificiale al mercato 1X2.
+ const first=take(v=>v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP);
+ if(first){picks.push(first);usedFixture.add(first.fixtureId);usedMatch.add(matchKey(first));}
+ // TOP 2/3: stessa logica, sempre una sola indicazione per partita.
+ while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP&&!usedMatch.has(matchKey(v))))){
+   picks.push(x);usedFixture.add(x.fixtureId);usedMatch.add(matchKey(x));
+ }
+ while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_SECONDARY&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_SECONDARY&&!usedMatch.has(matchKey(v))))){
+   picks.push(x);usedFixture.add(x.fixtureId);usedMatch.add(matchKey(x));
+ }
  // Se restano meno di tre partite sufficientemente supportate, mostriamo solo
  // quelle realmente valide: mai due mercati della stessa partita per riempire il TOP 3.
  const absenceHtml=x=>{
