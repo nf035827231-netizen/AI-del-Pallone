@@ -439,7 +439,7 @@ body[data-theme="light"] .pending{background:#fff8e5;color:#775900}
 
 <section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="market"><option value="all">Tutti i mercati</option><option value="btts">Goal / No Goal</option><option value="totals">Over / Under 2.5 + 3.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Per ridurre le chiamate API, i risultati utili vengono memorizzati per 15 minuti. Le quote mostrano anche il bookmaker da cui sono state lette. Una nuova analisi usa la cache finché è valida.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
-<section class="card tab-section active" data-section="today"><h2>🏆 Le 3 migliori del giorno</h2><p class="small" style="margin-top:-6px;margin-bottom:12px">La prima è la scelta preferita del motore. Probabilità e indicatori statistici supportano la valutazione, ma la motivazione parte dalle caratteristiche della partita.</p><div id="dailySummaryBtnWrap" style="display:none;margin-bottom:12px"><button class="secondary" onclick="shareDailySummaryImage()">📸 Immagine riepilogo del giorno</button></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div></section>
+<section class="card tab-section active" data-section="today"><h2>🏆 Le 3 migliori del giorno</h2><p class="small" style="margin-top:-6px;margin-bottom:12px">La prima è la scelta preferita del motore. Il TOP considera soprattutto la probabilità stimata (60%), poi la qualità dell'analisi (25%) e infine il valore della quota (15%).</p><div id="dailySummaryBtnWrap" style="display:none;margin-bottom:12px"><button class="secondary" onclick="shareDailySummaryImage()">📸 Immagine riepilogo del giorno</button></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div></section>
 
 <section class="card tab-section active" data-section="today"><h2>📊 Classifica candidati</h2><div id="candidates" class="empty">Nessun candidato.</div></section>
 
@@ -814,7 +814,13 @@ function scoreCandidate(x){
   const implied=100/x.odds;
   const edge=Number.isFinite(x.edge)?x.edge:(x.prob-implied);
   const score=Number.isFinite(x.score)?x.score:50;
-  return {...x,implied,edge,score};
+  // Indice TOP dedicato: probabilità 50% + analisi 30% + edge 20%.
+  // La quota misura il valore, ma non può dominare una previsione con probabilità più alta.
+  const prob=Number.isFinite(Number(x.prob))?Number(x.prob):50;
+  const analysis=Number.isFinite(Number(x.analysisSupport))?Number(x.analysisSupport):50;
+  const edgeValue=Number.isFinite(edge) ? Math.max(0,Math.min(100,50+50*Math.tanh(edge/20))) : 50;
+  const topSelectionScore=prob*0.50 + analysis*0.30 + edgeValue*0.20;
+  return {...x,implied,edge,score,topSelectionScore};
 }
 const API_CACHE_PREFIX='pickDelGiorno.apiCache.v5.';
 const API_CACHE_TTL=15*60*1000;
@@ -891,45 +897,33 @@ function render(cs){
    $("pick").innerHTML='<div class="empty">🟡 Nessun candidato disponibile.</div>';
    $("candidates").innerHTML='<div class="empty">Nessun candidato.</div>';return;
  }
- const picks=[];const usedFixture=new Set();const usedMatch=new Set();const exact=new Set();
- // Il TOP 1/2/3 viene scelto prima di tutto dalla PROBABILITÀ stimata.
- // A parità o quasi, usiamo supporto analitico, edge e score come criteri
- // secondari. Non limitiamo più il TOP 3 a un solo mercato o a una sola lega:
- // l'unico divieto è proporre due scenari della stessa partita.
- const MIN_SCORE_TOP=52;
- const MIN_SCORE_SECONDARY=50;
- const MIN_ANALYSIS_TOP=45;
- const MIN_ANALYSIS_SECONDARY=40;
- const pool=[...cs].filter(v=>{
-   const key=`${v.fixtureId}|${v.market}`;
+ // TOP 1/2/3: nessuna soglia rigida su probabilità o analisi.
+ // Scartiamo solo dati palesemente non utilizzabili, poi ordiniamo per:
+ // PROBABILITÀ 50% → ANALISI 30% → EDGE 20%.
+ // Se esistono almeno 3 partite distinte analizzabili, mostriamo sempre 3 scenari.
+ const picks=[];const usedMatch=new Set();const exact=new Set();
+ const usable=[...cs].filter(v=>{
+   const key=`${v.fixtureId||''}|${v.market||''}`;
    if(exact.has(key))return false;
    exact.add(key);
-   return v.score>=MIN_SCORE_SECONDARY && Number(v.analysisSupport||0)>=MIN_ANALYSIS_SECONDARY;
+   const prob=Number(v.prob), odds=Number(v.odds), analysis=Number(v.analysisSupport);
+   return Number.isFinite(prob) && prob>0 && prob<=100 && Number.isFinite(odds) && odds>1 && Number.isFinite(analysis) && analysis>0;
  }).sort((a,b)=>{
+   const ta=Number(a.topSelectionScore)||0, tb=Number(b.topSelectionScore)||0;
+   if(tb!==ta)return tb-ta;
    const pa=Number(a.prob)||0, pb=Number(b.prob)||0;
    if(pb!==pa)return pb-pa;
    const aa=Number(a.analysisSupport)||0, ab=Number(b.analysisSupport)||0;
    if(ab!==aa)return ab-aa;
-   const ea=Number(a.edge)||0, eb=Number(b.edge)||0;
-   if(eb!==ea)return eb-ea;
-   return (Number(b.score)||0)-(Number(a.score)||0);
+   return (Number(b.edge)||0)-(Number(a.edge)||0);
  });
  const matchKey=v=>`${String(v.home||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}|${String(v.away||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}`;
- function take(predicate){const i=pool.findIndex(predicate);if(i>=0)return pool.splice(i,1)[0];}
- let x;
- // TOP 1: il primo candidato è quello con probabilità più alta tra gli
- // scenari sufficientemente supportati. Nessuna priorità artificiale al mercato 1X2.
- const first=take(v=>v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP);
- if(first){picks.push(first);usedFixture.add(first.fixtureId);usedMatch.add(matchKey(first));}
- // TOP 2/3: stessa logica, sempre una sola indicazione per partita.
- while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP&&!usedMatch.has(matchKey(v))))){
-   picks.push(x);usedFixture.add(x.fixtureId);usedMatch.add(matchKey(x));
+ for(const v of usable){
+   if(picks.length>=3)break;
+   const mk=matchKey(v);
+   if(usedMatch.has(mk))continue;
+   picks.push(v);usedMatch.add(mk);
  }
- while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_SECONDARY&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_SECONDARY&&!usedMatch.has(matchKey(v))))){
-   picks.push(x);usedFixture.add(x.fixtureId);usedMatch.add(matchKey(x));
- }
- // Se restano meno di tre partite sufficientemente supportate, mostriamo solo
- // quelle realmente valide: mai due mercati della stessa partita per riempire il TOP 3.
  const absenceHtml=x=>{
    if(!x.availability){
      const fixtureKey=`${x.home} - ${x.away}`;
@@ -943,19 +937,24 @@ function render(cs){
      return `<div class="absence-box absence-muted"><div class="absence-title">🏥 Assenze</div>${esc(detail)}</div>`;
    }
    if(!x.availability.total) return '<div class="absence-box absence-ok"><div class="absence-title">🏥 Assenze</div>Nessuna assenza segnalata dal provider per questa partita.</div>';
-   const team=(name,rows)=>rows?.length?`<div class="absence-team"><b>${esc(name)}:</b> ${rows.slice(0,5).map(a=>`${esc(a.player)} <span class="pill">${esc(a.status||'indisponibile')}</span>${a.reason&&!["squalificato","infortunato","in dubbio","indisponibile"].includes(a.status)?` <span class="small">${esc(a.reason)}</span>`:''}`).join(', ')}</div>`:'';
+   const team=(name,rows)=>rows?.length?`<div class="absence-team"><b>${esc(name)}:</b> ${rows.slice(0,5).map(a=>`${esc(a.player)} <span class="pill">${esc(a.status||'indisponibile')}</span>${a.reason&&!['squalificato','infortunato','in dubbio','indisponibile'].includes(a.status)?` <span class="small">${esc(a.reason)}</span>`:''}`).join(', ')}</div>`:'';
    return `<div class="absence-box"><div class="absence-title">🏥 Assenze importanti</div>${team(x.home,x.availability.home)}${team(x.away,x.availability.away)}</div>`;
  };
  const logoHtml=(url,name)=>`<img class="team-logo" src="${esc(url||'')}" alt="Stemma ${esc(name)}" loading="lazy" style="display:${url?'block':'none'}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="team-logo-fallback" style="display:${url?'none':'flex'}">${esc((name||'?').slice(0,2).toUpperCase())}</span>`;
  const cards=picks.map((x,i)=>{
    const kMs=x.kickoff?new Date(x.kickoff).getTime():NaN;
    const kLabel=Number.isFinite(kMs)?new Date(kMs).toLocaleDateString('it-IT',{day:'2-digit',month:'short'})+' · '+new Date(kMs).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):'';
-   return `<div class="pick" style="margin-bottom:${i<picks.length-1?10:0}px"><div class="pick-head"><span class="tag">${i===0?'⭐ TOP 1':i===1?'🥈 TOP 2':'🥉 TOP 3'}</span>${kLabel?`<span class="bet-kickoff">📅 ${kLabel}</span>`:''}<span class="confidence-badge ${String(x.fieldAnalysis?.confidenceLabel||'Media').toLowerCase().replace('à','a')}">${esc(x.fieldAnalysis?.confidenceLabel||'Media')}</span></div><div class="matchup"><div class="team"><div class="logo-wrap">${logoHtml(x.homeLogo,x.home)}</div><b>${esc(x.home)}</b></div><div class="vs">VS</div><div class="team"><div class="logo-wrap">${logoHtml(x.awayLogo,x.away)}</div><b>${esc(x.away)}</b></div></div><div class="market-row"><div class="market">${esc(x.market)}</div><div class="odds-big">${x.odds.toFixed(2)} <small>${esc(x.bookmaker||'fonte quota')}</small></div></div><div class="reason"><b>Perché?</b> ${esc(x.reason||'La scelta nasce dalle caratteristiche della partita.')}</div>${x.fieldAnalysis?.tactical?`<div class="field-box"><div class="field-title">🧠 Lettura del match</div>${esc(x.fieldAnalysis.tactical)}</div>`:''}${x.fieldAnalysis?.warnings?.length?`<div class="warning-box"><div class="field-title">⚠️ Attenzione</div>${x.fieldAnalysis.warnings.map(w=>`<div>${esc(w)}</div>`).join('')}</div>`:''}${absenceHtml(x)}<div class="confidence-line"><span>Fiducia <b>${esc(x.fieldAnalysis?.confidenceLabel||'Media')}</b></span><span>${x.fieldAnalysis?.confidence||'-'}/100 · Analisi ${Number(x.analysisSupport||0)}/100</span></div><div class="metrics"><div class="metric"><span>Probabilità</span><b>${x.prob}%</b></div><div class="metric"><span>Edge</span><b>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</b></div><div class="metric"><span>Score</span><b>${x.score.toFixed(0)}/100</b></div></div><div class="bet-actions"><button onclick='selectAndShare(${JSON.stringify(x).replace(/'/g,"&#39;")},${i})'>➕ Seleziona e crea immagine</button><button class="secondary" style="width:auto;padding:10px 14px;flex:0 0 auto" onclick="shareCandidateImage(${i})">📸 Immagine</button></div></div>`;
+   const prob=Number(x.prob||0), analysis=Number(x.analysisSupport||0), edge=Number(x.edge||0), topScore=Number(x.topSelectionScore||0);
+   const strength=topScore>=70?'Alta':topScore>=60?'Media':'Bassa';
+   return `<div class="pick" style="margin-bottom:${i<picks.length-1?10:0}px"><div class="pick-head"><span class="tag">${i===0?'⭐ TOP 1':i===1?'🥈 TOP 2':'🥉 TOP 3'}</span>${kLabel?`<span class="bet-kickoff">📅 ${kLabel}</span>`:''}<span class="confidence-badge ${strength.toLowerCase()}">${strength}</span></div><div class="matchup"><div class="team"><div class="logo-wrap">${logoHtml(x.homeLogo,x.home)}</div><b>${esc(x.home)}</b></div><div class="vs">VS</div><div class="team"><div class="logo-wrap">${logoHtml(x.awayLogo,x.away)}</div><b>${esc(x.away)}</b></div></div><div class="market-row"><div class="market">${esc(x.market)}</div><div class="odds-big">${x.odds.toFixed(2)} <small>${esc(x.bookmaker||'fonte quota')}</small></div></div><div class="reason"><b>Perché?</b> ${esc(x.reason||'La scelta nasce dalle caratteristiche della partita.')}</div>${x.fieldAnalysis?.tactical?`<div class="field-box"><div class="field-title">🧠 Lettura del match</div>${esc(x.fieldAnalysis.tactical)}</div>`:''}${x.fieldAnalysis?.warnings?.length?`<div class="warning-box"><div class="field-title">⚠️ Attenzione</div>${x.fieldAnalysis.warnings.map(w=>`<div>${esc(w)}</div>`).join('')}</div>`:''}${absenceHtml(x)}<div class="confidence-line"><span>Fiducia <b>${strength}</b></span><span>Prob. ${prob.toFixed(1)}% · Analisi ${analysis}/100</span></div><div class="metrics"><div class="metric"><span>Probabilità</span><b>${prob.toFixed(1)}%</b></div><div class="metric"><span>Edge</span><b>${edge>=0?'+':''}${edge.toFixed(1)}%</b></div><div class="metric"><span>Indice TOP</span><b>${topScore.toFixed(0)}/100</b></div></div><div class="bet-actions"><button onclick='selectAndShare(${JSON.stringify(x).replace(/'/g,"&#39;")},${i})'>➕ Seleziona e crea immagine</button><button class="secondary" style="width:auto;padding:10px 14px;flex:0 0 auto" onclick="shareCandidateImage(${i})">📸 Immagine</button></div></div>`;
  }).join('');
  lastPicks=picks;
  renderAIPicks(picks);
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
- $("pick").innerHTML=picks.length?cards:'<div class="empty">🟡 Oggi non ci sono 3 scenari sufficientemente supportati. La Dritta mostra i migliori disponibili quando l’analisi supera la soglia minima, senza usare la quota come unico criterio.</div>';
+ const notice=picks.length<3
+   ?`<div class="empty">🟡 Sono disponibili ${picks.length} scenari analizzabili. Non ci sono abbastanza partite distinte per completare il TOP 3.</div>`
+   :`<div class="small" style="margin:8px 0 14px;color:#718198">ℹ️ TOP 3 ordinato per probabilità stimata (50%), qualità dell'analisi (30%) e valore della quota/edge (20%).</div>`;
+ $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
  $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Score</th></tr>'+cs.slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${x.score.toFixed(0)}</td></tr>`).join("")+'</table></div>';
 }
 
