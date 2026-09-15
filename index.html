@@ -435,7 +435,7 @@ body[data-theme="light"] .pending{background:#fff8e5;color:#775900}
 </section>
 
 <div class="today-layout">
-<section class="card tab-section active" data-section="today"><h2>🌍 Campionato</h2><select id="leagueSelect" class="league-selector" aria-label="Seleziona campionato"></select><p class="small"><b>“Tutti i campionati selezionati”</b> cerca solo nel perimetro scelto per AI DEL PALLONE: massime serie europee, principali coppe UEFA, massime serie sudamericane, MLS e J1 League. Puoi anche scegliere un singolo campionato dal menu.</p></section>
+<section class="card tab-section active" data-section="today"><h2>🌍 Campionato</h2><select id="leagueSelect" class="league-selector" aria-label="Seleziona campionato"></select><p class="small"><b>“Tutti i campionati selezionati”</b> cerca nel perimetro scelto per AI DEL PALLONE: massime serie europee, principali coppe UEFA, massime serie sudamericane, MLS e J1 League. Puoi anche scegliere un singolo campionato dal menu.</p></section>
 
 <section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="market"><option value="all">Tutti i mercati</option><option value="btts">Goal / No Goal</option><option value="totals">Over / Under 2.5 + 3.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Per ridurre le chiamate API, i risultati utili vengono memorizzati per 15 minuti. Le quote mostrano anche il bookmaker da cui sono state lette. Una nuova analisi usa la cache finché è valida.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
@@ -483,7 +483,7 @@ const leagueGroups=[
 ];
 const comps=leagueGroups.flatMap(g=>g.items);
 $("date").value=new Date().toISOString().slice(0,10);
-$("leagueSelect").innerHTML='<option value="">Tutti i campionati selezionati</option>'+leagueGroups.map(g=>`<optgroup label="${g.label}">${g.items.map(c=>`<option value="${c[1]}">${c[0]}</option>`).join("")}</optgroup>`).join("");
+$("leagueSelect").innerHTML='<option value="">🌍 Tutti i campionati selezionati</option><option value="EUROPE">🇪🇺 Tutti i campionati europei</option>'+leagueGroups.map(g=>`<optgroup label="${g.label}">${g.items.map(c=>`<option value="${c[1]}">${c[0]}</option>`).join("")}</optgroup>`).join("");
 let currentTab='today';
 let lastDiagnostics=[];
 let lastPicks=[];
@@ -816,7 +816,7 @@ function scoreCandidate(x){
   const score=Number.isFinite(x.score)?x.score:50;
   return {...x,implied,edge,score};
 }
-const API_CACHE_PREFIX='pickDelGiorno.apiCache.v4.';
+const API_CACHE_PREFIX='pickDelGiorno.apiCache.v5.';
 const API_CACHE_TTL=15*60*1000;
 function apiCacheKey(){return API_CACHE_PREFIX+JSON.stringify({date:$("date").value,leagues:$("leagueSelect").value,market:$("market").value||"all"})}
 function readApiCache(){try{const x=JSON.parse(localStorage.getItem(apiCacheKey())||'null');if(!x)return null;if(Date.now()-x.savedAt>API_CACHE_TTL){localStorage.removeItem(apiCacheKey());return null;}return x.data}catch{return null}}
@@ -891,7 +891,7 @@ function render(cs){
    $("pick").innerHTML='<div class="empty">🟡 Nessun candidato disponibile.</div>';
    $("candidates").innerHTML='<div class="empty">Nessun candidato.</div>';return;
  }
- const picks=[];const usedFixture=new Set();const usedMarket=new Set();const exact=new Set();
+ const picks=[];const usedFixture=new Set();const usedMarket=new Set();const usedMatch=new Set();const exact=new Set();
  // Selezione a fasce: TOP 1 richiede uno score solido; TOP 2/3 possono essere
  // leggermente sotto 62, ma devono avere edge positivo. In questo modo non
  // scartiamo buoni candidati solo per pochi punti di score e non forziamo
@@ -906,6 +906,7 @@ function render(cs){
    exact.add(key);
    return v.score>=MIN_SCORE_SECONDARY && Number(v.analysisSupport||0)>=MIN_ANALYSIS_SECONDARY;
  });
+ const matchKey=v=>`${String(v.home||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}|${String(v.away||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}`;
  const is1x2=v=>["1 (Casa)","X (Pareggio)","2 (Trasferta)","1","X","2"].includes(v.market);
  function take(predicate){const i=pool.findIndex(predicate);if(i>=0)return pool.splice(i,1)[0];}
  let x;
@@ -915,16 +916,14 @@ function render(cs){
  const best1x2=pool.find(v=>is1x2(v)&&v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP);
  const bestTop=pool.find(v=>v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP);
  const first=best1x2&&best1x2.score>=Math.max(61,bestTop?.score-3)?best1x2:bestTop;
- if(first){const idx=pool.indexOf(first);if(idx>=0)pool.splice(idx,1);picks.push(first);usedFixture.add(first.fixtureId);usedMarket.add(first.market);usedLeague.add(first.leagueCode||first.league);}
- // TOP 2/3: prima privilegiamo partite e campionati diversi, poi allarghiamo
- // il criterio. Non prendiamo due mercati della stessa partita finché esistono
- // alternative valide.
- while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP&&!usedFixture.has(v.fixtureId)&&!usedMarket.has(v.market)&&!usedLeague.has(v.leagueCode||v.league)))){picks.push(x);usedFixture.add(x.fixtureId);usedMarket.add(x.market);usedLeague.add(x.leagueCode||x.league);}
- while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_SECONDARY&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_SECONDARY&&!usedFixture.has(v.fixtureId)&&!usedMarket.has(v.market)))){picks.push(x);usedFixture.add(x.fixtureId);usedMarket.add(x.market);usedLeague.add(x.leagueCode||x.league);}
- // Se non ci sono tre partite diverse, consentiamo un secondo mercato della
- // stessa partita solo come ultima risorsa e solo se resta sopra la soglia.
- while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_SECONDARY&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_SECONDARY&&!usedFixture.has(v.fixtureId)))){picks.push(x);usedFixture.add(x.fixtureId);usedMarket.add(x.market);}
- while(picks.length<3&&(x=pool.shift()))picks.push(x);
+ if(first){const idx=pool.indexOf(first);if(idx>=0)pool.splice(idx,1);picks.push(first);usedFixture.add(first.fixtureId);usedMarket.add(first.market);usedLeague.add(first.leagueCode||first.league);usedMatch.add(matchKey(first));}
+ // TOP 2/3: una sola indicazione per partita. Usiamo il confronto tra squadre
+ // come chiave stabile perché lo stesso evento può arrivare da provider diversi
+ // con fixtureId differenti.
+ while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_TOP&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_TOP&&!usedMatch.has(matchKey(v))&&!usedMarket.has(v.market)&&!usedLeague.has(v.leagueCode||v.league)))){picks.push(x);usedFixture.add(x.fixtureId);usedMarket.add(x.market);usedLeague.add(x.leagueCode||x.league);usedMatch.add(matchKey(x));}
+ while(picks.length<3&&(x=take(v=>v.score>=MIN_SCORE_SECONDARY&&Number(v.analysisSupport||0)>=MIN_ANALYSIS_SECONDARY&&!usedMatch.has(matchKey(v))&&!usedMarket.has(v.market)))){picks.push(x);usedFixture.add(x.fixtureId);usedMarket.add(x.market);usedLeague.add(x.leagueCode||x.league);usedMatch.add(matchKey(x));}
+ // Se restano meno di tre partite sufficientemente supportate, mostriamo solo
+ // quelle realmente valide: mai due mercati della stessa partita per riempire il TOP 3.
  const absenceHtml=x=>{
    if(!x.availability){
      const fixtureKey=`${x.home} - ${x.away}`;
