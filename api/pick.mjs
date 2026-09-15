@@ -10,9 +10,12 @@ export default async function handler(req, res) {
 
   const date = u.searchParams.get("date");
   const rawLeagues = u.searchParams.get("leagues") || "";
-  const requestedCodes = rawLeagues
+  // Valore speciale usato dal menu: una sola chiamata al feed globale,
+  // ma con filtro rigoroso sulle competizioni europee ammesse.
+  const europeOnly = rawLeagues === "EUROPE";
+  const requestedCodes = europeOnly ? [] : (rawLeagues
     ? rawLeagues.split(",").map(normalizeLeague).filter(Boolean).slice(0, 80)
-    : [];
+    : []);
   const codes = requestedCodes.length ? requestedCodes : null;
   const market = u.searchParams.get("market") || "all";
   if (!date) return res.status(400).json({ error: "Data mancante" });
@@ -149,9 +152,15 @@ export default async function handler(req, res) {
     requests++; requestBreakdown.oddsEventsDiscovery++;
     const events = Array.isArray(ev) ? ev : [];
     const dated = events.filter(e => localDate(e.date) === date);
-    const relevant = dated.filter(preferredLeagueFilter);
+    const europeanMarkers = /(england|scotland|wales|northern-ireland|spain|italy|germany|france|portugal|netherlands|belgium|austria|switzerland|turkey|greece|denmark|sweden|norway|poland|czech|croatia|serbia|romania|ukraine|russia|hungary|slovakia|slovenia|bulgaria|cyprus|israel|ireland|iceland|finland|bosnia|kosovo|albania|north-macedonia|macedonia|georgia|armenia|azerbaijan|moldova|malta|estonia|latvia|lithuania|luxembourg|champions-league|uefa-champions|europa-league|uefa-europa|conference-league|uefa-conference)/i;
+    const isEuropeanEvent = e => {
+      const slug=String(e?.league?.slug||'').toLowerCase().replace(/_/g,'-');
+      const name=String(e?.league?.name||'').toLowerCase();
+      return europeanMarkers.test(`${slug} ${name}`);
+    };
+    const relevant = dated.filter(preferredLeagueFilter).filter(e => !europeOnly || isEuropeanEvent(e));
     const rejected = dated.length - relevant.length;
-    diagnostics.push({ provider:"odds-api-events-global", results:relevant.length, totalReturned:events.length, dated:dated.length, rejectedByLeagueFilter:rejected, scope:"Europe top divisions + UEFA + South America top divisions + MLS + J1", bookmaker:requestedBookmaker, error:ev?.error||null });
+    diagnostics.push({ provider:"odds-api-events-global", results:relevant.length, totalReturned:events.length, dated:dated.length, rejectedByLeagueFilter:rejected, scope:europeOnly?"Europe top divisions + UEFA only":"Europe top divisions + UEFA + South America top divisions + MLS + J1", bookmaker:requestedBookmaker, europeOnly, error:ev?.error||null });
     oddsEventResults = [{ code:null, slug:null, events, relevant, error:ev?.error||null }];
   } else {
     oddsEventResults = await Promise.all(codes.map(async code => {
