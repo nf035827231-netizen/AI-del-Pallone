@@ -998,7 +998,7 @@ function render(cs){
    ?`<div class="top3-notice empty">🟡 Sono disponibili ${picks.length} scenari analizzabili. Non ci sono abbastanza partite distinte per completare il TOP 3.</div>`
    :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (55%), qualità dell'analisi (30%) e valore della quota/edge (15%). Se i dati analitici sono limitati, il sistema lo segnala senza escludere automaticamente la partita.</div>`;
  $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
- if(picks.length) hydrateTopPickLogos();
+ if(picks.length) setTimeout(()=>{hydrateTopPickLogos().catch(()=>{});},0);
  $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
 }
 
@@ -1615,9 +1615,10 @@ function setAppTheme(theme){
  if(statusMeta) statusMeta.setAttribute('content',t==='light'?'default':'black-translucent');
 }
 function initAppTheme(){
- const saved=localStorage.getItem('AIP_THEME');
+ let saved='dark';
+ try{saved=localStorage.getItem('AIP_THEME')||'dark'}catch{}
  const theme=saved==='light'?'light':'dark';
- setAppTheme(theme);
+ try{setAppTheme(theme)}catch(e){document.body.setAttribute('data-theme',theme)}
 }
 initAppTheme();
 
