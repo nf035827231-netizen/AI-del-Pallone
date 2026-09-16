@@ -594,31 +594,9 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     fixtureLogos.set(key, {homeLogo:f?.teams?.home?.logo||null, awayLogo:f?.teams?.away?.logo||null});
   }
 
-  // V14: niente chiamate /leagues aggiuntive solo per verificare la coverage.
-  // Risparmiamo quota API: se /injuries non è coperto, gestiamo la risposta
-  // direttamente senza far fallire l'analisi.
-  const injuriesCoverage = new Map();
-
-  for (const c of uniqueFixtures) {
-    const af = fixtureMap.get(normalizePair(c.home,c.away));
-    if (af?.league?.id && af?.league?.season) leaguePairs.add(`${af.league.id}-${af.league.season}`);
-  }
-  const coverageResults = await Promise.all([...leaguePairs].map(async pairKeyStr => {
-    const [leagueId, season] = pairKeyStr.split("-");
-    try {
-      const ld = await apiFootball(`/leagues?id=${encodeURIComponent(leagueId)}&season=${encodeURIComponent(season)}`, apiKey);
-      const cov = ld?.response?.[0]?.seasons?.find(s => String(s.year) === String(season))?.coverage?.injuries;
-      return {pairKeyStr, leagueId, season, cov, error:null};
-    } catch(e) {
-      return {pairKeyStr, leagueId, season, cov:undefined, error:e?.message||String(e)};
-    }
-  }));
-  requests += coverageResults.length;
-  breakdown.apiFootballFixtures += coverageResults.length;
-  for (const x of coverageResults) {
-    injuriesCoverage.set(x.pairKeyStr, x.cov);
-    diagnostics.push({provider:"api-football-coverage",league:x.leagueId,season:x.season,injuriesCovered:x.cov!==false,error:x.error});
-  }
+  // V15: nessuna chiamata /leagues preventiva.
+  // Proviamo direttamente /injuries e /predictions sul fixture trovato.
+  // In questo modo un problema di coverage non può bloccare la Function.
 
   for (const c of uniqueFixtures) {
     const af = findBestApiFootballFixture(c, fixtureMap);
