@@ -594,14 +594,11 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     fixtureLogos.set(key, {homeLogo:f?.teams?.home?.logo||null, awayLogo:f?.teams?.away?.logo||null});
   }
 
-  // Controllo la copertura infortuni per ciascuna competizione/stagione
-  // coinvolta PRIMA di interrogare /injuries: se API-Football dichiara
-  // esplicitamente coverage.injuries=false per quella lega, l'endpoint non
-  // restituirà mai nulla di utile, a prescindere da quanti infortuni ci
-  // siano davvero. Meglio saperlo e dirlo chiaramente, invece di sembrare
-  // che "non ci sono infortuni" quando in realtà quella lega non è coperta.
+  // V14: niente chiamate /leagues aggiuntive solo per verificare la coverage.
+  // Risparmiamo quota API: se /injuries non è coperto, gestiamo la risposta
+  // direttamente senza far fallire l'analisi.
   const injuriesCoverage = new Map();
-  const leaguePairs = new Set();
+
   for (const c of uniqueFixtures) {
     const af = fixtureMap.get(normalizePair(c.home,c.away));
     if (af?.league?.id && af?.league?.season) leaguePairs.add(`${af.league.id}-${af.league.season}`);
@@ -624,16 +621,13 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
   }
 
   for (const c of uniqueFixtures) {
-    const af = fixtureMap.get(normalizePair(c.home,c.away));
+    const af = findBestApiFootballFixture(c, fixtureMap);
     if (!af?.fixture?.id) {
       diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,results:0,error:"Partita non trovata nell'elenco fixture di API-Football per questa data (nome squadra diverso, competizione non tracciata dalla loro fixture list, o fuso orario)."});
       continue;
     }
     const covKey = af.league?.id && af.league?.season ? `${af.league.id}-${af.league.season}` : null;
-    if (covKey && injuriesCoverage.get(covKey) === false) {
-      diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,fixtureId:af.fixture.id,results:0,error:"Questa competizione/stagione non ha copertura infortuni su API-Football (coverage.injuries=false): non è un problema del nostro codice, quella lega semplicemente non è tracciata per gli infortuni su questo piano."});
-      continue;
-    }
+    // Nessuna chiamata /leagues preventiva: proviamo direttamente /injuries.
     // Le due letture sono indipendenti: farle in parallelo riduce molto il
     // tempo della Function senza aumentare il numero di richieste.
     const [injuryResult, predictionResult] = await Promise.allSettled([
@@ -662,6 +656,20 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
   }
   }
 
+  // V14: modello locale ELO + Monte Carlo. Nessuna chiamata API aggiuntiva.
+  const mcByPair = new Map();
+  const uniqueForMc = []; const seenMc = new Set();
+  for (const c of [...candidates].sort((a,b)=>(b.score||0)-(a.score||0))) {
+    const key=normalizePair(c.home,c.away);
+    if(seenMc.has(key)) continue;
+    seenMc.add(key); uniqueForMc.push(c);
+    if(uniqueForMc.length>=12) break;
+  }
+  for (const c of uniqueForMc) {
+    try { mcByPair.set(normalizePair(c.home,c.away), monteCarloFixture(c, availability.get(normalizePair(c.home,c.away)), predictions.get(normalizePair(c.home,c.away)), 10000)); }
+    catch(e) { diagnostics.push({provider:"local-monte-carlo",fixture:`${c.home} - ${c.away}`,results:0,error:e?.message||String(e)}); }
+  }
+
   // Questo map gira SEMPRE, con o senza chiave API-Football: garantisce che
   // ogni candidato abbia sempre una motivazione e un punteggio di fiducia
   // validi (mai "-/100"), usando l'arricchimento quando c'è ed eventualmente
@@ -670,7 +678,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     const key = normalizePair(c.home,c.away);
     const av = availability.get(key);
     const pred = predictions.get(key) || null;
-    const scored = applyEnrichedScore(c, av, pred);
+    const scored = applyEnrichedScore({...c, monteCarlo:mcByPair.get(key)||null}, av, pred);
     const field = buildFieldAnalysis({...scored, availability:av, prediction:pred}, av, pred);
     const logos = fixtureLogos.get(key) || {};
     return {...scored, homeLogo:logos.homeLogo||c.homeLogo||null, awayLogo:logos.awayLogo||c.awayLogo||null, availability:av||null, prediction:pred||null, reason:field.reason, fieldAnalysis:field};
@@ -695,6 +703,44 @@ async function apiFootball(path, key) {
   let body; try { body=JSON.parse(text); } catch { body={errors:{message:text.slice(0,500)}}; }
   if (!r.ok) return { ...body, errors: body.errors || {message:`HTTP ${r.status}`} };
   return body;
+}
+
+
+function teamMatchKey(s) {
+  return normalize(s)
+    .replace(/\b(fc|cf|sc|ac|afc|fk|sk|club|calcio|football|futbol|de|the)\b/g, " ")
+    .replace(/\b(1st|first|ii|ii)\b/g, " ")
+    .replace(/\d{2,4}/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function teamSimilarity(a,b) {
+  const aa=teamMatchKey(a), bb=teamMatchKey(b);
+  if (!aa || !bb) return 0;
+  if (aa===bb) return 1;
+  if (aa.includes(bb) || bb.includes(aa)) return 0.94;
+  const A=new Set(aa.split(" ").filter(x=>x.length>2));
+  const B=new Set(bb.split(" ").filter(x=>x.length>2));
+  if (!A.size || !B.size) return 0;
+  let common=0; for (const x of A) if (B.has(x)) common++;
+  const jaccard=common/(A.size+B.size-common);
+  const containment=common/Math.min(A.size,B.size);
+  return Math.max(jaccard, containment*0.92);
+}
+
+function findBestApiFootballFixture(candidate, fixtureMap) {
+  const exact=fixtureMap.get(normalizePair(candidate.home,candidate.away));
+  if (exact) return exact;
+  let best=null, bestScore=0;
+  for (const f of fixtureMap.values()) {
+    const h=f?.teams?.home?.name, a=f?.teams?.away?.name;
+    if (!h || !a) continue;
+    const hs=teamSimilarity(candidate.home,h), as=teamSimilarity(candidate.away,a);
+    const score=(hs+as)/2;
+    if (hs>=0.68 && as>=0.68 && score>bestScore) { best=f; bestScore=score; }
+  }
+  return best;
 }
 
 function summarizeAvailability(rows, homeName, awayName) {
@@ -746,6 +792,59 @@ function warningsPenaltyCount(c) {
   return n;
 }
 
+
+function seededRandom(seedObj) {
+  seedObj.value = (Math.imul(1664525, seedObj.value) + 1013904223) >>> 0;
+  return seedObj.value / 4294967296;
+}
+function poissonSample(lambda, rng) {
+  if (!(lambda > 0)) return 0;
+  const L=Math.exp(-Math.min(lambda,6));
+  let k=0,p=1;
+  do { k++; p*=rng(); } while (p>L && k<15);
+  return k-1;
+}
+function buildEloContext(c) {
+  const all=[...(Array.isArray(c?._homeMatches)?c._homeMatches:[]),...(Array.isArray(c?._awayMatches)?c._awayMatches:[])];
+  const byId=new Map();
+  for (const m of all) {
+    const h=m?.homeTeam?.id,a=m?.awayTeam?.id,hg=m?.score?.fullTime?.home,ag=m?.score?.fullTime?.away;
+    if(!h||!a||!Number.isFinite(hg)||!Number.isFinite(ag)) continue;
+    if(!byId.has(h)) byId.set(h,1500); if(!byId.has(a)) byId.set(a,1500);
+    const rh=byId.get(h), ra=byId.get(a), expected=1/(1+Math.pow(10,(ra-rh-55)/400));
+    const actual=hg>ag?1:ag>hg?0:0.5, margin=Math.min(2,1+Math.log1p(Math.abs(hg-ag)));
+    const k=22*margin;
+    byId.set(h,rh+k*(actual-expected)); byId.set(a,ra+k*((1-actual)-(1-expected)));
+  }
+  const homeId=c?._homeTeamId, awayId=c?._awayTeamId;
+  const homeElo=homeId&&byId.has(homeId)?byId.get(homeId):1500;
+  const awayElo=awayId&&byId.has(awayId)?byId.get(awayId):1500;
+  return {homeElo,awayElo,diff:homeElo-awayElo+55};
+}
+function monteCarloFixture(c,av,pred,iterations=10000) {
+  const h=summarize(c?._homeMatches,c?._homeTeamId), a=summarize(c?._awayMatches,c?._awayTeamId);
+  const baseH=avg(h.gfHome!=null?h.gfHome:h.gf,a.gaAway!=null?a.gaAway:a.ga);
+  const baseA=avg(a.gfAway!=null?a.gfAway:a.gf,h.gaHome!=null?h.gaHome:h.ga);
+  const elo=buildEloContext(c);
+  let lambdaH=Number.isFinite(baseH)?baseH:1.35, lambdaA=Number.isFinite(baseA)?baseA:1.15;
+  const eloShift=clamp(elo.diff/400,-0.35,0.35);
+  lambdaH*=Math.exp(eloShift*0.22); lambdaA*=Math.exp(-eloShift*0.18);
+  if(av?.home?.length) lambdaH*=Math.max(0.78,1-0.035*av.home.length);
+  if(av?.away?.length) lambdaA*=Math.max(0.78,1-0.035*av.away.length);
+  lambdaH=clamp(lambdaH,0.25,3.8); lambdaA=clamp(lambdaA,0.20,3.5);
+  const seedBase=Math.abs(hashString(`${c.home}|${c.away}`))>>>0, rngState={value:seedBase||123456789};
+  let hWin=0,draw=0,aWin=0,over25=0,over35=0,btts=0, total=0;
+  for(let i=0;i<iterations;i++){
+    const hg=poissonSample(lambdaH,()=>seededRandom(rngState));
+    const ag=poissonSample(lambdaA,()=>seededRandom(rngState));
+    const t=hg+ag; total+=t;
+    if(hg>ag)hWin++; else if(hg===ag)draw++; else aWin++;
+    if(t>=3)over25++; if(t>=4)over35++; if(hg>0&&ag>0)btts++;
+  }
+  return {iterations,historicalSample,quality:historicalSample>=8?"alta":historicalSample>=3?"media":"baseline",lambdaH,lambdaA,eloHome:round(elo.homeElo),eloAway:round(elo.awayElo),prob:{"1":hWin/iterations*100,"X":draw/iterations*100,"2":aWin/iterations*100,"Over 2.5":over25/iterations*100,"Under 2.5":(1-over25/iterations)*100,"Over 3.5":over35/iterations*100,"Under 3.5":(1-over35/iterations)*100,"Goal":btts/iterations*100,"No Goal":(1-btts/iterations)*100},expectedGoals:total/iterations};
+}
+function hashString(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
+
 function applyEnrichedScore(c, av, pred) {
   // V2: separiamo la probabilita' del mercato dalla probabilita' del modello.
   // L'errore della versione precedente era lasciare c.prob quasi invariata
@@ -757,14 +856,17 @@ function applyEnrichedScore(c, av, pred) {
   const freqProb = Number.isFinite(c.pFreq) ? clamp(c.pFreq, 0, 100) : null;
   const predScore = predictionComponent(c.market, pred, c.home, c.away);
   const predictionProb = predScore != null ? clamp(predScore, 0, 100) : null;
+  const mc = c.monteCarlo || null;
+  const mcProb = mc?.prob?.[c.market] != null && Number(mc.historicalSample||0) >= 3 ? clamp(Number(mc.prob[c.market]),0,100) : null;
 
   // Costruiamo la probabilita' finale dando piu' spazio alle evidenze di gioco
   // quando esistono. Il mercato resta un prior importante, non il pilota unico.
   const sources = [];
-  if (statProb != null) sources.push([40, statProb, "storico/modello gol"]);
-  if (predictionProb != null) sources.push([35, predictionProb, "prediction API"]);
-  if (freqProb != null) sources.push([10, freqProb, "frequenza storica"]);
-  if (marketProb != null) sources.push([15, marketProb, "mercato"]);
+  if (mcProb != null) sources.push([35, mcProb, "Monte Carlo + ELO"]);
+  if (statProb != null) sources.push([30, statProb, "storico/modello gol"]);
+  if (predictionProb != null) sources.push([20, predictionProb, "prediction API"]);
+  if (freqProb != null) sources.push([5, freqProb, "frequenza storica"]);
+  if (marketProb != null) sources.push([10, marketProb, "mercato"]);
 
   let modelProb;
   if (sources.length) {
@@ -824,7 +926,8 @@ function applyEnrichedScore(c, av, pred) {
   const homeSample = Number(c?._homeMatches?.length || 0);
   const awaySample = Number(c?._awayMatches?.length || 0);
   const usableSample = Math.min(Math.max(homeSample,awaySample),10);
-  if (statProb != null) evidence += 40;       // modello statistico da storico gol
+  if (mcProb != null) evidence += 20;        // simulazione indipendente locale (10.000 iterazioni)
+  if (statProb != null) evidence += 35;       // modello statistico da storico gol
   if (usableSample >= 5) evidence += 5;       // campione recente sufficiente
   if (freqProb != null) evidence += 10;      // frequenze osservate
   if (Number.isFinite(c.form)) evidence += 10; // forma recente
@@ -861,7 +964,10 @@ function applyEnrichedScore(c, av, pred) {
     modelAgreement: round(agreementScore),
     scoreComponents: components.map(x=>({name:x[2],weight:x[0],value:round(x[1])})),
     absence: absenceScore == null ? 0 : round(absenceScore),
-    pred: predictionProb == null ? 0 : round(predictionProb)
+    pred: predictionProb == null ? 0 : round(predictionProb),
+    monteCarlo: mc || null,
+    eloHome: mc?.eloHome ?? null,
+    eloAway: mc?.eloAway ?? null
   };
 }
 
