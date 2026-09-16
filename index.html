@@ -462,11 +462,11 @@ body[data-theme="light"] .pending{background:#fff8e5;color:#775900}
 </section>
 
 <div class="today-layout">
-<section class="card tab-section active" data-section="today"><h2>🌍 Campionato</h2><select id="leagueSelect" class="league-selector" aria-label="Seleziona campionato"></select><p class="small"><b>“Tutti i campionati selezionati”</b> cerca nel perimetro scelto per AI DEL PALLONE: massime serie europee, principali coppe UEFA, massime serie sudamericane, MLS e J1 League. Puoi anche scegliere un singolo campionato dal menu.</p></section>
+<section class="card tab-section active" data-section="today"><h2>🌍 Campionato</h2><select id="leagueSelect" class="league-selector" aria-label="Seleziona campionato"></select><p class="small"><b>“Tutti i campionati selezionati”</b> cerca nel perimetro scelto per AI DEL PALLONE: principali campionati europei, coppe UEFA, principali campionati sudamericani, MLS e J1 League. Puoi anche scegliere un singolo campionato dal menu.</p></section>
 
 <section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="market"><option value="all">Tutti i mercati</option><option value="btts">Goal / No Goal</option><option value="totals">Over / Under 2.5 + 3.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Per ridurre le chiamate API, i risultati utili vengono memorizzati per 15 minuti. Le quote mostrano anche il bookmaker da cui sono state lette. Una nuova analisi usa la cache finché è valida.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
-<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le 3 migliori del giorno</h2><p class="small top3-subtitle">Probabilità stimata, qualità dell'analisi e valore della quota vengono combinati per ordinare gli scenari disponibili.</p></div><div id="dailySummaryBtnWrap" style="display:none"><button class="secondary top3-summary-btn" onclick="shareDailySummaryImage()">📸 Riepilogo del giorno</button></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">📊</span><div><b>55%</b><small>Probabilità stimata</small></div></div><div class="top3-method-item"><span class="method-icon">🧠</span><div><b>30%</b><small>Qualità dell'analisi</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>15%</b><small>Valore della quota</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🛡️</span><div><b>1 partita = 1 esito</b><small>Nel TOP 3 non ripetiamo la stessa gara</small></div></div></div></section>
+<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le 3 migliori del giorno</h2><p class="small top3-subtitle">Probabilità stimata, qualità dell'analisi e valore della quota vengono combinati per ordinare gli scenari disponibili.</p></div><div id="dailySummaryBtnWrap" style="display:none"><button class="secondary top3-summary-btn" onclick="shareDailySummaryImage()">📸 Riepilogo del giorno</button></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">📊</span><div><b>45%</b><small>Probabilità stimata</small></div></div><div class="top3-method-item"><span class="method-icon">🧠</span><div><b>40%</b><small>Qualità dell'analisi</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>15%</b><small>Valore della quota</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🛡️</span><div><b>1 partita = 1 esito</b><small>Nel TOP 3 non ripetiamo la stessa gara</small></div></div></div></section>
 
 <section class="card tab-section active" data-section="today"><h2>📊 Classifica candidati</h2><div id="candidates" class="empty">Nessun candidato.</div></section>
 
@@ -503,7 +503,7 @@ let supabaseClient=null,currentUser=null,syncBusy=false;
 const $=id=>document.getElementById(id);
 const leagueGroups=[
   {label:"🇪🇺 Europa — principali campionati",items:[
-    ["🇮🇹 Serie A","SA"],["🏴 Premier League","PL"],["🇪🇸 LaLiga","PD"],["🇩🇪 Bundesliga","BL1"],["🇫🇷 Ligue 1","FL1"],["🇵🇹 Primeira Liga","PPL"],["🇳🇱 Eredivisie","DED"],["🇧🇪 Jupiler Pro League","BEL1"],["🏴 Scottish Premiership","SCO1"],["🇦🇹 Bundesliga Austria","AUT1"],["🇨🇭 Super League Svizzera","SUI1"],["🇹🇷 Süper Lig","TUR1"],["🇬🇷 Super League Grecia","GRE1"],["🇩🇰 Superliga Danimarca","DEN1"],["🇸🇪 Allsvenskan","SWE1"],["🇳🇴 Eliteserien","NOR1"],["🇵🇱 Ekstraklasa","POL1"],["🇨🇿 Czech First League","CZE1"],["🇭🇷 HNL Croazia","CRO1"],["🇷🇸 Super Liga Serbia","SRB1"],["🇷🇴 Liga 1 Romania","ROU1"],["🇺🇦 Premier League Ucraina","UKR1"],["🇭🇺 NB I Ungheria","HUN1"],["🇸🇰 Super Liga Slovacchia","SVK1"],["🇸🇮 Prva Liga Slovenia","SVN1"],["🇧🇬 First League Bulgaria","BUL1"],["🇨🇾 First Division Cipro","CYP1"],["🇮🇱 Premier League Israele","ISR1"],["🇮🇪 Premier Division Irlanda","IRL1"],["🇮🇸 Besta-deild Islanda","ISL1"],["🇫🇮 Veikkausliiga Finlandia","FIN1"],["🇧🇦 Premier League Bosnia","BIH1"],["🇦🇱 Kategoria Superiore Albania","ALB1"],["🇲🇰 First League Macedonia del Nord","MKD1"],["🇬🇪 Erovnuli Liga Georgia","GEO1"],["🇦🇲 Premier League Armenia","ARM1"],["🇦🇿 Premier League Azerbaigian","AZE1"],["🇲🇩 Super Liga Moldavia","MDA1"],["🇲🇹 Premier League Malta","MLT1"],["🏴 Cymru Premier Galles","WAL1"],["🇬🇧 Premiership Irlanda del Nord","NIR1"],["🇪🇪 Meistriliiga Estonia","EST1"],["🇱🇻 Virsliga Lettonia","LAT1"],["🇱🇹 A Lyga Lituania","LTU1"],["🇱🇺 National Division Lussemburgo","LUX1"]]},
+    ["🇮🇹 Serie A","SA"],["🏴 Premier League","PL"],["🇪🇸 LaLiga","PD"],["🇩🇪 Bundesliga","BL1"],["🇫🇷 Ligue 1","FL1"],["🇵🇹 Primeira Liga","PPL"],["🇳🇱 Eredivisie","DED"],["🇧🇪 Jupiler Pro League","BEL1"],["🏴 Scottish Premiership","SCO1"],["🇦🇹 Bundesliga Austria","AUT1"],["🇨🇭 Super League Svizzera","SUI1"],["🇹🇷 Süper Lig","TUR1"],["🇬🇷 Super League Grecia","GRE1"],["🇩🇰 Superliga Danimarca","DEN1"],["🇸🇪 Allsvenskan","SWE1"],["🇳🇴 Eliteserien","NOR1"],["🇵🇱 Ekstraklasa","POL1"],["🇨🇿 Czech First League","CZE1"],["🇭🇷 HNL Croazia","CRO1"],["🇷🇸 Super Liga Serbia","SRB1"],["🇷🇴 Liga 1 Romania","ROU1"],["🇺🇦 Premier League Ucraina","UKR1"],["🇭🇺 NB I Ungheria","HUN1"],["🇸🇰 Super Liga Slovacchia","SVK1"]]},
   {label:"🏆 Coppe UEFA",items:[["🏆 Champions League","CL"],["🟠 Europa League","EL"],["🟢 Conference League","ECL"]]},
   {label:"🌎 Sudamerica — massime serie",items:[["🇧🇷 Brasileirão Serie A","BRA1"],["🇦🇷 Liga Profesional Argentina","ARG1"],["🇨🇴 Primera A Colombia","COL1"],["🇨🇱 Primera División Cile","CHI1"],["🇺🇾 Primera División Uruguay","URU1"],["🇪🇨 LigaPro Ecuador","ECU1"],["🇵🇪 Liga 1 Perù","PER1"],["🇵🇾 Primera División Paraguay","PAR1"],["🇧🇴 División Profesional Bolivia","BOL1"],["🇻🇪 Primera División Venezuela","VEN1"]]},
   {label:"🌍 Altri mercati selezionati",items:[["🇺🇸 MLS","MLS1"],["🇯🇵 J1 League","JPN1"]]}
@@ -921,7 +921,7 @@ function scoreCandidate(x){
   const prob=Number.isFinite(Number(x.prob))?Number(x.prob):50;
   const analysis=Number.isFinite(Number(x.analysisSupport))?Number(x.analysisSupport):0;
   const edgeValue=Number.isFinite(edge) ? Math.max(0,Math.min(100,50+50*Math.tanh(edge/20))) : 50;
-  const topSelectionScore=prob*0.55 + analysis*0.30 + edgeValue*0.15;
+  const topSelectionScore=prob*0.45 + analysis*0.40 + edgeValue*0.15;
   return {...x,implied,edge,score,topSelectionScore};
 }
 const API_CACHE_PREFIX='pickDelGiorno.apiCache.v5.';
@@ -1011,8 +1011,8 @@ function render(cs){
  }
  // TOP 1/2/3: niente soglia rigida che possa lasciare la sezione vuota.
  // Prima privilegiamo gli scenari con analisi almeno discreta (>=55/100); se non bastano,
- // completiamo il TOP 3 con i migliori candidati disponibili. L'ordine interno usa:
- // PROBABILITÀ 55% → ANALISI 30% → EDGE 15%.
+ // selezioniamo solo candidati con analisi almeno 55/100. L'ordine interno usa:
+ // PROBABILITÀ 45% → ANALISI 40% → EDGE 15%.
  const picks=[];const usedMatch=new Set();const exact=new Set();
  const usable=[...cs].filter(v=>{
    const key=`${v.fixtureId||''}|${v.market||''}`;
@@ -1031,7 +1031,10 @@ function render(cs){
  });
  const matchKey=v=>`${String(v.home||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}|${String(v.away||'').toLowerCase().normalize('NFD').replace(/\p{M}/gu,'').replace(/[^a-z0-9]+/g,'')}`;
  const preferred=usable.filter(v=>(Number(v.analysisSupport)||0)>=55);
- const selectionPool=preferred.length>=3?preferred:usable;
+ // Gate di affidabilità: una probabilità alta basata quasi solo sul mercato
+ // non entra nel TOP 3. Se non ci sono almeno tre gare con dati sufficienti,
+ // mostriamo solo quelle realmente analizzabili.
+ const selectionPool=preferred;
  for(const v of selectionPool){
    if(picks.length>=3)break;
    const mk=matchKey(v);
@@ -1068,8 +1071,8 @@ function render(cs){
  renderAIPicks(picks);
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
  const notice=picks.length<3
-   ?`<div class="top3-notice empty">🟡 Sono disponibili ${picks.length} scenari analizzabili. Non ci sono abbastanza partite distinte per completare il TOP 3.</div>`
-   :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (55%), qualità dell'analisi (30%) e valore della quota/edge (15%). Se i dati analitici sono limitati, il sistema lo segnala senza escludere automaticamente la partita.</div>`;
+   ?`<div class="top3-notice empty">🟡 Sono disponibili ${picks.length} scenari con analisi almeno 55/100. Le altre partite sono state escluse dal TOP 3 perché i dati disponibili non sono sufficienti.</div>`
+   :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (45%), qualità dell'analisi (40%) e valore della quota/edge (15%). Le partite con analisi sotto 55/100 non entrano nella selezione.</div>`;
  $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
  /* Loghi TOP: nessun recupero automatico durante il render. Usa solo quelli già presenti nei dati. */
  $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
