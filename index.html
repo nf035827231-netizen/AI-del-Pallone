@@ -924,7 +924,12 @@ function scoreCandidate(x){
   const topSelectionScore=prob*0.45 + analysis*0.40 + edgeValue*0.15;
   return {...x,implied,edge,score,topSelectionScore};
 }
-const API_CACHE_PREFIX='pickDelGiorno.apiCache.v8.';
+const API_CACHE_PREFIX='pickDelGiorno.apiCache.v9.';
+// Migrazione: elimina le cache delle versioni precedenti, che potevano contenere
+// candidati ormai esclusi dai nuovi filtri.
+try{
+  for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);if(k&&k.startsWith('pickDelGiorno.apiCache.'))localStorage.removeItem(k);}
+}catch{}
 const API_CACHE_TTL=15*60*1000;
 function apiCacheKey(){return API_CACHE_PREFIX+JSON.stringify({date:$("date").value,leagues:$("leagueSelect").value,market:$("market").value||"all"})}
 function readApiCache(){try{const x=JSON.parse(localStorage.getItem(apiCacheKey())||'null');if(!x)return null;if(Date.now()-x.savedAt>API_CACHE_TTL){localStorage.removeItem(apiCacheKey());return null;}return x.data}catch{return null}}
@@ -946,13 +951,14 @@ async function run(){
  const oldRunText=runBtn?.textContent||"🔎 Analizza dati + statistiche";
  if(runBtn){runBtn.disabled=true;runBtn.textContent="⏳ Analisi in corso…";}
  const cached=readApiCache();
- if(cached){
+ if(cached && Array.isArray(cached.candidates) && cached.candidates.length){
    status("🟢 Dati già scaricati · uso cache (nessuna nuova chiamata API)","ok");
    renderLive(cached.liveFixtures||[]);
    const cs=(cached.candidates||[]).map(scoreCandidate).sort((a,b)=>b.score-a.score);
    render(cs);
    if(runBtn){runBtn.disabled=false;runBtn.textContent=oldRunText;} return;
  }
+ if(cached) clearCurrentApiCache();
  status("🔄 Recupero quote e statistiche…");
  try{
   const q=new URLSearchParams({date:$("date").value,leagues:$("leagueSelect").value,market:$("market").value || "all"});
@@ -1031,10 +1037,11 @@ function render(cs){
  });
  const matchKey=v=>`${String(v.home||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}|${String(v.away||'').toLowerCase().normalize('NFD').replace(/\p{M}/gu,'').replace(/[^a-z0-9]+/g,'')}`;
  const preferred=usable.filter(v=>(Number(v.analysisSupport)||0)>=45);
- // Gate di affidabilità: una probabilità alta basata quasi solo sul mercato
- // non entra nel TOP 3. Se non ci sono almeno tre gare con dati sufficienti,
- // mostriamo solo quelle realmente analizzabili.
- const selectionPool=preferred;
+ const fallback=usable.filter(v=>{const a=Number(v.analysisSupport)||0;return a>=35 && a<45;});
+ // Se esistono almeno tre scenari con analisi >=45 usiamo solo quelli.
+ // Se sono meno di tre, completiamo con scenari >=35: così il TOP 3 non resta
+ // vuoto per una soglia troppo rigida, ma non accetta comunque analisi debolissime.
+ const selectionPool=preferred.length>=3 ? preferred : [...preferred,...fallback];
  for(const v of selectionPool){
    if(picks.length>=3)break;
    const mk=matchKey(v);
@@ -1065,17 +1072,17 @@ function render(cs){
    const strength=topScore>=70?'Alta':topScore>=60?'Media':'Bassa';
    const analysisLevel=analysis>=70?'Forte':analysis>=55?'Discreta':'Limitata';
    const analysisClass=analysis>=70?'ok':analysis>=55?'warn':'muted';
-   return `<div class="pick" style="margin-bottom:${i<picks.length-1?10:0}px"><div class="pick-head"><span class="tag">${i===0?'⭐ TOP 1':i===1?'🥈 TOP 2':'🥉 TOP 3'}</span>${kLabel?`<span class="bet-kickoff">📅 ${kLabel}</span>`:''}<span class="confidence-badge ${strength.toLowerCase()}">${strength}</span></div><div class="matchup"><div class="team"><div class="logo-wrap">${logoHtml(x.homeLogo,x.home)}</div><b>${esc(x.home)}</b></div><div class="vs">VS</div><div class="team"><div class="logo-wrap">${logoHtml(x.awayLogo,x.away)}</div><b>${esc(x.away)}</b></div></div><div class="market-row"><div class="market">${esc(x.market)}</div><div class="odds-big">${x.odds.toFixed(2)} <small>${esc(x.bookmaker||'fonte quota')}</small></div></div><div class="reason"><b>Perché?</b> ${esc(x.reason||'La scelta nasce dalle caratteristiche della partita.')}</div>${x.fieldAnalysis?.tactical?`<div class="field-box"><div class="field-title">🧠 Lettura del match</div>${esc(x.fieldAnalysis.tactical)}</div>`:''}${x.fieldAnalysis?.warnings?.length?`<div class="warning-box"><div class="field-title">⚠️ Attenzione</div>${x.fieldAnalysis.warnings.map(w=>`<div>${esc(w)}</div>`).join('')}</div>`:''}${absenceHtml(x)}${analysis<45?`<div class="warning-box"><div class="field-title">⚠️ Qualità dell'analisi</div><div>Analisi ${analysis}/100 · ${analysisLevel}. I dati disponibili sono parziali: il candidato supera comunque la soglia minima di analisi richiesta.</div></div>`:''}<div class="confidence-line"><span>Fiducia <b>${strength}</b></span><span>Prob. ${prob.toFixed(1)}% · Analisi ${analysis}/100 · ${analysisLevel}</span></div><div class="metrics"><div class="metric"><span>Probabilità</span><b>${prob.toFixed(1)}%</b></div><div class="metric"><span>Edge</span><b>${edge>=0?'+':''}${edge.toFixed(1)}%</b></div><div class="metric"><span>Indice TOP</span><b>${topScore.toFixed(0)}/100</b></div></div><div class="bet-actions"><button onclick='selectAndShare(${JSON.stringify(x).replace(/'/g,"&#39;")},${i})'>➕ Seleziona e crea immagine</button><button class="secondary" style="width:auto;padding:10px 14px;flex:0 0 auto" onclick="shareCandidateImage(${i})">📸 Immagine</button></div></div>`;
+   return `<div class="pick" style="margin-bottom:${i<picks.length-1?10:0}px"><div class="pick-head"><span class="tag">${i===0?'⭐ TOP 1':i===1?'🥈 TOP 2':'🥉 TOP 3'}</span>${kLabel?`<span class="bet-kickoff">📅 ${kLabel}</span>`:''}<span class="confidence-badge ${strength.toLowerCase()}">${strength}</span></div><div class="matchup"><div class="team"><div class="logo-wrap">${logoHtml(x.homeLogo,x.home)}</div><b>${esc(x.home)}</b></div><div class="vs">VS</div><div class="team"><div class="logo-wrap">${logoHtml(x.awayLogo,x.away)}</div><b>${esc(x.away)}</b></div></div><div class="market-row"><div class="market">${esc(x.market)}</div><div class="odds-big">${x.odds.toFixed(2)} <small>${esc(x.bookmaker||'fonte quota')}</small></div></div><div class="reason"><b>Perché?</b> ${esc(x.reason||'La scelta nasce dalle caratteristiche della partita.')}</div>${x.fieldAnalysis?.tactical?`<div class="field-box"><div class="field-title">🧠 Lettura del match</div>${esc(x.fieldAnalysis.tactical)}</div>`:''}${x.fieldAnalysis?.warnings?.length?`<div class="warning-box"><div class="field-title">⚠️ Attenzione</div>${x.fieldAnalysis.warnings.map(w=>`<div>${esc(w)}</div>`).join('')}</div>`:''}${absenceHtml(x)}${analysis<45?`<div class="warning-box"><div class="field-title">⚠️ Qualità dell'analisi</div><div>Analisi ${analysis}/100 · ${analysisLevel}. I dati disponibili sono parziali: il modello lo mantiene solo quando non ci sono abbastanza scenari con analisi ≥45/100.</div></div>`:''}<div class="confidence-line"><span>Fiducia <b>${strength}</b></span><span>Prob. ${prob.toFixed(1)}% · Analisi ${analysis}/100 · ${analysisLevel}</span></div><div class="metrics"><div class="metric"><span>Probabilità</span><b>${prob.toFixed(1)}%</b></div><div class="metric"><span>Edge</span><b>${edge>=0?'+':''}${edge.toFixed(1)}%</b></div><div class="metric"><span>Indice TOP</span><b>${topScore.toFixed(0)}/100</b></div></div><div class="bet-actions"><button onclick='selectAndShare(${JSON.stringify(x).replace(/'/g,"&#39;")},${i})'>➕ Seleziona e crea immagine</button><button class="secondary" style="width:auto;padding:10px 14px;flex:0 0 auto" onclick="shareCandidateImage(${i})">📸 Immagine</button></div></div>`;
  }).join('');
  lastPicks=picks;
  renderAIPicks(picks);
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
  const notice=picks.length<3
-   ?`<div class="top3-notice empty">🟡 Sono disponibili ${picks.length} scenari con analisi almeno 45/100. Le altre partite sono state escluse dal TOP 3 perché i dati disponibili non sono sufficienti.</div>`
-   :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (45%), qualità dell'analisi (40%) e valore della quota/edge (15%). Le partite con analisi sotto 45/100 non entrano nella selezione.</div>`;
+   ?`<div class="top3-notice empty">🟡 Sono disponibili ${picks.length} scenari con analisi sufficiente (≥35/100). Il modello privilegia quelli con analisi ≥45/100.</div>`
+   :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (45%), qualità dell'analisi (40%) e valore della quota/edge (15%). Gli scenari sotto 35/100 non entrano nella selezione.</div>`;
  $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
  /* Loghi TOP: nessun recupero automatico durante il render. Usa solo quelli già presenti nei dati. */
- $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.filter(x=>Number(x.analysisSupport||0)>=45).slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
+ $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.filter(x=>Number(x.analysisSupport||0)>=35).slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
 }
 
 const ARCHIVE_KEY='pickDelGiorno.archive.v2';
