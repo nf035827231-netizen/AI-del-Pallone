@@ -227,6 +227,33 @@ body{font-size:18px}
   .card h2{font-size:19px}
   .small{font-size:13px}
 }
+/* v83 · TOP 3 inspired by the visual mockup */
+.top3-section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:14px}
+.top3-kicker{font-size:11px;letter-spacing:1.5px;font-weight:900;color:#d8bc63;margin-bottom:4px}
+.top3-section-head h2{font-size:30px;margin:0 0 3px!important;letter-spacing:-.7px}
+.top3-subtitle{margin:0!important;max-width:760px}
+.top3-summary-btn{width:auto!important;white-space:nowrap;padding:10px 14px!important;font-size:14px!important}
+.top3-method-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-top:16px;padding:14px 10px;border:1px solid #dbe4ef;border-radius:18px;background:linear-gradient(135deg,#f8fafc,#eef3f8);color:#182230}
+.top3-method-item{display:flex;align-items:center;gap:10px;padding:4px 16px;border-right:1px solid #dbe4ef;min-width:0}
+.top3-method-item:last-child{border-right:0}
+.method-icon{width:38px;height:38px;border-radius:12px;background:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;box-shadow:0 5px 14px rgba(20,35,55,.08);flex:0 0 auto}
+.top3-method-item b{display:block;font-size:20px;line-height:1.05;color:#1857c7}
+.top3-method-item small{display:block;color:#526176;font-size:12px;margin-top:3px;line-height:1.25}
+.top3-rule b{font-size:13px;color:#182230}
+.top3-rule small{font-size:11px}
+body[data-theme="dark"] .top3-method-strip{background:linear-gradient(135deg,#121d2e,#0e1725);border-color:#293a54;color:#f3f6fb}
+body[data-theme="dark"] .top3-method-item{border-color:#293a54}
+body[data-theme="dark"] .method-icon{background:#1b2638;box-shadow:none}
+body[data-theme="dark"] .top3-method-item small{color:#aebbd0}
+body[data-theme="dark"] .top3-method-item b{color:#8fb5ff}
+body[data-theme="dark"] .top3-rule b{color:#f3f6fb}
+@media(max-width:900px){.top3-method-strip{grid-template-columns:1fr 1fr}.top3-method-item:nth-child(2){border-right:0}.top3-method-item:nth-child(-n+2){border-bottom:1px solid #dbe4ef;padding-bottom:10px}.top3-method-item:nth-child(n+3){padding-top:10px}body[data-theme="dark"] .top3-method-item:nth-child(-n+2){border-bottom-color:#293a54}}
+@media(max-width:700px){.top3-section-head{align-items:stretch;flex-direction:column;gap:10px}.top3-section-head h2{font-size:25px}.top3-summary-btn{width:100%!important}.top3-method-strip{grid-template-columns:1fr 1fr}.top3-method-item{padding:8px 10px}.method-icon{width:32px;height:32px;font-size:17px}.top3-method-item b{font-size:17px}.top3-method-item small{font-size:11px}}
+/* v83 · premium social card */
+/* v81 TOP 3 layout */
+.top3-notice{grid-column:1/-1;margin:0 0 2px;padding:10px 14px;border-radius:12px;background:#f1f5fa;border:1px solid #dbe4ef;color:#617189;text-align:left;line-height:1.35}
+body[data-theme="light"] .top3-notice{background:#f5f8fc;border-color:#dce5ef;color:#63738a}
+@media (min-width:1100px){#pick>.pick{height:100%;box-sizing:border-box;display:flex;flex-direction:column}#pick>.pick .bet-actions{margin-top:auto}.pick .metrics{margin-top:10px}}
 @media(min-width:1100px){
   .hero .brand-copy p{font-size:13px}
   
@@ -439,7 +466,7 @@ body[data-theme="light"] .pending{background:#fff8e5;color:#775900}
 
 <section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="market"><option value="all">Tutti i mercati</option><option value="btts">Goal / No Goal</option><option value="totals">Over / Under 2.5 + 3.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Per ridurre le chiamate API, i risultati utili vengono memorizzati per 15 minuti. Le quote mostrano anche il bookmaker da cui sono state lette. Una nuova analisi usa la cache finché è valida.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
-<section class="card tab-section active" data-section="today"><h2>🏆 Le 3 migliori del giorno</h2><p class="small" style="margin-top:-6px;margin-bottom:12px">La prima è la scelta preferita del motore. Il TOP considera soprattutto la probabilità stimata (60%), poi la qualità dell'analisi (25%) e infine il valore della quota (15%).</p><div id="dailySummaryBtnWrap" style="display:none;margin-bottom:12px"><button class="secondary" onclick="shareDailySummaryImage()">📸 Immagine riepilogo del giorno</button></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div></section>
+<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le 3 migliori del giorno</h2><p class="small top3-subtitle">Probabilità stimata, qualità dell'analisi e valore della quota vengono combinati per ordinare gli scenari disponibili.</p></div><div id="dailySummaryBtnWrap" style="display:none"><button class="secondary top3-summary-btn" onclick="shareDailySummaryImage()">📸 Riepilogo del giorno</button></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">📊</span><div><b>55%</b><small>Probabilità stimata</small></div></div><div class="top3-method-item"><span class="method-icon">🧠</span><div><b>30%</b><small>Qualità dell'analisi</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>15%</b><small>Valore della quota</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🛡️</span><div><b>1 partita = 1 esito</b><small>Nel TOP 3 non ripetiamo la stessa gara</small></div></div></div></section>
 
 <section class="card tab-section active" data-section="today"><h2>📊 Classifica candidati</h2><div id="candidates" class="empty">Nessun candidato.</div></section>
 
@@ -524,6 +551,16 @@ function drawTeamBadge(ctx,img,name,cx,cy,r){
  ctx.strokeStyle='#26344b';ctx.lineWidth=4;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();
  if(!img){ctx.fillStyle='#e0b84a';ctx.font=`700 ${Math.round(r*0.7)}px -apple-system,sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText((name||'?').slice(0,2).toUpperCase(),cx,cy+4);}
 }
+function imageDateForPick(x){
+ const raw=x?.kickoff || x?.date || document.getElementById('date')?.value || '';
+ if(/^\d{4}-\d{2}-\d{2}$/.test(String(raw))) return String(raw);
+ if(raw){ const d=new Date(raw); if(!Number.isNaN(d.getTime())) return d.toISOString().slice(0,10); }
+ return new Date().toISOString().slice(0,10);
+}
+function safeImageFilePart(value){
+ return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/gi,'-').replace(/^-+|-+$/g,'').toLowerCase() || 'match';
+}
+
 async function shareDailySummaryImage(){
  if(!lastPicks||!lastPicks.length){alert('Esegui prima l’analisi per avere dei pronostici da riassumere.');return;}
  try{
@@ -581,7 +618,7 @@ async function shareDailySummaryImage(){
      if(!blob){alert('Non sono riuscito a generare l’immagine. Riprova.');return;}
      const url=URL.createObjectURL(blob);
      const a=document.createElement('a');
-     a.href=url;a.download=`ai-del-pallone-riepilogo-${new Date().toISOString().slice(0,10)}.png`;
+     a.href=url;a.download=`ai-del-pallone-riepilogo-${imageDateForPick(lastPicks[0])}.png`;
      document.body.appendChild(a);a.click();a.remove();
      URL.revokeObjectURL(url);
    },'image/png');
@@ -741,65 +778,67 @@ async function shareCandidateImage(i){
 // match -> giocata -> valore -> motivazione breve -> numeri.
 async function shareCandidateImageData(x){
  try{
-   // Social card nativa 4:5: nessuna compressione verticale degli elementi.
+   // Social card 4:5 (1080×1350): stile editoriale pulito, leggibile e adatto a Instagram.
    const W=1080,H=1350,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;
    const ctx=canvas.getContext('2d');ctx.textBaseline='alphabetic';
-   const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#071321');bg.addColorStop(.58,'#10213a');bg.addColorStop(1,'#07111f');
-   ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
-   const glow=ctx.createRadialGradient(540,650,80,540,650,620);glow.addColorStop(0,'rgba(255,128,171,.16)');glow.addColorStop(1,'rgba(255,128,171,0)');ctx.fillStyle=glow;ctx.fillRect(0,0,W,H);
-   ctx.save();ctx.globalAlpha=.12;ctx.strokeStyle='#ffffff';ctx.lineWidth=2;
-   for(let k=0;k<8;k++){ctx.beginPath();ctx.moveTo(0+k*155,300);ctx.lineTo(180+k*120,1350);ctx.stroke();}ctx.restore();
+   const bg=ctx.createLinearGradient(0,0,W,H);bg.addColorStop(0,'#f8fafc');bg.addColorStop(.52,'#eef3f8');bg.addColorStop(1,'#e7edf5');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+   const glow=ctx.createRadialGradient(850,160,20,850,160,520);glow.addColorStop(0,'rgba(245,196,70,.28)');glow.addColorStop(.45,'rgba(245,196,70,.08)');glow.addColorStop(1,'rgba(245,196,70,0)');ctx.fillStyle=glow;ctx.fillRect(0,0,W,H);
+   const pink=ctx.createRadialGradient(180,1160,10,180,1160,500);pink.addColorStop(0,'rgba(232,91,208,.13)');pink.addColorStop(1,'rgba(232,91,208,0)');ctx.fillStyle=pink;ctx.fillRect(0,0,W,H);
 
    const logo=await loadImageSafe(location.origin+'/logo-social.png');
-   if(logo)ctx.drawImage(logo,52,38,76,76);
-   ctx.textAlign='left';ctx.fillStyle='#f7f9fc';ctx.font='900 40px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',145,70);
-   ctx.fillStyle='#aebbd0';ctx.font='500 19px -apple-system,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',145,101);
-   ctx.textAlign='right';ctx.fillStyle='#ff80ab';ctx.font='italic 700 22px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',1025,68);
-
-   ctx.textAlign='left';ctx.fillStyle='#ff80ab';ctx.font='900 39px -apple-system,sans-serif';ctx.fillText('ESPERIMENTO STATISTICO AI',52,164);
-   ctx.fillStyle='#d8e2ee';ctx.font='500 21px -apple-system,sans-serif';ctx.fillText('Una lettura dei dati prima della partita',52,197);
+   if(logo)ctx.drawImage(logo,58,44,72,72);
+   ctx.textAlign='left';ctx.fillStyle='#172235';ctx.font='900 38px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',148,75);
+   ctx.fillStyle='#66758a';ctx.font='600 18px -apple-system,sans-serif';ctx.fillText('ANALISI · DATI · STATISTICHE',148,102);
+   ctx.textAlign='right';ctx.fillStyle='#9a7615';ctx.font='800 19px -apple-system,sans-serif';ctx.fillText('ESPERIMENTO AI',1022,66);
+   ctx.fillStyle='#66758a';ctx.font='500 15px -apple-system,sans-serif';ctx.fillText('Prima della partita',1022,91);
 
    let leagueLabel=x.leagueName||x.league||'CALCIO';
-   const leagueMap={SA:'SERIE A',PL:'PREMIER LEAGUE',PD:'LA LIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
+   const leagueMap={SA:'SERIE A',PL:'PREMIER LEAGUE',PD:'LALIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
    leagueLabel=leagueMap[x.leagueCode]||leagueLabel||'CALCIO';
-   let dateLabel='OGGI';
-   if(x.kickoff){try{const d=new Date(x.kickoff);dateLabel=d.toLocaleDateString('it-IT',{day:'2-digit',month:'short'}).toUpperCase()+' · '+d.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});}catch{}}
-   ctx.fillStyle='#0b1728';roundRect(ctx,52,225,976,285,28);ctx.fill();ctx.strokeStyle='#2f4159';ctx.lineWidth=2;roundRect(ctx,52,225,976,285,28);ctx.stroke();
-   ctx.fillStyle='#ff80ab';ctx.font='900 19px -apple-system,sans-serif';ctx.textAlign='left';ctx.fillText(String(leagueLabel).toUpperCase(),78,258);
-   ctx.fillStyle='#aebbd0';ctx.textAlign='right';ctx.fillText(dateLabel,1002,258);
+   let dateLabel='DATA DA ANALIZZARE';
+   if(x.kickoff){try{const d=new Date(x.kickoff);dateLabel=d.toLocaleDateString('it-IT',{day:'2-digit',month:'long'}).replace(/^./,c=>c.toUpperCase())+' · '+d.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});}catch{}}
+
+   // Match header
+   ctx.fillStyle='#ffffff';ctx.strokeStyle='#d8e1eb';ctx.lineWidth=2;roundRect(ctx,48,142,984,330,28);ctx.fill();ctx.stroke();
+   ctx.textAlign='left';ctx.fillStyle='#245bc7';ctx.font='900 17px -apple-system,sans-serif';ctx.fillText(String(leagueLabel).toUpperCase(),80,180);
+   ctx.textAlign='right';ctx.fillStyle='#66758a';ctx.font='700 17px -apple-system,sans-serif';ctx.fillText(dateLabel,1000,180);
    const homeImg=await loadImageSafe(x.homeLogo),awayImg=await loadImageSafe(x.awayLogo);
-   drawTeamBadge(ctx,homeImg,x.home,315,350,78);drawTeamBadge(ctx,awayImg,x.away,765,350,78);
-   ctx.textAlign='center';ctx.fillStyle='#ff80ab';ctx.font='900 34px -apple-system,sans-serif';ctx.fillText('VS',540,360);
-   ctx.fillStyle='#f7f9fc';ctx.font='800 25px -apple-system,sans-serif';wrapCanvasText(ctx,x.home,315,455,300,29,2);wrapCanvasText(ctx,x.away,765,455,300,29,2);
+   drawTeamBadge(ctx,homeImg,x.home,300,285,72);drawTeamBadge(ctx,awayImg,x.away,780,285,72);
+   ctx.textAlign='center';ctx.fillStyle='#8b98aa';ctx.font='900 25px -apple-system,sans-serif';ctx.fillText('VS',540,294);
+   ctx.fillStyle='#182230';ctx.font='850 24px -apple-system,sans-serif';wrapCanvasText(ctx,x.home,300,386,330,29,2);wrapCanvasText(ctx,x.away,780,386,330,29,2);
 
-   ctx.fillStyle='#f7f9fc';roundRect(ctx,90,545,900,275,28);ctx.fill();
-   ctx.textAlign='left';ctx.fillStyle='#ff80ab';ctx.font='900 22px -apple-system,sans-serif';ctx.fillText('SCENARIO SEGNALATO DALL’AI',125,585);
-   ctx.fillStyle='#111722';ctx.font='900 44px -apple-system,sans-serif';ctx.textAlign='center';wrapCanvasText(ctx,String(x.market||'Scenario statistico'),540,650,790,50,2);
-   ctx.fillStyle='#69758a';ctx.font='700 18px -apple-system,sans-serif';ctx.fillText('PROBABILITÀ STIMATA',540,735);
-   ctx.fillStyle='#ff80ab';ctx.font='900 63px -apple-system,sans-serif';ctx.fillText(`${Number(x.prob||0).toFixed(1)}%`,540,795);
+   // Scenario card
+   ctx.fillStyle='#182230';roundRect(ctx,72,500,936,310,28);ctx.fill();
+   ctx.textAlign='center';ctx.fillStyle='#f5c446';ctx.font='900 18px -apple-system,sans-serif';ctx.fillText('SCENARIO INDICATO DALL’AI',540,540);
+   ctx.fillStyle='#ffffff';ctx.font='900 49px -apple-system,sans-serif';wrapCanvasText(ctx,String(x.market||'Scenario statistico'),540,612,820,55,2);
+   ctx.fillStyle='#aebbd0';ctx.font='700 17px -apple-system,sans-serif';ctx.fillText('PROBABILITÀ STIMATA',540,700);
+   ctx.fillStyle='#f5c446';ctx.font='900 70px -apple-system,sans-serif';ctx.fillText(`${Number(x.prob||0).toFixed(1)}%`,540,774);
 
-   const odds=Number(x.odds);ctx.fillStyle='#d8e2ee';ctx.textAlign='left';ctx.font='700 20px -apple-system,sans-serif';
-   ctx.fillText(`Quota analizzata: ${Number.isFinite(odds)&&odds>0?odds.toFixed(2):'—'}`,80,865);
-   if(Number.isFinite(x.edge))ctx.textAlign='right',ctx.fillText(`Edge stimato: ${x.edge>=0?'+':''}${Number(x.edge).toFixed(1)}%`,1000,865);
+   // Quick metrics
+   function metricBox(x0,y0,w,label,value,accent){ctx.fillStyle='#ffffff';ctx.strokeStyle='#d8e1eb';ctx.lineWidth=1.5;roundRect(ctx,x0,y0,w,98,18);ctx.fill();ctx.stroke();ctx.textAlign='left';ctx.fillStyle='#66758a';ctx.font='700 15px -apple-system,sans-serif';ctx.fillText(label,x0+18,y0+29);ctx.fillStyle=accent||'#182230';ctx.font='900 28px -apple-system,sans-serif';ctx.fillText(value,x0+18,y0+68);}
+   const odds=Number(x.odds),edge=Number(x.edge),analysis=Number(x.analysisSupport);
+   metricBox(72,832,285,'QUOTA',Number.isFinite(odds)&&odds>0?odds.toFixed(2):'—','#9a7615');
+   metricBox(397,832,285,'EDGE',Number.isFinite(edge)?`${edge>=0?'+':''}${edge.toFixed(1)}%`:'—',edge>=0?'#16803c':'#c62828');
+   metricBox(722,832,286,'ANALISI',Number.isFinite(analysis)?`${analysis.toFixed(0)}/100`:'—','#245bc7');
 
-   ctx.fillStyle='#0b1728';roundRect(ctx,52,900,976,255,26);ctx.fill();
-   ctx.textAlign='left';ctx.fillStyle='#ff80ab';ctx.font='900 21px -apple-system,sans-serif';ctx.fillText('PERCHÉ L’AI LO SEGNALA?',80,938);
-   ctx.fillStyle='#f3f6fb';ctx.font='500 20px -apple-system,sans-serif';wrapCanvasText(ctx,x.reason||'Lo scenario è stato selezionato sulla base dei dati disponibili.',80,980,900,29,4);
-   ctx.fillStyle='#6f8097';ctx.font='500 17px -apple-system,sans-serif';ctx.fillText('Analisi statistica · nessuna garanzia di risultato',80,1125);
+   // Reason
+   ctx.fillStyle='#ffffff';ctx.strokeStyle='#d8e1eb';ctx.lineWidth=1.5;roundRect(ctx,72,950,936,220,24);ctx.fill();ctx.stroke();
+   ctx.textAlign='left';ctx.fillStyle='#245bc7';ctx.font='900 18px -apple-system,sans-serif';ctx.fillText('PERCHÉ L’AI LO SEGNALA',98,988);
+   ctx.fillStyle='#334155';ctx.font='500 19px -apple-system,sans-serif';wrapCanvasText(ctx,x.reason||'Lo scenario è stato selezionato sulla base dei dati disponibili.',98,1030,880,28,4);
+   ctx.fillStyle='#7a8799';ctx.font='600 14px -apple-system,sans-serif';ctx.fillText('Analisi statistica · nessuna garanzia di risultato',98,1140);
 
-   ctx.textAlign='center';ctx.fillStyle='#ffffff';ctx.font='italic 800 27px -apple-system,sans-serif';ctx.fillText('Dati oggi. Risultati domani.',540,1210);
-   ctx.fillStyle='#ff80ab';ctx.font='900 21px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',540,1245);
-   ctx.fillStyle='#9aa9bd';ctx.font='500 16px -apple-system,sans-serif';ctx.fillText('Esperimento statistico · gioco responsabile · vietato ai minori',540,1280);
+   ctx.textAlign='center';ctx.fillStyle='#182230';ctx.font='italic 800 23px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',540,1222);
+   ctx.fillStyle='#245bc7';ctx.font='900 18px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',540,1252);
+   ctx.fillStyle='#7a8799';ctx.font='500 14px -apple-system,sans-serif';ctx.fillText('Esperimento statistico · gioco responsabile · vietato ai minori',540,1280);
 
    await new Promise(resolve=>canvas.toBlob(blob=>{
      if(!blob){alert('Non sono riuscito a generare l’immagine. Riprova.');resolve();return;}
      const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
-     a.download=`ai-del-pallone-esperimento-${(x.home+'-'+x.away).replace(/[^a-z0-9àèéìòù_-]+/gi,'-').toLowerCase()}-4x5.png`;
+     a.download=`ai-del-pallone-${imageDateForPick(x)}-${safeImageFilePart(x.home)}-${safeImageFilePart(x.away)}-4x5.png`;
      document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);resolve();
    },'image/png'));
  }catch(e){console.error(e);alert('Non sono riuscito a generare l’immagine. Riprova tra poco.');}
 }
-
 function switchTab(tab){
  currentTab=tab;
  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
@@ -956,10 +995,10 @@ function render(cs){
  renderAIPicks(picks);
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
  const notice=picks.length<3
-   ?`<div class="empty">🟡 Sono disponibili ${picks.length} scenari analizzabili. Non ci sono abbastanza partite distinte per completare il TOP 3.</div>`
-   :`<div class="small" style="margin:8px 0 14px;color:#718198">ℹ️ TOP 3 ordinato per probabilità stimata (55%), qualità dell'analisi (30%) e valore della quota/edge (15%). Se i dati analitici sono limitati, il sistema lo segnala senza escludere automaticamente la partita.</div>`;
+   ?`<div class="top3-notice empty">🟡 Sono disponibili ${picks.length} scenari analizzabili. Non ci sono abbastanza partite distinte per completare il TOP 3.</div>`
+   :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (55%), qualità dell'analisi (30%) e valore della quota/edge (15%). Se i dati analitici sono limitati, il sistema lo segnala senza escludere automaticamente la partita.</div>`;
  $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
- $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Score</th></tr>'+cs.slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${x.score.toFixed(0)}</td></tr>`).join("")+'</table></div>';
+ $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
 }
 
 const ARCHIVE_KEY='pickDelGiorno.archive.v2';
