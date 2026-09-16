@@ -815,7 +815,12 @@ function applyEnrichedScore(c, av, pred) {
   // non il numero di endpoint interrogati. Un modello statistico Poisson
   // costruito su uno storico reale è già una base analitica utilizzabile;
   // fonti indipendenti aggiungono robustezza.
-  let evidence = 0;
+  // Anche quando i provider statistici non hanno una scheda completa della partita,
+  // la quota contiene comunque un'informazione quantitativa utile come baseline.
+  // Non la trattiamo come analisi forte: vale solo 20 punti e viene sempre mostrata
+  // come "Limitata". In questo modo la classifica non resta vuota solo perché una
+  // competizione ha copertura statistica parziale.
+  let evidence = Number.isFinite(Number(c.odds)) ? 20 : 0; // baseline mercato
   if (statProb != null) evidence += 45;       // modello statistico da storico gol
   if (freqProb != null) evidence += 10;      // frequenze osservate
   if (Number.isFinite(c.form)) evidence += 10; // forma recente
