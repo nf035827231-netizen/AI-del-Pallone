@@ -981,7 +981,7 @@ function render(cs){
    const team=(name,rows)=>rows?.length?`<div class="absence-team"><b>${esc(name)}:</b> ${rows.slice(0,5).map(a=>`${esc(a.player)} <span class="pill">${esc(a.status||'indisponibile')}</span>${a.reason&&!['squalificato','infortunato','in dubbio','indisponibile'].includes(a.status)?` <span class="small">${esc(a.reason)}</span>`:''}`).join(', ')}</div>`:'';
    return `<div class="absence-box"><div class="absence-title">🏥 Assenze importanti</div>${team(x.home,x.availability.home)}${team(x.away,x.availability.away)}</div>`;
  };
- const logoHtml=(url,name)=>`<img class="team-logo" src="${esc(url||'')}" alt="Stemma ${esc(name)}" loading="lazy" style="display:${url?'block':'none'}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="team-logo-fallback" style="display:${url?'none':'flex'}">${esc((name||'?').slice(0,2).toUpperCase())}</span>`;
+ const logoHtml=(url,name)=>`<img class="team-logo" data-pick-logo="${url?'ready':'missing'}" data-team-name="${esc(name||'')}" src="${esc(url||'')}" alt="Stemma ${esc(name)}" loading="lazy" style="display:${url?'block':'none'}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="team-logo-fallback" style="display:${url?'none':'flex'}">${esc((name||'?').slice(0,2).toUpperCase())}</span>`;
  const cards=picks.map((x,i)=>{
    const kMs=x.kickoff?new Date(x.kickoff).getTime():NaN;
    const kLabel=Number.isFinite(kMs)?new Date(kMs).toLocaleDateString('it-IT',{day:'2-digit',month:'short'})+' · '+new Date(kMs).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'}):'';
@@ -998,6 +998,7 @@ function render(cs){
    ?`<div class="top3-notice empty">🟡 Sono disponibili ${picks.length} scenari analizzabili. Non ci sono abbastanza partite distinte per completare il TOP 3.</div>`
    :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (55%), qualità dell'analisi (30%) e valore della quota/edge (15%). Se i dati analitici sono limitati, il sistema lo segnala senza escludere automaticamente la partita.</div>`;
  $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
+ if(picks.length) hydrateTopPickLogos();
  $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
 }
 
@@ -1323,27 +1324,53 @@ function betLogoHtml(url,name,betId,role){
  const attrs=`data-team-logo="${url?'ready':'missing'}" data-team-name="${esc(name||'')}" data-team-role="${esc(role||'')}" data-bet-id="${esc(betId||'')}"`;
  return url?`<img class="bet-team-logo" ${attrs} src="${esc(url)}" alt="Stemma ${esc(name||'squadra')}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="bet-team-fallback" style="display:none" data-team-fallback="1">${initial}</span>`:`<img class="bet-team-logo" ${attrs} src="" alt="Stemma ${esc(name||'squadra')}" loading="lazy" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="bet-team-fallback" data-team-fallback="1">${initial}</span>`;
 }
+const TEAM_LOGO_CACHE_KEY='AIP_TEAM_LOGOS_V3';
+const TEAM_LOGO_REFRESH_MONTHS=2;
+function readTeamLogoCache(){try{return JSON.parse(localStorage.getItem(TEAM_LOGO_CACHE_KEY)||'{}')||{}}catch{return{}}}
+function writeTeamLogoCache(c){try{localStorage.setItem(TEAM_LOGO_CACHE_KEY,JSON.stringify(c))}catch{}}
+function logoCacheEntry(v){
+  if(!v)return null;
+  if(typeof v==='string') return {logo:v,savedAt:0,source:'legacy'};
+  return v;
+}
+function logoNeedsRefresh(entry){
+  if(!entry?.logo || !entry?.savedAt)return true;
+  const d=new Date(Number(entry.savedAt));
+  const next=new Date(d);
+  next.setMonth(next.getMonth()+TEAM_LOGO_REFRESH_MONTHS);
+  return Date.now()>=next.getTime();
+}
+async function fetchTeamLogoFresh(team){
+  try{
+    const r=await fetch('/api/team-logo?team='+encodeURIComponent(team)+'&v=3',{cache:'no-store'});
+    const d=await r.json();
+    const logo=d?.logo||null;
+    if(logo)return {logo,savedAt:Date.now(),source:d?.source||'api',resolvedName:d?.resolvedName||null,teamId:d?.teamId||null};
+  }catch{}
+  return null;
+}
 async function hydrateMissingBetLogos(){
- const nodes=[...document.querySelectorAll('img[data-team-logo="missing"]')];
+ const nodes=[...document.querySelectorAll('img[data-team-logo]')];
  if(!nodes.length)return;
- const cacheKey='AIP_TEAM_LOGOS_V1';
- let cache={};
- try{cache=JSON.parse(localStorage.getItem(cacheKey)||'{}')||{}}catch{}
+ const cache=readTeamLogoCache();
  const unique=[...new Set(nodes.map(n=>String(n.dataset.teamName||'').trim()).filter(Boolean))];
  for(const team of unique){
-   let logo=cache[team];
-   if(!logo){
-     try{
-       const r=await fetch('/api/team-logo?team='+encodeURIComponent(team)+'&v=2',{cache:'no-store'});
-       const d=await r.json();
-       logo=d?.logo||null;
-       if(!logo && d?.teamId) logo='https://media.api-sports.io/football/teams/'+encodeURIComponent(String(d.teamId))+'.png';
-       if(logo){cache[team]=logo;localStorage.setItem(cacheKey,JSON.stringify(cache));}
-     }catch{}
+   let entry=logoCacheEntry(cache[team]);
+   const currentNode=nodes.find(n=>n.dataset.teamName===team);
+   const currentLogo=currentNode?.getAttribute('src')||null;
+   let logo=entry?.logo||currentLogo||null;
+   if(!entry && currentLogo){
+     entry={logo:currentLogo,savedAt:Date.now(),source:'stored-bet'};
+     cache[team]=entry;
+     writeTeamLogoCache(cache);
    }
-   if(!logo)continue;
+   if(logoNeedsRefresh(entry)){
+     const fresh=await fetchTeamLogoFresh(team);
+     if(fresh){entry=fresh;cache[team]=entry;writeTeamLogoCache(cache);logo=entry.logo;}
+   }
    const teamNodes=nodes.filter(n=>n.dataset.teamName===team);
    for(const img of teamNodes){
+     if(!logo) continue;
      img.src=logo; img.dataset.teamLogo='ready'; img.style.display='block';
      const fallback=img.nextElementSibling; if(fallback)fallback.style.display='none';
      const id=img.dataset.betId, role=img.dataset.teamRole;
@@ -1354,6 +1381,37 @@ async function hydrateMissingBetLogos(){
    }
  }
 }
+async function hydrateTopPickLogos(){
+ const nodes=[...document.querySelectorAll('#pick img[data-pick-logo]')];
+ if(!nodes.length)return;
+ const cache=readTeamLogoCache();
+ const unique=[...new Set(nodes.map(n=>String(n.dataset.teamName||'').trim()).filter(Boolean))];
+ for(const team of unique){
+   let entry=logoCacheEntry(cache[team]);
+   const currentNode=nodes.find(n=>n.dataset.teamName===team);
+   const currentLogo=currentNode?.getAttribute('src')||null;
+   let logo=entry?.logo||currentLogo||null;
+   if(!entry && currentLogo){
+     entry={logo:currentLogo,savedAt:Date.now(),source:'stored-bet'};
+     cache[team]=entry;
+     writeTeamLogoCache(cache);
+   }
+   if(logoNeedsRefresh(entry)){
+     const fresh=await fetchTeamLogoFresh(team);
+     if(fresh){entry=fresh;cache[team]=entry;writeTeamLogoCache(cache);logo=entry.logo;}
+   }
+   if(!logo)continue;
+   nodes.filter(n=>n.dataset.teamName===team).forEach(img=>{
+     img.src=logo;img.dataset.pickLogo='ready';img.style.display='block';
+     const fallback=img.nextElementSibling;if(fallback)fallback.style.display='none';
+   });
+   lastPicks.forEach(x=>{
+     if(x.home===team)x.homeLogo=logo;
+     if(x.away===team)x.awayLogo=logo;
+   });
+ }
+}
+
 function selectedOutcomeLabel(market,home,away){
  const m=String(market||'').trim();
  const map={'No Goal':'Nogoal','Goal':'Goal','1 (Casa)':'1','X (Pareggio)':'X','2 (Trasferta)':'2'};
