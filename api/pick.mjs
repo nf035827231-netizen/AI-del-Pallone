@@ -811,15 +811,19 @@ function applyEnrichedScore(c, av, pred) {
 
   // Supporto analitico: non conta quante API abbiamo chiamato, ma quante
   // evidenze indipendenti abbiamo realmente a disposizione.
+  // QUALITÀ DELL'ANALISI: il punteggio misura la solidità dei dati disponibili,
+  // non il numero di endpoint interrogati. Un modello statistico Poisson
+  // costruito su uno storico reale è già una base analitica utilizzabile;
+  // fonti indipendenti aggiungono robustezza.
   let evidence = 0;
-  if (statProb != null) evidence += 30;
-  if (freqProb != null) evidence += 15;
-  if (Number.isFinite(c.form)) evidence += 15;
-  if (oneXTwoMatchup != null || venueScore != null) evidence += 10;
-  if (c.h2h?.sample >= 2) evidence += 5;
-  if (c.standingNote) evidence += 5;
-  if (predictionProb != null) evidence += 30;
-  if (absenceScore != null) evidence += 5;
+  if (statProb != null) evidence += 45;       // modello statistico da storico gol
+  if (freqProb != null) evidence += 10;      // frequenze osservate
+  if (Number.isFinite(c.form)) evidence += 10; // forma recente
+  if (oneXTwoMatchup != null || venueScore != null) evidence += 8; // casa/trasferta
+  if (c.h2h?.sample >= 2) evidence += 5;     // H2H con campione minimo
+  if (c.standingNote) evidence += 5;         // posizione significativa
+  if (predictionProb != null) evidence += 20; // modello indipendente API-Football
+  if (absenceScore != null) evidence += 5;   // disponibilità rosa
   const analysisSupport = clamp(evidence, 0, 100);
 
   // Penalita' di disaccordo: se due modelli seri sono lontani, la partita non
