@@ -1,4 +1,4 @@
-export default async function handler(req, res) {
+async function handler(req, res) {
   const footballToken = process.env.FOOTBALL_DATA_TOKEN;
   const oddsKey = process.env.ODDS_API_KEY;
   const apiFootballKey = process.env.API_FOOTBALL_KEY;
@@ -736,6 +736,17 @@ function availabilityStatus(type, reason) {
 }
 
 function normalizeTeam(s) { return clean(String(s||"")); }
+
+// Normalizzazione leggibile dei nomi squadra usata dal resolver dei loghi.
+// Deve essere distinta da clean(), che serve alle chiavi fixture.
+function normalize(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
 
 function warningsPenaltyCount(c) {
   // Penalità leggere per segnali di cautela già rilevati dal modello base.
@@ -1757,3 +1768,19 @@ function poissonAtMost(lambda,k){
   return c
 }
 function factorial(n){let x=1;for(let i=2;i<=n;i++)x*=i;return x}
+
+// Wrapper di sicurezza: Vercel deve sempre restituire JSON anche in caso di
+// eccezione imprevista, evitando che il frontend tenti JSON.parse su HTML.
+export default async function safeHandler(req, res) {
+  try {
+    return await handler(req, res);
+  } catch (e) {
+    console.error("AI DEL PALLONE /api/pick error", e);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: `Errore interno durante l'analisi: ${e?.message || String(e)}`,
+        detail: e?.stack || e?.message || String(e)
+      });
+    }
+  }
+}
