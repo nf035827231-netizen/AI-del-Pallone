@@ -688,78 +688,103 @@ function warningsPenaltyCount(c) {
 }
 
 function applyEnrichedScore(c, av, pred) {
-  // Score components are normalized to 0-100. Missing data is NOT penalized.
-  // La probabilità resta il riferimento principale del ranking.
+  // V2: separiamo la probabilita' del mercato dalla probabilita' del modello.
+  // L'errore della versione precedente era lasciare c.prob quasi invariata
+  // anche quando API-Football forniva una previsione indipendente: in pratica
+  // il ranking continuava a seguire soprattutto la quota.
   const components = [];
-  const probabilityScore = Number.isFinite(c.prob) ? clamp(c.prob, 0, 100) : null;
-  if (probabilityScore != null) components.push([60, probabilityScore, "probabilità"]);
-  const statValues = [c.pStat, c.pFreq].filter(Number.isFinite);
-  if (statValues.length) components.push([15, statValues.reduce((a,b)=>a+b,0)/statValues.length, "statistiche"]);
+  const marketProb = Number.isFinite(c.pFair) ? clamp(c.pFair, 0, 100) : null;
+  const statProb = Number.isFinite(c.pStat) ? clamp(c.pStat, 0, 100) : null;
+  const freqProb = Number.isFinite(c.pFreq) ? clamp(c.pFreq, 0, 100) : null;
+  const predScore = predictionComponent(c.market, pred, c.home, c.away);
+  const predictionProb = predScore != null ? clamp(predScore, 0, 100) : null;
 
-  const formRaw = Number.isFinite(c.form) ? c.form : null;
-  if (formRaw != null) {
-    components.push([10, clamp(50 + formRaw * 5, 0, 100), "forma"]);
+  // Costruiamo la probabilita' finale dando piu' spazio alle evidenze di gioco
+  // quando esistono. Il mercato resta un prior importante, non il pilota unico.
+  const sources = [];
+  if (statProb != null) sources.push([40, statProb, "storico/modello gol"]);
+  if (predictionProb != null) sources.push([35, predictionProb, "prediction API"]);
+  if (freqProb != null) sources.push([10, freqProb, "frequenza storica"]);
+  if (marketProb != null) sources.push([15, marketProb, "mercato"]);
+
+  let modelProb;
+  if (sources.length) {
+    const w = sources.reduce((a, x) => a + x[0], 0);
+    modelProb = sources.reduce((a, x) => a + x[0] * x[1], 0) / w;
+  } else {
+    modelProb = Number.isFinite(c.prob) ? c.prob : 50;
   }
 
-  const edge = Number.isFinite(c.edge) ? c.edge : (Number(c.prob) - (100 / Number(c.odds)));
-  // Positive edge is rewarded, but only as a secondary signal.
+  // Se modello storico e prediction API divergono molto, riduciamo
+  // l'overconfidence invece di scegliere arbitrariamente una delle due fonti.
+  const agreementValues = [statProb, predictionProb].filter(v => v != null);
+  const disagreement = agreementValues.length === 2 ? Math.abs(agreementValues[0] - agreementValues[1]) : 0;
+  if (disagreement >= 25) modelProb = modelProb * 0.80 + 50 * 0.20;
+  else if (disagreement >= 15) modelProb = modelProb * 0.90 + 50 * 0.10;
+  modelProb = clamp(modelProb, 5, 95);
+
+  const probabilityScore = modelProb;
+  components.push([45, probabilityScore, "probabilità modello"]);
+  if (statProb != null) components.push([15, statProb, "statistiche"]);
+  if (freqProb != null) components.push([8, freqProb, "frequenza"]);
+
+  const formRaw = Number.isFinite(c.form) ? c.form : null;
+  if (formRaw != null) components.push([8, clamp(50 + formRaw * 5, 0, 100), "forma"]);
+
+  const edge = Number.isFinite(c.edge) ? c.edge : (modelProb - (100 / Number(c.odds)));
+  // Il valore si ricalcola sulla probabilita' aggiornata, ma resta secondario.
   const valueScore = clamp(50 + 50 * Math.tanh(edge / 20), 0, 100);
-  components.push([10, valueScore, "quota"]);
+  components.push([8, valueScore, "quota"]);
 
   const homeAdv = Number.isFinite(c.homeForm) ? c.homeForm : null;
   const awayAdv = Number.isFinite(c.awayForm) ? c.awayForm : null;
   const venueScore = venueComponent(c.market, homeAdv, awayAdv);
   const oneXTwoMatchup = oneXTwoFieldComponent(c);
-  if (oneXTwoMatchup != null) components.push([10, oneXTwoMatchup, "confronto 1X2"]);
+  if (oneXTwoMatchup != null) components.push([8, oneXTwoMatchup, "confronto 1X2"]);
   else if (venueScore != null) components.push([5, venueScore, "casa/trasferta"]);
 
   const absenceScore = absenceComponent(c.market, c.home, c.away, av);
   if (absenceScore != null) components.push([5, absenceScore, "assenze"]);
-
-  const predScore = predictionComponent(c.market, pred, c.home, c.away);
-  if (predScore != null) components.push([15, predScore, "prediction"]);
+  if (predictionProb != null) components.push([12, predictionProb, "prediction"]);
 
   const totalWeight = components.reduce((s,x)=>s+x[0],0) || 1;
   const weighted = components.reduce((s,x)=>s + x[0] * x[1],0) / totalWeight;
 
-  // Lo score finale non deve diventare un semplice riflesso della quota.
-  // Misuriamo separatamente quanta ANALISI reale sostiene lo scenario e la
-  // usiamo come fattore di selezione. In questo modo una quota 3.30 con poco
-  // supporto statistico non può scalare automaticamente davanti a uno scenario
-  // più solido a quota 1.80-2.20.
+  // Supporto analitico: non conta quante API abbiamo chiamato, ma quante
+  // evidenze indipendenti abbiamo realmente a disposizione.
   let evidence = 0;
-  if (Number.isFinite(c.pStat)) evidence += 30;                 // modello gol / 1X2
-  if (Number.isFinite(c.pFreq)) evidence += 20;                // frequenza storica
-  if (Number.isFinite(c.form)) evidence += 15;                 // forma recente
+  if (statProb != null) evidence += 30;
+  if (freqProb != null) evidence += 15;
+  if (Number.isFinite(c.form)) evidence += 15;
   if (oneXTwoMatchup != null || venueScore != null) evidence += 10;
   if (c.h2h?.sample >= 2) evidence += 5;
   if (c.standingNote) evidence += 5;
-  if (predScore != null) evidence += 35;                       // prediction API: è una vera fonte analitica, non un semplice extra
-  if (absenceScore != null) evidence += 5;                    // assenze disponibili
+  if (predictionProb != null) evidence += 30;
+  if (absenceScore != null) evidence += 5;
   const analysisSupport = clamp(evidence, 0, 100);
 
-  // La qualità dello scenario resta dominante. La prediction API viene però
-  // trattata come una vera evidenza analitica quando lo storico esterno non è
-  // disponibile: altrimenti le partite future resterebbero artificialmente
-  // senza TOP solo perché FOOTBALL_DATA_TOKEN non copre quella competizione.
-  // La quota pesa comunque soltanto come valore finale.
-  // Nel punteggio arricchito la probabilità resta dominante; il supporto
-  // analitico serve a distinguere due scenari con probabilità simili.
-  const baseProbability = Number.isFinite(c.prob) ? clamp(c.prob, 0, 100) : weighted;
-  let score = baseProbability * 0.60 + weighted * 0.25 + analysisSupport * 0.15;
-  if (analysisSupport < 30) score = Math.min(score, Math.max(52, baseProbability * 0.80));
-  else if (analysisSupport < 45) score = Math.min(score, Math.max(58, baseProbability * 0.90));
+  // Penalita' di disaccordo: se due modelli seri sono lontani, la partita non
+  // viene scartata ma perde priorita' rispetto a una previsione piu' coerente.
+  const agreementScore = disagreement >= 25 ? 55 : disagreement >= 15 ? 72 : 92;
+  let score = probabilityScore * 0.50 + weighted * 0.25 + analysisSupport * 0.15 + agreementScore * 0.10;
+  if (analysisSupport < 30) score = Math.min(score, Math.max(50, probabilityScore * 0.78));
+  else if (analysisSupport < 45) score = Math.min(score, Math.max(56, probabilityScore * 0.88));
   if (warningsPenaltyCount(c) > 0) score -= Math.min(8, warningsPenaltyCount(c) * 3);
   score = clamp(score, 0, 100);
 
   return {
     ...c,
+    // Da ora prob/edge sono quelli del modello arricchito, quindi anche il
+    // TOP 3 frontend usa davvero la nuova analisi invece della sola quota.
+    prob: round(modelProb),
+    edge: round(edge),
     score: round(score),
     analysisSupport: round(analysisSupport),
     analysisLimited: analysisSupport < 35,
+    modelAgreement: round(agreementScore),
     scoreComponents: components.map(x=>({name:x[2],weight:x[0],value:round(x[1])})),
     absence: absenceScore == null ? 0 : round(absenceScore),
-    pred: predScore == null ? 0 : round(predScore)
+    pred: predictionProb == null ? 0 : round(predictionProb)
   };
 }
 
