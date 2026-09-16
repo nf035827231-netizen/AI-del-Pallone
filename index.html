@@ -924,7 +924,7 @@ function scoreCandidate(x){
   const topSelectionScore=prob*0.45 + analysis*0.40 + edgeValue*0.15;
   return {...x,implied,edge,score,topSelectionScore};
 }
-const API_CACHE_PREFIX='pickDelGiorno.apiCache.v10.';
+const API_CACHE_PREFIX='pickDelGiorno.apiCache.v12.';
 // Migrazione: elimina le cache delle versioni precedenti, che potevano contenere
 // candidati ormai esclusi dai nuovi filtri.
 try{
@@ -1037,11 +1037,13 @@ function render(cs){
  });
  const matchKey=v=>`${String(v.home||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}|${String(v.away||'').toLowerCase().normalize('NFD').replace(/\p{M}/gu,'').replace(/[^a-z0-9]+/g,'')}`;
  const preferred=usable.filter(v=>(Number(v.analysisSupport)||0)>=45);
- const fallback=usable.filter(v=>{const a=Number(v.analysisSupport)||0;return a>=40 && a<45;});
- // Se esistono almeno tre scenari con analisi >=45 usiamo solo quelli.
- // Se sono meno di tre, completiamo con scenari >=40: il modello può produrre
- // una TOP quando ha una base statistica utilizzabile, senza accettare dati deboli.
- const selectionPool=preferred.length>=3 ? preferred : [...preferred,...fallback];
+ const fallback=usable.filter(v=>{const a=Number(v.analysisSupport)||0;return a>=30 && a<45;});
+ const emergency=usable.filter(v=>{const a=Number(v.analysisSupport)||0;return a>0 && a<30;});
+ // Se abbiamo almeno tre scenari ben supportati, usiamo solo quelli.
+ // Se non bastano, allarghiamo progressivamente a dati parziali e poi limitati.
+ // In questo modo la TOP non resta vuota quando il provider non offre tutti
+ // gli endpoint statistici, ma il livello di affidabilità viene mostrato sulla card.
+ const selectionPool=preferred.length>=3 ? preferred : [...preferred,...fallback,...emergency];
  for(const v of selectionPool){
    if(picks.length>=3)break;
    const mk=matchKey(v);
@@ -1077,12 +1079,15 @@ function render(cs){
  lastPicks=picks;
  renderAIPicks(picks);
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
+ const minAnalysis=picks.length?Math.min(...picks.map(x=>Number(x.analysisSupport)||0)):0;
  const notice=picks.length<3
-   ?`<div class="top3-notice empty">🟡 Sono disponibili ${picks.length} scenari con analisi sufficiente (≥40/100). Il modello privilegia quelli con analisi ≥45/100.</div>`
-   :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (45%), qualità dell'analisi (40%) e valore della quota/edge (15%). Gli scenari sotto 40/100 non entrano nella selezione.</div>`;
+   ?`<div class="top3-notice empty">🟡 ${picks.length} scenario/i disponibili. Il modello privilegia analisi ≥45/100 e amplia il perimetro solo se non bastano.</div>`
+   :minAnalysis<45
+     ?`<div class="top3-notice empty">⚠️ TOP 3 disponibile, ma alcuni scenari hanno dati analitici limitati. Quelli con analisi ≥45/100 hanno sempre priorità.</div>`
+     :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (45%), qualità dell'analisi (40%) e valore della quota/edge (15%).</div>`;
  $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
  /* Loghi TOP: nessun recupero automatico durante il render. Usa solo quelli già presenti nei dati. */
- $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.filter(x=>Number(x.analysisSupport||0)>=40).slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
+ $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.filter(x=>Number(x.analysisSupport||0)>0).slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
 }
 
 const ARCHIVE_KEY='pickDelGiorno.archive.v2';
