@@ -1,4 +1,4 @@
-export default async function handler(req, res) {
+async function handlerImpl(req, res) {
   const footballToken = process.env.FOOTBALL_DATA_TOKEN;
   const oddsKey = process.env.ODDS_API_KEY;
   const apiFootballKey = process.env.API_FOOTBALL_KEY;
@@ -1757,3 +1757,19 @@ function poissonAtMost(lambda,k){
   return c
 }
 function factorial(n){let x=1;for(let i=2;i<=n;i++)x*=i;return x}
+
+
+// Wrapper difensivo: se una chiamata esterna o un passaggio imprevisto genera
+// un'eccezione, Vercel deve restituire JSON e non una pagina HTML.
+export default async function handler(req, res) {
+  try {
+    await handlerImpl(req, res);
+  } catch (e) {
+    console.error("/api/pick fatal error:", e);
+    if (res.headersSent) return;
+    return res.status(500).json({
+      error: "Errore interno durante l'analisi",
+      detail: e?.message || String(e)
+    });
+  }
+}
