@@ -1,4 +1,5 @@
 const cache = new Map();
+const SERVER_CACHE_TTL = 2 * 30 * 24 * 60 * 60 * 1000; // best-effort server cache; persistent cache is handled by the app
 
 const normalize = x => String(x || '')
   .toLowerCase()
@@ -16,6 +17,14 @@ function score(name, target) {
   return 45 + common * 12;
 }
 
+async function searchTheSportsDB(query) {
+  const url = 'https://www.thesportsdb.com/api/v1/json/123/searchteams.php?t=' + encodeURIComponent(query);
+  const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!r.ok) return [];
+  const body = await r.json();
+  return Array.isArray(body?.teams) ? body.teams : [];
+}
+
 async function searchTeams(key, query) {
   const url = 'https://v3.football.api-sports.io/teams?search=' + encodeURIComponent(query);
   const r = await fetch(url, { headers: { 'x-apisports-key': key, 'Accept': 'application/json' } });
@@ -30,7 +39,6 @@ export default async function handler(req, res) {
   const u = new URL(req.url, 'https://vercel.local');
   const team = String(u.searchParams.get('team') || '').trim();
   if (!team) return res.status(400).json({ error: 'Nome squadra mancante' });
-  if (!key) return res.status(503).json({ error: 'API_FOOTBALL_KEY non configurata' });
 
   const cacheKey = team.toLowerCase();
   const hit = cache.get(cacheKey);
@@ -44,24 +52,52 @@ export default async function handler(req, res) {
     if (stripped && stripped.toLowerCase() !== team.toLowerCase()) queries.push(stripped);
 
     let rows = [];
-    for (const q of queries) {
-      try {
-        rows = await searchTeams(key, q);
-        if (rows.length) break;
-      } catch (e) {
-        if (q === queries[queries.length - 1]) throw e;
+    if (key) {
+      for (const q of queries) {
+        try {
+          rows = await searchTeams(key, q);
+          if (rows.length) break;
+        } catch (e) {
+          // Se API-Football non risponde, continuiamo con il fallback gratuito.
+        }
       }
     }
 
     rows.sort((a,b) => score(b?.team?.name,target)-score(a?.team?.name,target));
     const t = rows[0]?.team;
+    let logo = t?.logo || (t?.id ? `https://media.api-sports.io/football/teams/${t.id}.png` : null);
+    let source = logo ? 'api-football' : null;
+    let resolvedName = t?.name || null;
+    let teamId = t?.id || null;
+
+    // Fallback gratuito: TheSportsDB. Viene usato anche quando API-Football non è disponibile.
+    if (!logo) {
+      for (const q of queries) {
+        try {
+          const tsdbRows = await searchTheSportsDB(q);
+          const sorted = tsdbRows.sort((a,b) => score(b?.strTeam,target)-score(a?.strTeam,target));
+          const ts = sorted[0];
+          if (ts?.strBadge) {
+            logo = ts.strBadge;
+            source = 'thesportsdb';
+            resolvedName = ts.strTeam || resolvedName;
+            teamId = ts.idTeam || teamId;
+            break;
+          }
+        } catch {}
+      }
+    }
+
     const data = {
       team,
-      logo: t?.logo || (t?.id ? `https://media.api-sports.io/football/teams/${t.id}.png` : null),
-      teamId: t?.id || null,
-      resolvedName: t?.name || null
+      logo,
+      teamId,
+      resolvedName,
+      source,
+      refreshedAt: new Date().toISOString(),
+      refreshAfterMonths: 2
     };
-    cache.set(cacheKey, { expires: Date.now()+86400000, data });
+    cache.set(cacheKey, { expires: Date.now()+SERVER_CACHE_TTL, data });
     return res.status(200).json(data);
   } catch (e) {
     return res.status(500).json({ error: e?.message || String(e) });
