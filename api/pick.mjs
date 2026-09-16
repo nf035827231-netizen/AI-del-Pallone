@@ -747,10 +747,13 @@ function applyEnrichedScore(c, av, pred) {
   // Costruiamo la probabilita' finale dando piu' spazio alle evidenze di gioco
   // quando esistono. Il mercato resta un prior importante, non il pilota unico.
   const sources = [];
-  if (statProb != null) sources.push([40, statProb, "storico/modello gol"]);
+  // V4: probabilita' piu' conservativa e calibrata. Il modello statistico
+  // resta centrale, ma gli estremi vengono sempre verificati contro una fonte
+  // indipendente (prediction API quando disponibile) e contro il mercato.
+  if (statProb != null) sources.push([35, statProb, "storico/modello gol"]);
   if (predictionProb != null) sources.push([35, predictionProb, "prediction API"]);
   if (freqProb != null) sources.push([10, freqProb, "frequenza storica"]);
-  if (marketProb != null) sources.push([15, marketProb, "mercato"]);
+  if (marketProb != null) sources.push([20, marketProb, "mercato"]);
 
   let modelProb;
   if (sources.length) {
@@ -766,6 +769,16 @@ function applyEnrichedScore(c, av, pred) {
   const disagreement = agreementValues.length === 2 ? Math.abs(agreementValues[0] - agreementValues[1]) : 0;
   if (disagreement >= 25) modelProb = modelProb * 0.80 + 50 * 0.20;
   else if (disagreement >= 15) modelProb = modelProb * 0.90 + 50 * 0.10;
+
+  // Shrinkage anti-overconfidence: con dati base (senza prediction API) non
+  // permettiamo a una semplice stima Poisson/form di produrre percentuali
+  // estreme che il campione non giustifica. Con una prediction indipendente
+  // presente, lo shrinkage e' piu' leggero.
+  if (predictionProb == null) {
+    modelProb = 50 + (modelProb - 50) * 0.82;
+  } else {
+    modelProb = 50 + (modelProb - 50) * 0.92;
+  }
   modelProb = clamp(modelProb, 5, 95);
 
   const probabilityScore = modelProb;
@@ -776,9 +789,14 @@ function applyEnrichedScore(c, av, pred) {
   const formRaw = Number.isFinite(c.form) ? c.form : null;
   if (formRaw != null) components.push([8, clamp(50 + formRaw * 5, 0, 100), "forma"]);
 
-  const edge = Number.isFinite(c.edge) ? c.edge : (modelProb - (100 / Number(c.odds)));
+  // EDGE: deve essere sempre ricalcolato sulla probabilita' finale del modello.
+  // Non riutilizziamo c.edge, che appartiene al punteggio precedente e puo'
+  // quindi diventare incoerente dopo l'arricchimento API-Football.
+  const oddsNumber = Number(c.odds);
+  const impliedProbability = oddsNumber > 1 ? (100 / oddsNumber) : null;
+  const edge = impliedProbability != null ? (modelProb - impliedProbability) : null;
   // Il valore si ricalcola sulla probabilita' aggiornata, ma resta secondario.
-  const valueScore = clamp(50 + 50 * Math.tanh(edge / 20), 0, 100);
+  const valueScore = edge != null ? clamp(50 + 50 * Math.tanh(edge / 20), 0, 100) : 50;
   components.push([8, valueScore, "quota"]);
 
   const homeAdv = Number.isFinite(c.homeForm) ? c.homeForm : null;
@@ -822,7 +840,8 @@ function applyEnrichedScore(c, av, pred) {
     // Da ora prob/edge sono quelli del modello arricchito, quindi anche il
     // TOP 3 frontend usa davvero la nuova analisi invece della sola quota.
     prob: round(modelProb),
-    edge: round(edge),
+    implied: impliedProbability == null ? null : round(impliedProbability),
+    edge: edge == null ? null : round(edge),
     score: round(score),
     analysisSupport: round(analysisSupport),
     analysisLimited: analysisSupport < 35,
