@@ -199,7 +199,33 @@ async function handler(req, res) {
   const h2hByPair = new Map();
   const teamCrests = new Map();
   const standingsByTeam = new Map();
-  const fdCodes = footballToken ? [...activeCodes].filter(code => normalizeLeague(code)) : [];
+  // Budget server-side: con "Tutti" il feed globale puo' contenere molte
+  // competizioni. Interrogare football-data.org per ogni codice fa esplodere
+  // il numero di chiamate e puo' portare Vercel a terminare la Function.
+  // Limitiamo quindi lo storico alle competizioni piu' rilevanti presenti
+  // davvero nel giorno richiesto. Con un campionato selezionato usiamo invece
+  // il codice richiesto senza questo limite editoriale.
+  let fdCodes = [];
+  if (footballToken) {
+    if (codes) {
+      fdCodes = [...activeCodes].filter(code => normalizeLeague(code));
+    } else {
+      const fdPriority = new Map();
+      for (const { relevant=[] } of oddsEventResults) {
+        for (const e of relevant) {
+          const code = inferFootballDataCode(e);
+          if (!code) continue;
+          const priority = leaguePriority(e?.league);
+          fdPriority.set(code, Math.max(fdPriority.get(code) || -Infinity, priority));
+        }
+      }
+      fdCodes = [...activeCodes]
+        .filter(code => normalizeLeague(code))
+        .sort((a,b) => (fdPriority.get(b) ?? 0) - (fdPriority.get(a) ?? 0))
+        .slice(0, 6);
+      diagnostics.push({provider:"football-data-budget",requestedCodes:activeCodes.size,usedCodes:fdCodes.length,maxCodes:6,reason:"limite storico per evitare timeout della Function con il feed globale"});
+    }
+  }
   if (!footballToken) diagnostics.push({provider:"football-data", results:0, error:"FOOTBALL_DATA_TOKEN non configurato: si continua comunque con Odds-API.io + API-Football."});
   const fdResults = await Promise.all(fdCodes.map(async code => {
     const from = daysAgo(date, 120);
@@ -317,18 +343,18 @@ async function handler(req, res) {
       if (count >= 3) continue;
       selected.push(x);
       counts.set(key, count + 1);
-      if (selected.length >= 60) break;
+      if (selected.length >= 30) break;
     }
     // Seconda passata: se restano slot, riempi con i migliori eventi ancora
     // esclusi, sempre secondo la priorita' dei campionati.
-    if (selected.length < 60) {
+    if (selected.length < 30) {
       const picked = new Set(selected.map(x => `${x.home}|${x.away}|${x.f.utcDate}`));
       for (const x of ranked) {
         const id = `${x.home}|${x.away}|${x.f.utcDate}`;
         if (picked.has(id)) continue;
         selected.push(x);
         picked.add(id);
-        if (selected.length >= 60) break;
+        if (selected.length >= 30) break;
       }
     }
     eligible = selected;
@@ -564,11 +590,11 @@ async function enrichMissingCandidateLogos(rows, diagnostics) {
       const current = role === 'home' ? c.homeLogo : c.awayLogo;
       const team = role === 'home' ? c.home : c.away;
       const key = normalize(team);
-      if (current || !key || seenTeams.has(key) || jobs.length >= 12) continue;
+      if (current || !key || seenTeams.has(key) || jobs.length >= 8) continue;
       seenTeams.add(key);
       jobs.push({ c, role, team });
     }
-    if (jobs.length >= 12) break;
+    if (jobs.length >= 8) break;
   }
   if (!jobs.length) return out;
   const resolved = await Promise.all(jobs.map(async job => ({...job, result:await resolveLogoFromSportsDB(job.team)})));
@@ -596,7 +622,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
   for (const c of [...candidates].sort((a,b)=>b.score-a.score)) {
     const key = normalizePair(c.home, c.away);
     if (!seen.has(key)) { seen.add(key); uniqueFixtures.push(c); }
-    if (uniqueFixtures.length >= 10) break;
+    if (uniqueFixtures.length >= 6) break;
   }
   try {
     const fx = await apiFootball(`/fixtures?date=${encodeURIComponent(date)}&timezone=Europe%2FRome`, apiKey);
@@ -628,17 +654,21 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     const af = fixtureMap.get(normalizePair(c.home,c.away));
     if (af?.league?.id && af?.league?.season) leaguePairs.add(`${af.league.id}-${af.league.season}`);
   }
-  for (const pairKeyStr of leaguePairs) {
+  const coverageResults = await Promise.all([...leaguePairs].map(async pairKeyStr => {
     const [leagueId, season] = pairKeyStr.split("-");
     try {
       const ld = await apiFootball(`/leagues?id=${encodeURIComponent(leagueId)}&season=${encodeURIComponent(season)}`, apiKey);
-      requests++; breakdown.apiFootballFixtures++;
       const cov = ld?.response?.[0]?.seasons?.find(s => String(s.year) === String(season))?.coverage?.injuries;
-      injuriesCoverage.set(pairKeyStr, cov);
-      diagnostics.push({provider:"api-football-coverage",league:leagueId,season,injuriesCovered:cov!==false,error:null});
+      return {pairKeyStr, leagueId, season, cov, error:null};
     } catch(e) {
-      diagnostics.push({provider:"api-football-coverage",league:leagueId,season,error:e?.message||String(e)});
+      return {pairKeyStr, leagueId, season, cov:undefined, error:e?.message||String(e)};
     }
+  }));
+  requests += coverageResults.length;
+  breakdown.apiFootballFixtures += coverageResults.length;
+  for (const x of coverageResults) {
+    injuriesCoverage.set(x.pairKeyStr, x.cov);
+    diagnostics.push({provider:"api-football-coverage",league:x.leagueId,season:x.season,injuriesCovered:x.cov!==false,error:x.error});
   }
 
   for (const c of uniqueFixtures) {
@@ -652,24 +682,30 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
       diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,fixtureId:af.fixture.id,results:0,error:"Questa competizione/stagione non ha copertura infortuni su API-Football (coverage.injuries=false): non è un problema del nostro codice, quella lega semplicemente non è tracciata per gli infortuni su questo piano."});
       continue;
     }
-    try {
-      const d = await apiFootball(`/injuries?fixture=${encodeURIComponent(af.fixture.id)}`, apiKey);
-      requests++; breakdown.apiFootballInjuries++;
+    // Le due letture sono indipendenti: farle in parallelo riduce molto il
+    // tempo della Function senza aumentare il numero di richieste.
+    const [injuryResult, predictionResult] = await Promise.allSettled([
+      apiFootball(`/injuries?fixture=${encodeURIComponent(af.fixture.id)}`, apiKey),
+      apiFootball(`/predictions?fixture=${encodeURIComponent(af.fixture.id)}`, apiKey)
+    ]);
+    requests += 2;
+    breakdown.apiFootballInjuries++;
+    breakdown.apiFootballPredictions++;
+    if (injuryResult.status === "fulfilled") {
+      const d = injuryResult.value;
       const rows = Array.isArray(d?.response) ? d.response : [];
       availability.set(normalizePair(c.home,c.away), summarizeAvailability(rows, c.home, c.away));
       diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,fixtureId:af.fixture.id,results:rows.length,error:d?.errors||null});
-    } catch(e) {
-      diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,results:0,error:e?.message||String(e)});
+    } else {
+      diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,results:0,error:injuryResult.reason?.message||String(injuryResult.reason)});
     }
-    // Same fixture lookup is reused for Predictions: one extra call per Top fixture.
-    try {
-      const d = await apiFootball(`/predictions?fixture=${encodeURIComponent(af.fixture.id)}`, apiKey);
-      requests++; breakdown.apiFootballPredictions++;
+    if (predictionResult.status === "fulfilled") {
+      const d = predictionResult.value;
       const pred = Array.isArray(d?.response) ? d.response[0]?.predictions : null;
       if (pred) predictions.set(normalizePair(c.home,c.away), pred);
       diagnostics.push({provider:"api-football-predictions",fixture:`${c.home} - ${c.away}`,fixtureId:af.fixture.id,results:pred?1:0,error:d?.errors||null});
-    } catch(e) {
-      diagnostics.push({provider:"api-football-predictions",fixture:`${c.home} - ${c.away}`,results:0,error:e?.message||String(e)});
+    } else {
+      diagnostics.push({provider:"api-football-predictions",fixture:`${c.home} - ${c.away}`,results:0,error:predictionResult.reason?.message||String(predictionResult.reason)});
     }
   }
   }
@@ -689,12 +725,12 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
   });
 
   // I loghi mancanti vengono risolti qui, lato server, e non dal browser.
-  // Limitiamo il recupero ai primi 12 stemmi mancanti per evitare raffiche di richieste.
+  // Limitiamo il recupero ai primi 8 stemmi mancanti per evitare raffiche di richieste.
   const missingBefore = out.reduce((n,c)=>n + (!c.homeLogo?1:0) + (!c.awayLogo?1:0),0);
   if (missingBefore) {
     out = await enrichMissingCandidateLogos(out, diagnostics);
     const missingAfter = out.reduce((n,c)=>n + (!c.homeLogo?1:0) + (!c.awayLogo?1:0),0);
-    diagnostics.push({provider:'thesportsdb-logos',requested:Math.min(12,missingBefore),resolved:missingBefore-missingAfter,error:null});
+    diagnostics.push({provider:'thesportsdb-logos',requested:Math.min(8,missingBefore),resolved:missingBefore-missingAfter,error:null});
   }
   return {candidates:out, requests};
 }
