@@ -1038,7 +1038,7 @@ function render(cs){
    ?`<div class="top3-notice empty">🟡 Sono disponibili ${picks.length} scenari analizzabili. Non ci sono abbastanza partite distinte per completare il TOP 3.</div>`
    :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (55%), qualità dell'analisi (30%) e valore della quota/edge (15%). Se i dati analitici sono limitati, il sistema lo segnala senza escludere automaticamente la partita.</div>`;
  $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
- if(picks.length) setTimeout(()=>{hydrateTopPickLogos().catch(()=>{});},0);
+ /* Loghi TOP: nessun recupero automatico durante il render. Usa solo quelli già presenti nei dati. */
  $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:""}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
 }
 
@@ -1367,7 +1367,7 @@ function betLogoHtml(url,name,betId,role){
 const TEAM_LOGO_CACHE_KEY='AIP_TEAM_LOGOS_V3';
 const TEAM_LOGO_REFRESH_MONTHS=2;
 function readTeamLogoCache(){try{return JSON.parse(localStorage.getItem(TEAM_LOGO_CACHE_KEY)||'{}')||{}}catch{return{}}}
-function writeTeamLogoCache(c){try{localStorage.setItem(TEAM_LOGO_CACHE_KEY,JSON.stringify(c))}catch{}}
+function writeTeamLogoCache(c){}
 function logoCacheEntry(v){
   if(!v)return null;
   if(typeof v==='string') return {logo:v,savedAt:0,source:'legacy'};
@@ -1389,68 +1389,8 @@ async function fetchTeamLogoFresh(team){
   }catch{}
   return null;
 }
-async function hydrateMissingBetLogos(){
- const nodes=[...document.querySelectorAll('img[data-team-logo]')];
- if(!nodes.length)return;
- const cache=readTeamLogoCache();
- const unique=[...new Set(nodes.map(n=>String(n.dataset.teamName||'').trim()).filter(Boolean))];
- for(const team of unique){
-   let entry=logoCacheEntry(cache[team]);
-   const currentNode=nodes.find(n=>n.dataset.teamName===team);
-   const currentLogo=currentNode?.getAttribute('src')||null;
-   let logo=entry?.logo||currentLogo||null;
-   if(!entry && currentLogo){
-     entry={logo:currentLogo,savedAt:Date.now(),source:'stored-bet'};
-     cache[team]=entry;
-     writeTeamLogoCache(cache);
-   }
-   if(logoNeedsRefresh(entry)){
-     const fresh=await fetchTeamLogoFresh(team);
-     if(fresh){entry=fresh;cache[team]=entry;writeTeamLogoCache(cache);logo=entry.logo;}
-   }
-   const teamNodes=nodes.filter(n=>n.dataset.teamName===team);
-   for(const img of teamNodes){
-     if(!logo) continue;
-     img.src=logo; img.dataset.teamLogo='ready'; img.style.display='block';
-     const fallback=img.nextElementSibling; if(fallback)fallback.style.display='none';
-     const id=img.dataset.betId, role=img.dataset.teamRole;
-     if(id&&role){
-       const a=getArchive(), b=a.find(x=>String(x.id)===String(id));
-       if(b){ if(role==='home')b.homeLogo=logo; else if(role==='away')b.awayLogo=logo; b.updatedAt=Date.now(); saveArchive(a); cloudUpsert(b); }
-     }
-   }
- }
-}
-async function hydrateTopPickLogos(){
- const nodes=[...document.querySelectorAll('#pick img[data-pick-logo]')];
- if(!nodes.length)return;
- const cache=readTeamLogoCache();
- const unique=[...new Set(nodes.map(n=>String(n.dataset.teamName||'').trim()).filter(Boolean))];
- for(const team of unique){
-   let entry=logoCacheEntry(cache[team]);
-   const currentNode=nodes.find(n=>n.dataset.teamName===team);
-   const currentLogo=currentNode?.getAttribute('src')||null;
-   let logo=entry?.logo||currentLogo||null;
-   if(!entry && currentLogo){
-     entry={logo:currentLogo,savedAt:Date.now(),source:'stored-bet'};
-     cache[team]=entry;
-     writeTeamLogoCache(cache);
-   }
-   if(logoNeedsRefresh(entry)){
-     const fresh=await fetchTeamLogoFresh(team);
-     if(fresh){entry=fresh;cache[team]=entry;writeTeamLogoCache(cache);logo=entry.logo;}
-   }
-   if(!logo)continue;
-   nodes.filter(n=>n.dataset.teamName===team).forEach(img=>{
-     img.src=logo;img.dataset.pickLogo='ready';img.style.display='block';
-     const fallback=img.nextElementSibling;if(fallback)fallback.style.display='none';
-   });
-   lastPicks.forEach(x=>{
-     if(x.home===team)x.homeLogo=logo;
-     if(x.away===team)x.awayLogo=logo;
-   });
- }
-}
+async function hydrateMissingBetLogos(){return;}
+async function hydrateTopPickLogos(){return;}
 
 function selectedOutcomeLabel(market,home,away){
  const m=String(market||'').trim();
@@ -1565,7 +1505,7 @@ function renderArchive(){
  }).join('');
  maybeAutoRefreshClosingOdds();
  maybeAutoCheckSettlement();
- hydrateMissingBetLogos();
+ /* Loghi archivio: nessun recupero automatico durante il render. */
 }
 function toggleCashoutFields(id){
  const st=$(`st-${id}`),grid=st?.closest('.archive-item')?.querySelector('.archive-grid'); if(!st||!grid)return;
