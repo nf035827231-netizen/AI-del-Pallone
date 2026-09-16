@@ -556,7 +556,23 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
         if (home && away) fixtureMap.set(normalizePair(home,away), f);
       }
     }
-    diagnostics.push({provider:"api-football-fixtures",results:fixtureMap.size,error:fx?.errors||null});
+    // V3: API-Football usa spesso nomi leggermente diversi da Odds-API.io
+    // (prefissi, abbreviazioni, FC/CF, ecc.). Dopo il match esatto facciamo
+    // un matching prudente sui nomi per recuperare fixture che esistono ma
+    // non hanno la stessa stringa. Non scegliamo mai una fixture se una delle
+    // due squadre non raggiunge una similarita' minima.
+    let fuzzyMatches = 0;
+    for (const c of uniqueFixtures) {
+      const exactKey = normalizePair(c.home,c.away);
+      if (fixtureMap.has(exactKey)) continue;
+      const best = bestFixtureMatch(c, Array.isArray(fx?.response) ? fx.response : []);
+      if (best?.fixture) {
+        fixtureMap.set(exactKey, best.fixture);
+        fuzzyMatches++;
+        diagnostics.push({provider:"api-football-fixture-match",fixture:`${c.home} - ${c.away}`,matched:`${best.home} - ${best.away}`,homeSimilarity:best.homeScore,awaySimilarity:best.awayScore,score:best.score});
+      }
+    }
+    diagnostics.push({provider:"api-football-fixtures",results:fixtureMap.size,fuzzyMatches,error:fx?.errors||null});
   } catch(e) {
     diagnostics.push({provider:"api-football-fixtures",results:0,error:e?.message||String(e)});
   }
@@ -647,6 +663,35 @@ async function apiFootball(path, key) {
   let body; try { body=JSON.parse(text); } catch { body={errors:{message:text.slice(0,500)}}; }
   if (!r.ok) return { ...body, errors: body.errors || {message:`HTTP ${r.status}`} };
   return body;
+}
+
+function teamSimilarity(a,b) {
+  const A = String(a||"").toLowerCase().replace(/[^a-z0-9\s]+/g," ").split(/\s+/).filter(Boolean);
+  const B = String(b||"").toLowerCase().replace(/[^a-z0-9\s]+/g," ").split(/\s+/).filter(Boolean);
+  if (!A.length || !B.length) return 0;
+  const ca = clean(a), cb = clean(b);
+  if (ca === cb) return 1;
+  if (ca.includes(cb) || cb.includes(ca)) return 0.92;
+  const setA = new Set(A), setB = new Set(B);
+  const inter = [...setA].filter(x=>setB.has(x)).length;
+  const union = new Set([...A,...B]).size;
+  const jaccard = union ? inter/union : 0;
+  return Math.min(0.9, jaccard + (inter >= 1 ? 0.12 : 0));
+}
+
+function bestFixtureMatch(candidate, rows) {
+  let best = null;
+  for (const f of rows) {
+    const home = f?.teams?.home?.name, away = f?.teams?.away?.name;
+    if (!home || !away) continue;
+    const hs = teamSimilarity(candidate.home, home);
+    const as = teamSimilarity(candidate.away, away);
+    const score = (hs + as) / 2;
+    if (hs >= 0.72 && as >= 0.72 && (!best || score > best.score)) {
+      best = {fixture:f, home, away, homeScore:round(hs*100), awayScore:round(as*100), score:round(score*100)};
+    }
+  }
+  return best;
 }
 
 function summarizeAvailability(rows, homeName, awayName) {
