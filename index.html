@@ -491,7 +491,7 @@ body[data-theme="light"] .pending{background:#fff8e5;color:#775900}
 
 <section class="card tab-section" data-section="bets"><h2 style="margin-bottom:6px">🎟️ Le mie giocate</h2><p class="small">Le giocate selezionate vengono salvate nel database quando accedi. Se lavori senza account restano comunque nel browser. Dopo la partita scegli <b>Vinta</b> o <b>Persa</b>: l'importo viene calcolato in automatico dalla quota, ma puoi correggerlo a mano (utile per un <b>cash out</b>). Se hai piazzato la giocata a una quota diversa da quella mostrata, inseriscila in "Quota reale".</p><div class="archive-controls" style="margin-bottom:11px"><button class="secondary" style="width:auto;padding:8px 11px" onclick="exportArchive()">⬇️ Esporta backup</button><label class="secondary" style="width:auto;padding:8px 11px;display:inline-flex;align-items:center;cursor:pointer">⬆️ Importa backup<input type="file" accept="application/json" style="display:none" onchange="importArchive(event)"></label></div><div id="archive" class="empty">Nessuna giocata archiviata.</div></section>
 
-<section class="card tab-section" data-section="balance"><div class="archive-head"><h2 style="margin-bottom:0">💰 Bilanci</h2><div id="balance" class="balance">Bilancio reale: 0,00 €</div></div><p class="small"><b>Bilancio interno:</b> serve a te per sapere se sei realmente in attivo, includendo le commissioni Betfair Exchange e i cash out. <b>Statistiche social:</b> nessun importo in denaro; mostra solo dati statistici pubblicabili.</p><div class="balance-settings"><label>Commissione Exchange <input id="commissionRate" type="number" min="0" max="100" step="0.1" value="4.5" onchange="saveCommissionRate()"> %</label><span class="small">Default Italia: 4,5% sulle vincite nette del mercato.</span></div><div class="balance-dual" id="balanceDual"></div><div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="secondary" onclick="shareDailyResultsImage()">📸 Giorno interno</button><button class="secondary" onclick="sharePeriodResultsImage('week','internal')">📅 Settimana interna</button><button class="secondary" onclick="sharePeriodResultsImage('month','internal')">🗓️ Mese interno</button><button class="secondary" onclick="sharePreviousDaySocialImage()">📸 Giorno precedente social 4:5</button><button class="secondary" onclick="sharePeriodResultsImage('week','social')">📸 Settimana social 4:5</button><button class="secondary" onclick="sharePeriodResultsImage('month','social')">📸 Mese social 4:5</button></div><div id="archiveStats" class="archive-stats"></div></section>
+<section class="card tab-section" data-section="balance"><div class="archive-head"><h2 style="margin-bottom:0">💰 Bilanci</h2><div id="balance" class="balance">Bilancio reale: 0,00 €</div></div><p class="small"><b>Bilancio interno:</b> serve a te per sapere se sei realmente in attivo, includendo le commissioni Betfair Exchange e i cash out. <b>Statistiche social:</b> nessun importo in denaro; mostra solo dati statistici pubblicabili.</p><div class="balance-settings"><label>Commissione Exchange <input id="commissionRate" type="number" min="0" max="100" step="0.1" value="4.5" onchange="saveCommissionRate()"> %</label><span class="small">Default Italia: 4,5% sulle vincite nette del mercato.</span></div><div class="balance-dual" id="balanceDual"></div><div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="secondary" onclick="shareDailyResultsImage()">📸 Giorno interno</button><button class="secondary" onclick="sharePeriodResultsImage('week','internal')">📅 Settimana interna</button><button class="secondary" onclick="sharePeriodResultsImage('month','internal')">🗓️ Mese interno</button><button class="secondary" onclick="sharePreviousDaySocialImage()">📸 Giorno precedente social 9:16</button><button class="secondary" onclick="sharePeriodResultsImage('week','social')">📸 Settimana social 4:5</button><button class="secondary" onclick="sharePeriodResultsImage('month','social')">📸 Mese social 4:5</button></div><div id="archiveStats" class="archive-stats"></div></section>
 
 <div class="info-layout">
 
@@ -701,65 +701,63 @@ async function sharePreviousDaySocialImage(){
  const recapDate=d.toISOString().slice(0,10);
  const dayItems=items.filter(b=>b.date===recapDate).sort((a,b)=>Number(a.updatedAt||a.createdAt)-Number(b.updatedAt||b.createdAt));
  if(!dayItems.length){alert('Non ci sono eventi chiusi del giorno precedente da pubblicare.');return;}
- const m=socialMetrics(dayItems);
  const wins=dayItems.filter(b=>b.status==='win').length;
  const losses=dayItems.filter(b=>b.status==='loss').length;
  const cashouts=dayItems.filter(b=>b.status==='cashout').length;
  const decided=wins+losses;
  const dateLabel=d.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long',year:'numeric'}).replace(/^./,c=>c.toUpperCase());
- const W=1080,H=1350,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');
- // Layout social 4:5: chiaro, molto piu' leggibile e focalizzato sul risultato.
- const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#ffffff');bg.addColorStop(.72,'#fffafb');bg.addColorStop(1,'#fdebf3');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
- ctx.fillStyle='rgba(255,128,171,.10)';ctx.beginPath();ctx.arc(970,1180,360,0,Math.PI*2);ctx.fill();
- const logo=await loadImageSafe(location.origin+'/logo-social.png');if(logo)ctx.drawImage(logo,55,42,78,78);
- ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 39px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',150,78);ctx.fillStyle='#65748a';ctx.font='500 18px -apple-system,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',150,105);
- ctx.textAlign='right';ctx.fillStyle='#f04f92';ctx.font='italic 700 23px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',1025,72);
- ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 49px -apple-system,sans-serif';ctx.fillText('RIEPILOGO',55,190);ctx.fillStyle='#f04f92';ctx.fillText('DI IERI',55,242);ctx.fillStyle='#65748a';ctx.font='600 22px -apple-system,sans-serif';ctx.fillText(dateLabel,55,277);
- // Esito generale molto evidente: VINTA / PERSA / GIORNATA MISTA.
+ const W=1080,H=1920,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');
+ const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#ffffff');bg.addColorStop(.66,'#fffafd');bg.addColorStop(1,'#fde7f1');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+ ctx.fillStyle='rgba(240,79,146,.10)';ctx.beginPath();ctx.arc(980,1620,500,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='rgba(240,79,146,.055)';ctx.beginPath();ctx.arc(60,1150,260,0,Math.PI*2);ctx.fill();
+ const logo=await loadImageSafe(location.origin+'/logo-social.png');if(logo)ctx.drawImage(logo,55,48,92,92);
+ ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 42px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',170,83);ctx.fillStyle='#65748a';ctx.font='600 20px -apple-system,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',170,113);
+ ctx.textAlign='right';ctx.fillStyle='#f04f92';ctx.font='italic 700 28px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',1025,78);
+ ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 72px -apple-system,sans-serif';ctx.fillText('RIEPILOGO',55,235);ctx.fillStyle='#f04f92';ctx.fillText('DI IERI',55,310);ctx.fillStyle='#65748a';ctx.font='700 29px -apple-system,sans-serif';ctx.fillText(dateLabel,55,360);
  const overall=wins===dayItems.length?'VINTA!':losses===dayItems.length?'PERSA!':'GIORNATA MISTA';
- const overallBg=wins===dayItems.length?'#d7f7e4':losses===dayItems.length?'#ffe0e2':'#fff0cf';
+ const overallBg=wins===dayItems.length?'#d8f7e5':losses===dayItems.length?'#ffe1e4':'#fff0cf';
  const overallFg=wins===dayItems.length?'#12633a':losses===dayItems.length?'#a51f2d':'#8a5a00';
- ctx.fillStyle=overallBg;roundRect(ctx,55,315,970,112,28);ctx.fill();
- ctx.textAlign='center';ctx.fillStyle=overallFg;ctx.font='900 55px -apple-system,sans-serif';ctx.fillText(overall,540,387);
- // Pannello principale: se c'e' una sola partita occupa quasi tutto lo spazio.
+ ctx.fillStyle=overallBg;roundRect(ctx,55,405,970,150,34);ctx.fill();
+ ctx.textAlign='center';ctx.fillStyle=overallFg;ctx.font='900 78px -apple-system,sans-serif';ctx.fillText(overall,540,488);
+ ctx.font='800 25px -apple-system,sans-serif';ctx.fillText(wins===dayItems.length?'PRONOSTICO CENTRATO':losses===dayItems.length?'PRONOSTICO NON CENTRATO':'RISULTATI DELLA GIORNATA',540,530);
  const shown=dayItems.slice(0,3);
  if(shown.length===1){
    const b=shown[0],win=b.status==='win',loss=b.status==='loss';
    const accent=win?'#25b66a':loss?'#e54855':'#d49a17';
    const soft=win?'#f0fbf4':loss?'#fff2f3':'#fff9ea';
-   ctx.fillStyle=soft;ctx.strokeStyle=accent+'66';ctx.lineWidth=2;roundRect(ctx,55,455,970,520,28);ctx.fill();ctx.stroke();
-   ctx.fillStyle=accent;roundRect(ctx,80,480,210,58,29);ctx.fill();ctx.fillStyle='#fff';ctx.font='900 25px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',185,518);
+   ctx.fillStyle=soft;ctx.strokeStyle=accent+'66';ctx.lineWidth=3;roundRect(ctx,55,590,970,780,34);ctx.fill();ctx.stroke();
+   ctx.fillStyle=accent;roundRect(ctx,82,620,300,72,36);ctx.fill();ctx.fillStyle='#fff';ctx.font='900 31px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',232,668);
    const homeImg=await loadImageSafe(b.homeLogo),awayImg=await loadImageSafe(b.awayLogo);
-   drawTeamBadge(ctx,homeImg,b.home,300,650,72);drawTeamBadge(ctx,awayImg,b.away,780,650,72);
-   ctx.fillStyle='#172334';ctx.font='900 46px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText('VS',540,658);
-   ctx.fillStyle='#172334';ctx.font='800 25px -apple-system,sans-serif';wrapCanvasText(ctx,b.home||'Casa',300,760,300,30,2);wrapCanvasText(ctx,b.away||'Trasferta',780,760,300,30,2);
+   drawTeamBadge(ctx,homeImg,b.home,285,900,105);drawTeamBadge(ctx,awayImg,b.away,795,900,105);
+   ctx.fillStyle='#172334';ctx.font='900 42px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText('VS',540,915);
+   ctx.fillStyle='#172334';ctx.font='900 31px -apple-system,sans-serif';wrapCanvasText(ctx,b.home||'Casa',285,1045,340,37,2);wrapCanvasText(ctx,b.away||'Trasferta',795,1045,340,37,2);
    const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?`${b.finalScoreHome} - ${b.finalScoreAway}`:'';
-   if(score){ctx.fillStyle='#172334';ctx.font='900 45px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(score,540,810);}
-   ctx.strokeStyle='#d8e0ea';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(90,845);ctx.lineTo(990,845);ctx.stroke();
-   ctx.textAlign='left';ctx.fillStyle='#65748a';ctx.font='700 18px -apple-system,sans-serif';ctx.fillText('MERCATO',110,885);ctx.fillStyle='#172334';ctx.font='900 28px -apple-system,sans-serif';ctx.fillText(String(b.market||'Giocata'),110,920);
-   ctx.fillStyle='#65748a';ctx.font='700 18px -apple-system,sans-serif';ctx.fillText('QUOTA',560,885);ctx.fillStyle='#172334';ctx.font='900 28px -apple-system,sans-serif';ctx.fillText(Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2),560,920);
+   if(score){ctx.fillStyle='#172334';ctx.font='900 60px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(score,540,1145);ctx.fillStyle='#65748a';ctx.font='800 20px -apple-system,sans-serif';ctx.fillText('RISULTATO FINALE',540,1178);}
+   ctx.strokeStyle='#d8e0ea';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(90,1215);ctx.lineTo(990,1215);ctx.stroke();
+   ctx.textAlign='left';ctx.fillStyle='#65748a';ctx.font='800 22px -apple-system,sans-serif';ctx.fillText('MERCATO',110,1260);ctx.fillStyle='#172334';ctx.font='900 36px -apple-system,sans-serif';wrapCanvasText(ctx,String(b.market||'Giocata'),110,1305,380,40,2);
+   ctx.fillStyle='#65748a';ctx.font='800 22px -apple-system,sans-serif';ctx.fillText('QUOTA',610,1260);ctx.fillStyle='#172334';ctx.font='900 48px -apple-system,sans-serif';ctx.fillText(Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2),610,1310);
  }else{
-   // Piu' partite: una scheda compatta per risultato, mantenendo il focus su VINTA/PERSA.
-   let y=455;
+   let y=590;
    for(const b of shown){
      const win=b.status==='win',loss=b.status==='loss',accent=win?'#25b66a':loss?'#e54855':'#d49a17',soft=win?'#f0fbf4':loss?'#fff2f3':'#fff9ea';
-     ctx.fillStyle=soft;ctx.strokeStyle=accent+'55';ctx.lineWidth=2;roundRect(ctx,55,y,970,150,22);ctx.fill();ctx.stroke();
-     ctx.fillStyle=accent;ctx.font='900 18px -apple-system,sans-serif';ctx.textAlign='left';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',78,y+33);
-     ctx.fillStyle='#172334';ctx.font='800 22px -apple-system,sans-serif';wrapCanvasText(ctx,`${b.home||'Casa'} – ${b.away||'Trasferta'}`,78,y+68,570,27,2);
-     const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?` · ${b.finalScoreHome}-${b.finalScoreAway}`:'';
-     ctx.textAlign='right';ctx.fillStyle='#65748a';ctx.font='600 17px -apple-system,sans-serif';ctx.fillText(String(b.market||'Giocata'),990,y+38);ctx.fillStyle='#172334';ctx.font='900 25px -apple-system,sans-serif';ctx.fillText((Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2))+score,990,y+76);
-     y+=172;
+     ctx.fillStyle=soft;ctx.strokeStyle=accent+'55';ctx.lineWidth=3;roundRect(ctx,55,y,970,260,28);ctx.fill();ctx.stroke();
+     ctx.fillStyle=accent;roundRect(ctx,82,y+25,220,58,29);ctx.fill();ctx.fillStyle='#fff';ctx.font='900 23px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',192,y+62);
+     ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 28px -apple-system,sans-serif';wrapCanvasText(ctx,`${b.home||'Casa'} – ${b.away||'Trasferta'}`,82,y+130,650,34,2);
+     const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?`${b.finalScoreHome}-${b.finalScoreAway}`:'';
+     if(score){ctx.fillStyle='#172334';ctx.font='900 38px -apple-system,sans-serif';ctx.fillText(score,82,y+205);}
+     ctx.textAlign='right';ctx.fillStyle='#65748a';ctx.font='700 19px -apple-system,sans-serif';ctx.fillText(String(b.market||'Giocata'),990,y+48);ctx.fillStyle='#172334';ctx.font='900 32px -apple-system,sans-serif';ctx.fillText(Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2),990,y+92);
+     y+=285;
    }
-   ctx.fillStyle='#65748a';ctx.font='600 16px -apple-system,sans-serif';ctx.textAlign='left';if(dayItems.length>3)ctx.fillText(`+ ${dayItems.length-3} altri eventi`,78,970);
+   if(dayItems.length>3){ctx.textAlign='center';ctx.fillStyle='#65748a';ctx.font='700 20px -apple-system,sans-serif';ctx.fillText(`+ ${dayItems.length-3} altri eventi`,540,y-12);}
  }
- // Solo tre numeri finali: niente dispersione.
- const statY=1010;
- const stat=(x,label,value,accent)=>{ctx.fillStyle='#ffffff';ctx.strokeStyle='#dce4ed';ctx.lineWidth=2;roundRect(ctx,x,statY,285,105,20);ctx.fill();ctx.stroke();ctx.textAlign='center';ctx.fillStyle=accent;ctx.font='900 33px -apple-system,sans-serif';ctx.fillText(value,x+142.5,statY+48);ctx.fillStyle='#65748a';ctx.font='700 16px -apple-system,sans-serif';ctx.fillText(label,x+142.5,statY+76)};
- stat(55,'EVENTI',String(dayItems.length),'#172334');stat(397,'VITTORIE',String(wins),'#25b66a');stat(739,'PERSE',String(losses),'#e54855');
- ctx.textAlign='center';ctx.fillStyle='#172334';ctx.font='italic 800 27px -apple-system,sans-serif';ctx.fillText(decided?`${wins}/${decided} pronostici vincenti`:'Nessun esito definitivo',540,1185);
- ctx.fillStyle='#f04f92';ctx.font='800 19px -apple-system,sans-serif';ctx.fillText('Dati di ieri, analisi di oggi.',540,1225);
- ctx.fillStyle='#65748a';ctx.font='500 15px -apple-system,sans-serif';ctx.fillText('Statistiche del giorno · nessun importo economico',540,1260);
- canvas.toBlob(blob=>{if(!blob){alert('Non sono riuscito a generare l’immagine.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-giorno-precedente-social-${recapDate}-4x5.png`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)},'image/png');
+ const statY=1420;
+ const stat=(x,label,value,accent)=>{ctx.fillStyle='#ffffff';ctx.strokeStyle='#dce4ed';ctx.lineWidth=2;roundRect(ctx,x,statY,285,145,24);ctx.fill();ctx.stroke();ctx.textAlign='center';ctx.fillStyle=accent;ctx.font='900 55px -apple-system,sans-serif';ctx.fillText(value,x+142.5,statY+70);ctx.fillStyle='#65748a';ctx.font='800 20px -apple-system,sans-serif';ctx.fillText(label,x+142.5,statY+108)};
+ stat(55,'EVENTI ANALIZZATI',String(dayItems.length),'#172334');stat(397,'VITTORIE',String(wins),'#25b66a');stat(739,'PERSE',String(losses),'#e54855');
+ ctx.textAlign='center';ctx.fillStyle='#172334';ctx.font='italic 900 39px -apple-system,sans-serif';ctx.fillText(decided?`${wins}/${decided} pronostici vincenti`:'Nessun esito definitivo',540,1645);
+ ctx.fillStyle='#f04f92';ctx.font='900 27px -apple-system,sans-serif';ctx.fillText(wins>losses?'Analisi che fanno la differenza!':losses>wins?'Si impara anche da qui!':'Ogni giornata racconta una storia.',540,1705);
+ ctx.fillStyle='#172334';ctx.font='700 22px -apple-system,sans-serif';ctx.fillText('Dati di ieri, strategie per domani.',540,1800);
+ ctx.fillStyle='#65748a';ctx.font='600 17px -apple-system,sans-serif';ctx.fillText('Statistiche del giorno · nessun importo economico',540,1840);
+ canvas.toBlob(blob=>{if(!blob){alert('Non sono riuscito a generare l’immagine.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-giorno-precedente-social-${recapDate}-9x16.png`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)},'image/png');
 }
 async function sharePeriodResultsImage(type,mode='internal'){
  if(mode==='social') return shareSocialPeriodImage(type);
