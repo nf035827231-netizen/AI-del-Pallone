@@ -820,8 +820,12 @@ function applyEnrichedScore(c, av, pred) {
   // Non la trattiamo come analisi forte: vale solo 20 punti e viene sempre mostrata
   // come "Limitata". In questo modo la classifica non resta vuota solo perché una
   // competizione ha copertura statistica parziale.
-  let evidence = Number.isFinite(Number(c.odds)) ? 20 : 0; // baseline mercato
-  if (statProb != null) evidence += 45;       // modello statistico da storico gol
+  let evidence = Number.isFinite(Number(c.odds)) ? 15 : 0; // baseline mercato: informazione, non analisi forte
+  const homeSample = Number(c?._homeMatches?.length || 0);
+  const awaySample = Number(c?._awayMatches?.length || 0);
+  const usableSample = Math.min(Math.max(homeSample,awaySample),10);
+  if (statProb != null) evidence += 40;       // modello statistico da storico gol
+  if (usableSample >= 5) evidence += 5;       // campione recente sufficiente
   if (freqProb != null) evidence += 10;      // frequenze osservate
   if (Number.isFinite(c.form)) evidence += 10; // forma recente
   if (oneXTwoMatchup != null || venueScore != null) evidence += 8; // casa/trasferta
@@ -1560,7 +1564,7 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
       analysisParts.push([10, clamp(h2hSignal,0,100)]);
     }
     const analysisWeight=analysisParts.reduce((a,x)=>a+x[0],0);
-    const analysisScore=analysisWeight ? analysisParts.reduce((a,x)=>a+x[0]*x[1],0)/analysisWeight : 45;
+    const analysisScore=analysisWeight ? analysisParts.reduce((a,x)=>a+x[0]*x[1],0)/analysisWeight : 35;
 
     // La PROBABILITÀ è il segnale principale per il ranking.
     // La quota serve per misurare il valore (edge), non per far salire
@@ -1732,29 +1736,35 @@ function summarizeH2H(matches, homeTeamId, awayTeamId) {
 }
 
 function summarize(ms, teamId) {
-  const rows = Array.isArray(ms) ? ms : [];
-  if (!rows.length) return { gf:null,ga:null,gfHome:null,gaHome:null,gfAway:null,gaAway:null,form:null };
-  let gf=0,ga=0,n=0,homeGF=0,homeGA=0,hn=0,awayGF=0,awayGA=0,an=0,points=0;
-  for (const m of rows) {
-    const hg=m.score?.fullTime?.home, ag=m.score?.fullTime?.away;
-    if (!Number.isFinite(hg)||!Number.isFinite(ag)) continue;
-    n++; gf += hg; ga += ag;
-    if (m.homeTeam?.id === teamId) { homeGF+=hg; homeGA+=ag; hn++; }
-    else if (m.awayTeam?.id === teamId) { awayGF+=ag; awayGA+=hg; an++; }
-    if (teamId) {
-      if (m.score.winner === "DRAW") points += 1;
-      else if ((m.score.winner === "HOME" && m.homeTeam?.id === teamId) ||
-               (m.score.winner === "AWAY" && m.awayTeam?.id === teamId)) points += 3;
+  const rows = Array.isArray(ms) ? ms.filter(m => Number.isFinite(m?.score?.fullTime?.home) && Number.isFinite(m?.score?.fullTime?.away)) : [];
+  if (!rows.length) return { gf:null,ga:null,gfHome:null,gaHome:null,gfAway:null,gaAway:null,form:null,sample:0,homeSample:0,awaySample:0 };
+  const ordered = [...rows].sort((a,b)=>new Date(a?.utcDate||0)-new Date(b?.utcDate||0));
+  let gf=0,ga=0,weightSum=0,homeGF=0,homeGA=0,homeW=0,awayGF=0,awayGA=0,awayW=0,points=0,pointsW=0;
+  const recent = ordered.slice(-8);
+  recent.forEach((m,idx)=>{
+    const hg=m.score.fullTime.home, ag=m.score.fullTime.away;
+    // Peso crescente: le ultime partite contano di più, ma non cancelliamo lo storico.
+    const w=1 + (idx/(Math.max(1,recent.length-1))) * 0.75;
+    const isHome = m.homeTeam?.id === teamId;
+    const isAway = m.awayTeam?.id === teamId;
+    if(!isHome && !isAway) return;
+    const gfor=isHome?hg:ag, gagain=isHome?ag:hg;
+    gf += gfor*w; ga += gagain*w; weightSum += w;
+    if(isHome){homeGF += hg*w; homeGA += ag*w; homeW += w;}
+    if(isAway){awayGF += ag*w; awayGA += hg*w; awayW += w;}
+    if(teamId){
+      const p=m.score.winner==='DRAW'?1:((m.score.winner==='HOME'&&isHome)||(m.score.winner==='AWAY'&&isAway)?3:0);
+      points += p*w; pointsW += w;
     }
-  }
+  });
   return {
-    gf:n?gf/n:null, ga:n?ga/n:null,
-    gfHome:hn?homeGF/hn:null, gaHome:hn?homeGA/hn:null,
-    gfAway:an?awayGF/an:null, gaAway:an?awayGA/an:null,
-    form:n?points/n:null
+    gf:weightSum?gf/weightSum:null, ga:weightSum?ga/weightSum:null,
+    gfHome:homeW?homeGF/homeW:null, gaHome:homeW?homeGA/homeW:null,
+    gfAway:awayW?awayGF/awayW:null, gaAway:awayW?awayGA/awayW:null,
+    form:pointsW?points/pointsW:null,
+    sample:recent.length, homeSample:ordered.filter(m=>m.homeTeam?.id===teamId).length, awaySample:ordered.filter(m=>m.awayTeam?.id===teamId).length
   };
 }
-
 function avg(a,b){return a!=null&&b!=null?(a+b)/2:null}
 function round(x){return Math.round(x*10)/10}
 function poissonAtLeast(lambda,k){
