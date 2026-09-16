@@ -930,6 +930,16 @@ function apiCacheKey(){return API_CACHE_PREFIX+JSON.stringify({date:$("date").va
 function readApiCache(){try{const x=JSON.parse(localStorage.getItem(apiCacheKey())||'null');if(!x)return null;if(Date.now()-x.savedAt>API_CACHE_TTL){localStorage.removeItem(apiCacheKey());return null;}return x.data}catch{return null}}
 function writeApiCache(d){try{localStorage.setItem(apiCacheKey(),JSON.stringify({savedAt:Date.now(),data:d}));}catch{}}
 function clearCurrentApiCache(){try{localStorage.removeItem(apiCacheKey())}catch{}}
+async function readJsonResponse(r){
+  const text=await r.text();
+  let d=null;
+  try{d=text?JSON.parse(text):null}catch(e){
+    const preview=String(text||'').replace(/\s+/g,' ').slice(0,240);
+    throw Error(`Risposta non JSON dal server (HTTP ${r.status}). ${preview||'Risposta vuota'}`);
+  }
+  if(!r.ok) throw Error(d?.error||d?.detail||`Errore API HTTP ${r.status}`);
+  return d;
+}
 async function run(){
  const runBtn=$("run");
  if(runBtn?.disabled) return;
@@ -957,7 +967,7 @@ async function run(){
   }finally{
     clearTimeout(timeoutId);
   }
-  const d=await r.json();if(!r.ok)throw Error(d.error||"Errore API");
+  const d=await readJsonResponse(r);
   lastDiagnostics=d.diagnostics||[];
   const live=(d.liveFixtures||[]);
   const apiErrors=(d.diagnostics||[]).filter(x=>x.error);
@@ -1075,7 +1085,7 @@ function authMessage(t,kind=''){const e=$("authMessage");e.textContent=t;e.style
 async function initCloud(){
   try{
     const r=await fetch('/api/config',{cache:'no-store'});
-    const cfg=await r.json();
+    const cfg=await readJsonResponse(r);
     if(!cfg.url||!cfg.key){setSyncStatus('Database non configurato');return;}
     supabaseClient=window.supabase.createClient(cfg.url,cfg.key);
     const {data:{session}}=await supabaseClient.auth.getSession();
@@ -1178,8 +1188,8 @@ function calcCLV(b){
 async function fetchClosingOdds(eventId,market){
  try{
    const r=await fetch(`/api/closing-odds?eventId=${encodeURIComponent(eventId)}&market=${encodeURIComponent(market)}`,{cache:'no-store'});
-   const d=await r.json();
-   return (r.ok&&d.odds!=null)?d.odds:null;
+   const d=await readJsonResponse(r);
+   return (d.odds!=null)?d.odds:null;
  }catch{return null}
 }
 async function refreshClosingOdds(id){
@@ -1200,7 +1210,7 @@ let settlementSuggestions={};
 async function fetchSettlement(fixtureId,market){
  try{
    const r=await fetch(`/api/settle-bet?fixtureId=${encodeURIComponent(fixtureId)}&market=${encodeURIComponent(market)}`,{cache:'no-store'});
-   return await r.json();
+   return await readJsonResponse(r);
  }catch{return {settled:false}}
 }
 let _settleBusy=false;
