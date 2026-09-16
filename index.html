@@ -1324,16 +1324,48 @@ function betLogoHtml(url,name,betId,role){
  const attrs=`data-team-logo="${url?'ready':'missing'}" data-team-name="${esc(name||'')}" data-team-role="${esc(role||'')}" data-bet-id="${esc(betId||'')}"`;
  return url?`<img class="bet-team-logo" ${attrs} src="${esc(url)}" alt="Stemma ${esc(name||'squadra')}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="bet-team-fallback" style="display:none" data-team-fallback="1">${initial}</span>`:`<img class="bet-team-logo" ${attrs} src="" alt="Stemma ${esc(name||'squadra')}" loading="lazy" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="bet-team-fallback" data-team-fallback="1">${initial}</span>`;
 }
-/* Loghi squadre: gestione statica/non bloccante.
-   I loghi già salvati nelle giocate vengono usati direttamente.
-   Nessun localStorage e nessuna chiamata automatica all'API durante il render. */
+/* Loghi squadre: caricamento leggero e non bloccante.
+   Non usiamo localStorage: per i TOP 3 chiediamo al server solo i 6 loghi
+   mancanti e aggiorniamo la card appena arrivano. L'API server-side gestisce
+   il cache e tiene la chiave API fuori dal browser. */
 function readTeamLogoCache(){return {}}
 function writeTeamLogoCache(c){}
 function logoCacheEntry(v){return null}
 function logoNeedsRefresh(entry){return false}
-async function fetchTeamLogoFresh(team){return null}
+async function fetchTeamLogoFresh(team){
+  const name=String(team||'').trim();
+  if(!name)return null;
+  try{
+    const r=await fetch('/api/team-logo?team='+encodeURIComponent(name),{headers:{'Accept':'application/json'}});
+    if(!r.ok)return null;
+    const d=await r.json();
+    return d?.logo?d:null;
+  }catch{return null}
+}
 async function hydrateMissingBetLogos(){return}
-async function hydrateTopPickLogos(){return}
+async function hydrateTopPickLogos(){
+  const picks=Array.isArray(lastPicks)?lastPicks:[];
+  if(!picks.length)return;
+  const targets=[];
+  picks.slice(0,3).forEach((x,i)=>{
+    if(!x.homeLogo)targets.push({i,role:'home',name:x.home});
+    if(!x.awayLogo)targets.push({i,role:'away',name:x.away});
+  });
+  if(!targets.length)return;
+  const results=await Promise.all(targets.map(async t=>({t,d:await fetchTeamLogoFresh(t.name)})));
+  results.forEach(({t,d})=>{
+    if(!d?.logo)return;
+    const x=lastPicks[t.i];
+    if(!x)return;
+    x[t.role+'Logo']=d.logo;
+    const card=document.querySelectorAll('#pick .pick')[t.i];
+    if(!card)return;
+    const img=card.querySelector('.team:nth-child('+ (t.role==='home'?'1':'3') +') img.team-logo');
+    const fallback=img?.nextElementSibling;
+    if(img){img.src=d.logo;img.style.display='block';img.dataset.pickLogo='ready';}
+    if(fallback)fallback.style.display='none';
+  });
+}
 function selectedOutcomeLabel(market,home,away){
  const m=String(market||'').trim();
  const map={'No Goal':'Nogoal','Goal':'Goal','1 (Casa)':'1','X (Pareggio)':'X','2 (Trasferta)':'2'};
