@@ -378,9 +378,9 @@ export default async function handler(req, res) {
     }
   }
 
-  // STEP 4: enrich ONLY the strongest 4 candidate fixtures with API-Football.
-  // Sul piano Free questo limita il blocco a 1 chiamata fixture + massimo 4
-  // injuries + 4 predictions = 9 chiamate, sotto il limite di 10/minuto.
+  // STEP 4: enrich ONLY the strongest candidate fixtures with API-Football
+  // availability data. One date lookup + one injuries call per unique top
+  // fixture keeps the free 100 requests/day quota under control.
   const enriched = await enrichTopCandidates(candidates, date, apiFootballKey, requestBreakdown, diagnostics);
   requests += enriched.requests;
   const data={date,fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
@@ -529,6 +529,57 @@ async function fd(path, token) {
   } catch (e) { return { error: e?.message || String(e) }; }
 }
 
+async function resolveLogoFromSportsDB(team) {
+  const q = String(team || '').trim();
+  if (!q) return null;
+  try {
+    const url = 'https://www.thesportsdb.com/api/v1/json/123/searchteams.php?t=' + encodeURIComponent(q);
+    const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!r.ok) return null;
+    const body = await r.json();
+    const rows = Array.isArray(body?.teams) ? body.teams : [];
+    const target = normalize(q);
+    const scoreName = (name) => {
+      const n = normalize(name);
+      if (!n || !target) return 0;
+      if (n === target) return 100;
+      if (n.includes(target) || target.includes(n)) return 85;
+      const a = new Set(n.split(' ')), b = target.split(' ');
+      return 45 + b.filter(x => a.has(x)).length * 12;
+    };
+    rows.sort((a,b) => scoreName(b?.strTeam) - scoreName(a?.strTeam));
+    const t = rows[0];
+    return t?.strBadge ? { logo:t.strBadge, source:'thesportsdb', resolvedName:t.strTeam || null, teamId:t.idTeam || null } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function enrichMissingCandidateLogos(rows, diagnostics) {
+  const out = [...rows];
+  const seenTeams = new Set();
+  const jobs = [];
+  for (const c of out) {
+    for (const role of ['home','away']) {
+      const current = role === 'home' ? c.homeLogo : c.awayLogo;
+      const team = role === 'home' ? c.home : c.away;
+      const key = normalize(team);
+      if (current || !key || seenTeams.has(key) || jobs.length >= 12) continue;
+      seenTeams.add(key);
+      jobs.push({ c, role, team });
+    }
+    if (jobs.length >= 12) break;
+  }
+  if (!jobs.length) return out;
+  const resolved = await Promise.all(jobs.map(async job => ({...job, result:await resolveLogoFromSportsDB(job.team)})));
+  const byTeam = new Map(resolved.filter(x=>x.result?.logo).map(x=>[normalize(x.team),x.result]));
+  return out.map(c => ({
+    ...c,
+    homeLogo: c.homeLogo || byTeam.get(normalize(c.home))?.logo || null,
+    awayLogo: c.awayLogo || byTeam.get(normalize(c.away))?.logo || null
+  }));
+}
+
 async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnostics) {
   if (!candidates.length) return { candidates, requests: 0 };
   let requests = 0;
@@ -545,7 +596,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
   for (const c of [...candidates].sort((a,b)=>b.score-a.score)) {
     const key = normalizePair(c.home, c.away);
     if (!seen.has(key)) { seen.add(key); uniqueFixtures.push(c); }
-    if (uniqueFixtures.length >= 4) break;
+    if (uniqueFixtures.length >= 10) break;
   }
   try {
     const fx = await apiFootball(`/fixtures?date=${encodeURIComponent(date)}&timezone=Europe%2FRome`, apiKey);
@@ -556,23 +607,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
         if (home && away) fixtureMap.set(normalizePair(home,away), f);
       }
     }
-    // V3: API-Football usa spesso nomi leggermente diversi da Odds-API.io
-    // (prefissi, abbreviazioni, FC/CF, ecc.). Dopo il match esatto facciamo
-    // un matching prudente sui nomi per recuperare fixture che esistono ma
-    // non hanno la stessa stringa. Non scegliamo mai una fixture se una delle
-    // due squadre non raggiunge una similarita' minima.
-    let fuzzyMatches = 0;
-    for (const c of uniqueFixtures) {
-      const exactKey = normalizePair(c.home,c.away);
-      if (fixtureMap.has(exactKey)) continue;
-      const best = bestFixtureMatch(c, Array.isArray(fx?.response) ? fx.response : []);
-      if (best?.fixture) {
-        fixtureMap.set(exactKey, best.fixture);
-        fuzzyMatches++;
-        diagnostics.push({provider:"api-football-fixture-match",fixture:`${c.home} - ${c.away}`,matched:`${best.home} - ${best.away}`,homeSimilarity:best.homeScore,awaySimilarity:best.awayScore,score:best.score});
-      }
-    }
-    diagnostics.push({provider:"api-football-fixtures",results:fixtureMap.size,fuzzyMatches,error:fx?.errors||null,quota:fx?.__quota||null});
+    diagnostics.push({provider:"api-football-fixtures",results:fixtureMap.size,error:fx?.errors||null});
   } catch(e) {
     diagnostics.push({provider:"api-football-fixtures",results:0,error:e?.message||String(e)});
   }
@@ -581,10 +616,30 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     fixtureLogos.set(key, {homeLogo:f?.teams?.home?.logo||null, awayLogo:f?.teams?.away?.logo||null});
   }
 
-  // V91: non consumiamo chiamate extra /leagues solo per controllare la copertura
-  // infortuni. Sul piano Free preferiamo usare direttamente /injuries e
-  // leggere la risposta: se la competizione non e' coperta, registriamo
-  // l'assenza di dati senza sprecare una richiesta aggiuntiva.
+  // Controllo la copertura infortuni per ciascuna competizione/stagione
+  // coinvolta PRIMA di interrogare /injuries: se API-Football dichiara
+  // esplicitamente coverage.injuries=false per quella lega, l'endpoint non
+  // restituirà mai nulla di utile, a prescindere da quanti infortuni ci
+  // siano davvero. Meglio saperlo e dirlo chiaramente, invece di sembrare
+  // che "non ci sono infortuni" quando in realtà quella lega non è coperta.
+  const injuriesCoverage = new Map();
+  const leaguePairs = new Set();
+  for (const c of uniqueFixtures) {
+    const af = fixtureMap.get(normalizePair(c.home,c.away));
+    if (af?.league?.id && af?.league?.season) leaguePairs.add(`${af.league.id}-${af.league.season}`);
+  }
+  for (const pairKeyStr of leaguePairs) {
+    const [leagueId, season] = pairKeyStr.split("-");
+    try {
+      const ld = await apiFootball(`/leagues?id=${encodeURIComponent(leagueId)}&season=${encodeURIComponent(season)}`, apiKey);
+      requests++; breakdown.apiFootballFixtures++;
+      const cov = ld?.response?.[0]?.seasons?.find(s => String(s.year) === String(season))?.coverage?.injuries;
+      injuriesCoverage.set(pairKeyStr, cov);
+      diagnostics.push({provider:"api-football-coverage",league:leagueId,season,injuriesCovered:cov!==false,error:null});
+    } catch(e) {
+      diagnostics.push({provider:"api-football-coverage",league:leagueId,season,error:e?.message||String(e)});
+    }
+  }
 
   for (const c of uniqueFixtures) {
     const af = fixtureMap.get(normalizePair(c.home,c.away));
@@ -592,12 +647,17 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
       diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,results:0,error:"Partita non trovata nell'elenco fixture di API-Football per questa data (nome squadra diverso, competizione non tracciata dalla loro fixture list, o fuso orario)."});
       continue;
     }
+    const covKey = af.league?.id && af.league?.season ? `${af.league.id}-${af.league.season}` : null;
+    if (covKey && injuriesCoverage.get(covKey) === false) {
+      diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,fixtureId:af.fixture.id,results:0,error:"Questa competizione/stagione non ha copertura infortuni su API-Football (coverage.injuries=false): non è un problema del nostro codice, quella lega semplicemente non è tracciata per gli infortuni su questo piano."});
+      continue;
+    }
     try {
       const d = await apiFootball(`/injuries?fixture=${encodeURIComponent(af.fixture.id)}`, apiKey);
       requests++; breakdown.apiFootballInjuries++;
       const rows = Array.isArray(d?.response) ? d.response : [];
       availability.set(normalizePair(c.home,c.away), summarizeAvailability(rows, c.home, c.away));
-      diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,fixtureId:af.fixture.id,results:rows.length,error:d?.errors||null,quota:d?.__quota||null});
+      diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,fixtureId:af.fixture.id,results:rows.length,error:d?.errors||null});
     } catch(e) {
       diagnostics.push({provider:"api-football-injuries",fixture:`${c.home} - ${c.away}`,results:0,error:e?.message||String(e)});
     }
@@ -607,7 +667,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
       requests++; breakdown.apiFootballPredictions++;
       const pred = Array.isArray(d?.response) ? d.response[0]?.predictions : null;
       if (pred) predictions.set(normalizePair(c.home,c.away), pred);
-      diagnostics.push({provider:"api-football-predictions",fixture:`${c.home} - ${c.away}`,fixtureId:af.fixture.id,results:pred?1:0,error:d?.errors||null,quota:d?.__quota||null});
+      diagnostics.push({provider:"api-football-predictions",fixture:`${c.home} - ${c.away}`,fixtureId:af.fixture.id,results:pred?1:0,error:d?.errors||null});
     } catch(e) {
       diagnostics.push({provider:"api-football-predictions",fixture:`${c.home} - ${c.away}`,results:0,error:e?.message||String(e)});
     }
@@ -618,7 +678,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
   // ogni candidato abbia sempre una motivazione e un punteggio di fiducia
   // validi (mai "-/100"), usando l'arricchimento quando c'è ed eventualmente
   // degradando allo storico gol/forma quando non c'è.
-  const out = candidates.map(c => {
+  let out = candidates.map(c => {
     const key = normalizePair(c.home,c.away);
     const av = availability.get(key);
     const pred = predictions.get(key) || null;
@@ -627,6 +687,15 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     const logos = fixtureLogos.get(key) || {};
     return {...scored, homeLogo:logos.homeLogo||c.homeLogo||null, awayLogo:logos.awayLogo||c.awayLogo||null, availability:av||null, prediction:pred||null, reason:field.reason, fieldAnalysis:field};
   });
+
+  // I loghi mancanti vengono risolti qui, lato server, e non dal browser.
+  // Limitiamo il recupero ai primi 12 stemmi mancanti per evitare raffiche di richieste.
+  const missingBefore = out.reduce((n,c)=>n + (!c.homeLogo?1:0) + (!c.awayLogo?1:0),0);
+  if (missingBefore) {
+    out = await enrichMissingCandidateLogos(out, diagnostics);
+    const missingAfter = out.reduce((n,c)=>n + (!c.homeLogo?1:0) + (!c.awayLogo?1:0),0);
+    diagnostics.push({provider:'thesportsdb-logos',requested:Math.min(12,missingBefore),resolved:missingBefore-missingAfter,error:null});
+  }
   return {candidates:out, requests};
 }
 
@@ -636,43 +705,8 @@ async function apiFootball(path, key) {
   });
   const text = await r.text();
   let body; try { body=JSON.parse(text); } catch { body={errors:{message:text.slice(0,500)}}; }
-  const meta = {
-    dailyRemaining: Number(r.headers.get("x-ratelimit-requests-remaining")),
-    dailyLimit: Number(r.headers.get("x-ratelimit-requests-limit")),
-    minuteRemaining: Number(r.headers.get("X-RateLimit-Remaining")),
-    minuteLimit: Number(r.headers.get("X-RateLimit-Limit"))
-  };
-  if (!r.ok) return { ...body, errors: body.errors || {message:`HTTP ${r.status}`}, __quota:meta };
-  return { ...body, __quota:meta };
-}
-
-function teamSimilarity(a,b) {
-  const A = String(a||"").toLowerCase().replace(/[^a-z0-9\s]+/g," ").split(/\s+/).filter(Boolean);
-  const B = String(b||"").toLowerCase().replace(/[^a-z0-9\s]+/g," ").split(/\s+/).filter(Boolean);
-  if (!A.length || !B.length) return 0;
-  const ca = clean(a), cb = clean(b);
-  if (ca === cb) return 1;
-  if (ca.includes(cb) || cb.includes(ca)) return 0.92;
-  const setA = new Set(A), setB = new Set(B);
-  const inter = [...setA].filter(x=>setB.has(x)).length;
-  const union = new Set([...A,...B]).size;
-  const jaccard = union ? inter/union : 0;
-  return Math.min(0.9, jaccard + (inter >= 1 ? 0.12 : 0));
-}
-
-function bestFixtureMatch(candidate, rows) {
-  let best = null;
-  for (const f of rows) {
-    const home = f?.teams?.home?.name, away = f?.teams?.away?.name;
-    if (!home || !away) continue;
-    const hs = teamSimilarity(candidate.home, home);
-    const as = teamSimilarity(candidate.away, away);
-    const score = (hs + as) / 2;
-    if (hs >= 0.72 && as >= 0.72 && (!best || score > best.score)) {
-      best = {fixture:f, home, away, homeScore:round(hs*100), awayScore:round(as*100), score:round(score*100)};
-    }
-  }
-  return best;
+  if (!r.ok) return { ...body, errors: body.errors || {message:`HTTP ${r.status}`} };
+  return body;
 }
 
 function summarizeAvailability(rows, homeName, awayName) {
@@ -714,20 +748,19 @@ function warningsPenaltyCount(c) {
 }
 
 function applyEnrichedScore(c, av, pred) {
-  // V92: ogni mercato mantiene la propria probabilita'.
-  // Nelle versioni precedenti il cap fisso (es. 76%) poteva schiacciare
-  // mercati diversi della stessa partita sullo stesso valore. Qui usiamo
-  // invece una calibrazione morbida: piu' evidenze reali abbiamo, meno
-  // stringiamo la probabilita' verso il 50%.
+  // V2: separiamo la probabilita' del mercato dalla probabilita' del modello.
+  // L'errore della versione precedente era lasciare c.prob quasi invariata
+  // anche quando API-Football forniva una previsione indipendente: in pratica
+  // il ranking continuava a seguire soprattutto la quota.
   const components = [];
   const marketProb = Number.isFinite(c.pFair) ? clamp(c.pFair, 0, 100) : null;
   const statProb = Number.isFinite(c.pStat) ? clamp(c.pStat, 0, 100) : null;
   const freqProb = Number.isFinite(c.pFreq) ? clamp(c.pFreq, 0, 100) : null;
   const predScore = predictionComponent(c.market, pred, c.home, c.away);
   const predictionProb = predScore != null ? clamp(predScore, 0, 100) : null;
-  const predEvidence = predictionEvidenceScore(c.market, pred, c.home, c.away);
-  const predComparison = predictionComparisonSignal(c.market, pred, c.home, c.away);
 
+  // Costruiamo la probabilita' finale dando piu' spazio alle evidenze di gioco
+  // quando esistono. Il mercato resta un prior importante, non il pilota unico.
   const sources = [];
   if (statProb != null) sources.push([40, statProb, "storico/modello gol"]);
   if (predictionProb != null) sources.push([35, predictionProb, "prediction API"]);
@@ -742,92 +775,76 @@ function applyEnrichedScore(c, av, pred) {
     modelProb = Number.isFinite(c.prob) ? c.prob : 50;
   }
 
+  // Se modello storico e prediction API divergono molto, riduciamo
+  // l'overconfidence invece di scegliere arbitrariamente una delle due fonti.
   const agreementValues = [statProb, predictionProb].filter(v => v != null);
   const disagreement = agreementValues.length === 2 ? Math.abs(agreementValues[0] - agreementValues[1]) : 0;
   if (disagreement >= 25) modelProb = modelProb * 0.80 + 50 * 0.20;
   else if (disagreement >= 15) modelProb = modelProb * 0.90 + 50 * 0.10;
-
-  // V92: shrinkage proporzionale alla qualita' dei dati, non un tetto fisso.
-  // Con pochi dati evitiamo l'overconfidence; con molte evidenze lasciamo
-  // respirare la probabilita' specifica del mercato.
-  let evidence = 0;
-  if (statProb != null) evidence += 30;
-  if (freqProb != null) evidence += 15;
-  if (Number.isFinite(c.form)) evidence += 15;
-  const venueScore = venueComponent(c.market, Number.isFinite(c.homeForm) ? c.homeForm : null, Number.isFinite(c.awayForm) ? c.awayForm : null);
-  const oneXTwoMatchup = oneXTwoFieldComponent(c);
-  if (oneXTwoMatchup != null || venueScore != null) evidence += 10;
-  if (c.h2h?.sample >= 2) evidence += 5;
-  if (c.standingNote) evidence += 5;
-  if (predictionProb != null) evidence += 25;
-  if (predEvidence >= 50) evidence += 5;
-  if (predEvidence >= 75) evidence += 5;
-  const absenceScore = absenceComponent(c.market, c.home, c.away, av);
-  if (absenceScore != null) evidence += 5;
-  const analysisSupport = clamp(evidence, 0, 100);
-
-  // Coefficiente di fiducia continuo: 0.60 con dati molto scarsi, fino a
-  // 0.95 con un quadro ricco. Non imponiamo piu' lo stesso cap a tutti i
-  // mercati: Under, Goal e 1X2 possono quindi avere valori differenti.
-  const confidenceFactor = analysisSupport < 30 ? 0.60
-    : analysisSupport < 45 ? 0.68
-    : analysisSupport < 60 ? 0.76
-    : analysisSupport < 75 ? 0.86
-    : 0.95;
-  modelProb = 50 + (modelProb - 50) * confidenceFactor;
   modelProb = clamp(modelProb, 5, 95);
 
-  // Nei mercati complementari conserviamo la coerenza del modello quando
-  // entrambe le selezioni sono disponibili nel feed. La probabilita' di una
-  // singola selezione resta comunque specifica del mercato.
   const probabilityScore = modelProb;
   components.push([45, probabilityScore, "probabilità modello"]);
   if (statProb != null) components.push([15, statProb, "statistiche"]);
   if (freqProb != null) components.push([8, freqProb, "frequenza"]);
+
   const formRaw = Number.isFinite(c.form) ? c.form : null;
   if (formRaw != null) components.push([8, clamp(50 + formRaw * 5, 0, 100), "forma"]);
 
-  const oddsNumber = Number(c.odds);
-  const impliedProbability = oddsNumber > 1 ? (100 / oddsNumber) : null;
-  const edge = impliedProbability != null ? (modelProb - impliedProbability) : null;
-  const valueScore = edge != null ? clamp(50 + 50 * Math.tanh(edge / 20), 0, 100) : 50;
+  const edge = Number.isFinite(c.edge) ? c.edge : (modelProb - (100 / Number(c.odds)));
+  // Il valore si ricalcola sulla probabilita' aggiornata, ma resta secondario.
+  const valueScore = clamp(50 + 50 * Math.tanh(edge / 20), 0, 100);
   components.push([8, valueScore, "quota"]);
 
+  const homeAdv = Number.isFinite(c.homeForm) ? c.homeForm : null;
+  const awayAdv = Number.isFinite(c.awayForm) ? c.awayForm : null;
+  const venueScore = venueComponent(c.market, homeAdv, awayAdv);
+  const oneXTwoMatchup = oneXTwoFieldComponent(c);
   if (oneXTwoMatchup != null) components.push([8, oneXTwoMatchup, "confronto 1X2"]);
   else if (venueScore != null) components.push([5, venueScore, "casa/trasferta"]);
+
+  const absenceScore = absenceComponent(c.market, c.home, c.away, av);
   if (absenceScore != null) components.push([5, absenceScore, "assenze"]);
   if (predictionProb != null) components.push([12, predictionProb, "prediction"]);
-  if (predComparison != null) components.push([8, predComparison, "confronto API-Football"]);
 
   const totalWeight = components.reduce((s,x)=>s+x[0],0) || 1;
   const weighted = components.reduce((s,x)=>s + x[0] * x[1],0) / totalWeight;
 
-  // Disaccordo tra fonti: abbassa la priorita', non elimina la partita.
+  // Supporto analitico: non conta quante API abbiamo chiamato, ma quante
+  // evidenze indipendenti abbiamo realmente a disposizione.
+  let evidence = 0;
+  if (statProb != null) evidence += 30;
+  if (freqProb != null) evidence += 15;
+  if (Number.isFinite(c.form)) evidence += 15;
+  if (oneXTwoMatchup != null || venueScore != null) evidence += 10;
+  if (c.h2h?.sample >= 2) evidence += 5;
+  if (c.standingNote) evidence += 5;
+  if (predictionProb != null) evidence += 30;
+  if (absenceScore != null) evidence += 5;
+  const analysisSupport = clamp(evidence, 0, 100);
+
+  // Penalita' di disaccordo: se due modelli seri sono lontani, la partita non
+  // viene scartata ma perde priorita' rispetto a una previsione piu' coerente.
   const agreementScore = disagreement >= 25 ? 55 : disagreement >= 15 ? 72 : 92;
-  let score = probabilityScore * 0.45 + weighted * 0.25 + analysisSupport * 0.20 + agreementScore * 0.10;
-  if (analysisSupport < 30) score = Math.min(score, 58);
-  else if (analysisSupport < 45) score = Math.min(score, 64);
+  let score = probabilityScore * 0.50 + weighted * 0.25 + analysisSupport * 0.15 + agreementScore * 0.10;
+  if (analysisSupport < 30) score = Math.min(score, Math.max(50, probabilityScore * 0.78));
+  else if (analysisSupport < 45) score = Math.min(score, Math.max(56, probabilityScore * 0.88));
   if (warningsPenaltyCount(c) > 0) score -= Math.min(8, warningsPenaltyCount(c) * 3);
   score = clamp(score, 0, 100);
 
-  const confidenceLabel = analysisSupport >= 75 ? "Alta" : analysisSupport >= 55 ? "Media" : "Limitata";
   return {
     ...c,
+    // Da ora prob/edge sono quelli del modello arricchito, quindi anche il
+    // TOP 3 frontend usa davvero la nuova analisi invece della sola quota.
     prob: round(modelProb),
-    implied: impliedProbability == null ? null : round(impliedProbability),
-    edge: edge == null ? null : round(edge),
+    edge: round(edge),
     score: round(score),
     analysisSupport: round(analysisSupport),
-    analysisLimited: analysisSupport < 55,
-    analysisConfidenceLabel: confidenceLabel,
+    analysisLimited: analysisSupport < 35,
     modelAgreement: round(agreementScore),
     scoreComponents: components.map(x=>({name:x[2],weight:x[0],value:round(x[1])})),
     absence: absenceScore == null ? 0 : round(absenceScore),
-    pred: predictionProb == null ? 0 : round(predictionProb),
-    predictionEvidence: round(predEvidence),
-    predictionComparison: predComparison == null ? null : round(predComparison),
-    probabilityCap: null,
-    confidenceFactor: round(confidenceFactor * 100)
+    pred: predictionProb == null ? 0 : round(predictionProb)
   };
 }
 
@@ -875,73 +892,6 @@ function absenceComponent(market, home, away, av) {
   if (m.startsWith("2")) return clamp(50 + (h-a)*12,0,100);
   if (m.startsWith("X")) return clamp(50 - Math.abs(h-a)*6,0,100);
   return 50;
-}
-
-function numericSignal(v) {
-  if (v == null) return null;
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  const s=String(v).replace(/%/g,"").replace(",",".").trim();
-  const n=Number(s);
-  return Number.isFinite(n) ? n : null;
-}
-
-function predictionComparisonSignal(market, pred, home, away) {
-  const cmp=pred?.comparison;
-  if (!cmp || typeof cmp !== "object") return null;
-  const m=String(market||"");
-  const vals=[];
-  const pickPair=(obj)=>{
-    if (!obj || typeof obj !== "object") return null;
-    const h=numericSignal(obj.home), a=numericSignal(obj.away);
-    if (h==null || a==null) return null;
-    return {h,a};
-  };
-  const att=pickPair(cmp.att || cmp.attack);
-  const def=pickPair(cmp.def || cmp.defence || cmp.defense);
-  const pois=pickPair(cmp.poisson_distribution || cmp.poisson);
-  if (m.startsWith("1") && att && def) {
-    vals.push(att.h/(Math.abs(att.h)+Math.abs(att.a)||1)*100);
-    vals.push(def.h/(Math.abs(def.h)+Math.abs(def.a)||1)*100);
-  } else if (m.startsWith("2") && att && def) {
-    vals.push(att.a/(Math.abs(att.h)+Math.abs(att.a)||1)*100);
-    vals.push(def.a/(Math.abs(def.h)+Math.abs(def.a)||1)*100);
-  } else if (m.startsWith("X")) {
-    if (att && def) {
-      const diff=Math.abs(att.h-att.a)+Math.abs(def.h-def.a);
-      vals.push(clamp(100-diff*0.7,0,100));
-    }
-  } else if (pois) {
-    // Per Under/Over/Goal non interpretiamo i valori grezzi come percentuali:
-    // la vera previsione resta quella derivata dai gol previsti.
-    const gh=numericSignal(pred?.goals?.home), ga=numericSignal(pred?.goals?.away);
-    if (gh!=null && ga!=null) {
-      const total=gh+ga;
-      if (m==="Under 3.5") vals.push(clamp(100-poissonAtLeast(total,4)*100,0,100));
-      else if (m==="Under 2.5") vals.push(clamp(100-poissonAtLeast(total,3)*100,0,100));
-      else if (m==="Over 2.5") vals.push(clamp(poissonAtLeast(total,3)*100,0,100));
-      else if (m==="Over 3.5") vals.push(clamp(poissonAtLeast(total,4)*100,0,100));
-      else if (m==="Goal") vals.push(clamp((1-Math.exp(-gh))*(1-Math.exp(-ga))*100,0,100));
-      else if (m==="No Goal") vals.push(clamp((1-(1-Math.exp(-gh))*(1-Math.exp(-ga)))*100,0,100));
-    }
-  }
-  return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : null;
-}
-
-function predictionEvidenceScore(market, pred, home, away) {
-  if (!pred) return 0;
-  let score=0;
-  if (pred.percent && ["home","draw","away"].some(k=>Number.isFinite(Number(pred.percent[k])))) score+=30;
-  if (pred.goals && Number.isFinite(Number(pred.goals.home)) && Number.isFinite(Number(pred.goals.away))) score+=20;
-  if (pred.under_over) score+=10;
-  if (pred.advice || pred.winner?.name) score+=10;
-  if (pred.comparison && typeof pred.comparison === "object") {
-    const c=pred.comparison;
-    if (c.att || c.attack) score+=10;
-    if (c.def || c.defence || c.defense) score+=10;
-    if (c.poisson_distribution || c.poisson) score+=5;
-    if (c.h2h) score+=5;
-  }
-  return clamp(score,0,100);
 }
 
 function predictionComponent(market, pred, home, away) {
