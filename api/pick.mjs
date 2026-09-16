@@ -368,7 +368,7 @@ export default async function handler(req, res) {
     // try/catch difensivo: un errore sull'analisi di UNA partita non deve
     // far fallire l'intera risposta API (le altre partite restano valide).
     try {
-      const extracted=extractOdds(oddsData,market,requestedBookmaker);
+      const extracted=extractOdds(oddsData,market,requestedBookmaker,home,away);
       const markets=buildMarkets(extracted,homeStats,awayStats,h2hMatches,f.homeTeam?.id,f.awayTeam?.id,homeStanding,awayStanding);
       diagnostics.push({provider:"odds-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:markets.length,bookmaker:requestedBookmaker,availableBookmakers:Object.keys(oddsData?.bookmakers||{}),error:oddsData?.error||null});
       if(markets.length) analyzedFixtureIds.add(f.id);
@@ -688,35 +688,36 @@ function warningsPenaltyCount(c) {
 }
 
 function applyEnrichedScore(c, av, pred) {
-  // Score components are normalized to 0-100. Missing data is NOT penalized:
-  // the available components are reweighted proportionally.
+  // Score components are normalized to 0-100. Missing data is NOT penalized.
+  // La probabilità resta il riferimento principale del ranking.
   const components = [];
+  const probabilityScore = Number.isFinite(c.prob) ? clamp(c.prob, 0, 100) : null;
+  if (probabilityScore != null) components.push([60, probabilityScore, "probabilità"]);
   const statValues = [c.pStat, c.pFreq].filter(Number.isFinite);
-  if (statValues.length) components.push([30, statValues.reduce((a,b)=>a+b,0)/statValues.length, "statistiche"]);
+  if (statValues.length) components.push([15, statValues.reduce((a,b)=>a+b,0)/statValues.length, "statistiche"]);
 
   const formRaw = Number.isFinite(c.form) ? c.form : null;
   if (formRaw != null) {
-    // c.form is the historical form bonus (-5..5). Convert it to a 0..100 indicator.
-    components.push([20, clamp(50 + formRaw * 5, 0, 100), "forma"]);
+    components.push([10, clamp(50 + formRaw * 5, 0, 100), "forma"]);
   }
 
   const edge = Number.isFinite(c.edge) ? c.edge : (Number(c.prob) - (100 / Number(c.odds)));
-  // Positive edge is rewarded, but with diminishing returns.
+  // Positive edge is rewarded, but only as a secondary signal.
   const valueScore = clamp(50 + 50 * Math.tanh(edge / 20), 0, 100);
-  components.push([20, valueScore, "quota"]);
+  components.push([10, valueScore, "quota"]);
 
   const homeAdv = Number.isFinite(c.homeForm) ? c.homeForm : null;
   const awayAdv = Number.isFinite(c.awayForm) ? c.awayForm : null;
   const venueScore = venueComponent(c.market, homeAdv, awayAdv);
   const oneXTwoMatchup = oneXTwoFieldComponent(c);
-  if (oneXTwoMatchup != null) components.push([20, oneXTwoMatchup, "confronto 1X2"]);
-  else if (venueScore != null) components.push([10, venueScore, "casa/trasferta"]);
+  if (oneXTwoMatchup != null) components.push([10, oneXTwoMatchup, "confronto 1X2"]);
+  else if (venueScore != null) components.push([5, venueScore, "casa/trasferta"]);
 
   const absenceScore = absenceComponent(c.market, c.home, c.away, av);
-  if (absenceScore != null) components.push([10, absenceScore, "assenze"]);
+  if (absenceScore != null) components.push([5, absenceScore, "assenze"]);
 
   const predScore = predictionComponent(c.market, pred, c.home, c.away);
-  if (predScore != null) components.push([20, predScore, "prediction"]);
+  if (predScore != null) components.push([15, predScore, "prediction"]);
 
   const totalWeight = components.reduce((s,x)=>s+x[0],0) || 1;
   const weighted = components.reduce((s,x)=>s + x[0] * x[1],0) / totalWeight;
@@ -742,9 +743,12 @@ function applyEnrichedScore(c, av, pred) {
   // disponibile: altrimenti le partite future resterebbero artificialmente
   // senza TOP solo perché FOOTBALL_DATA_TOKEN non copre quella competizione.
   // La quota pesa comunque soltanto come valore finale.
-  let score = weighted * 0.75 + analysisSupport * 0.25;
-  if (analysisSupport < 30) score = Math.min(score, 52);
-  else if (analysisSupport < 45) score = Math.min(score, 58);
+  // Nel punteggio arricchito la probabilità resta dominante; il supporto
+  // analitico serve a distinguere due scenari con probabilità simili.
+  const baseProbability = Number.isFinite(c.prob) ? clamp(c.prob, 0, 100) : weighted;
+  let score = baseProbability * 0.60 + weighted * 0.25 + analysisSupport * 0.15;
+  if (analysisSupport < 30) score = Math.min(score, Math.max(52, baseProbability * 0.80));
+  else if (analysisSupport < 45) score = Math.min(score, Math.max(58, baseProbability * 0.90));
   if (warningsPenaltyCount(c) > 0) score -= Math.min(8, warningsPenaltyCount(c) * 3);
   score = clamp(score, 0, 100);
 
@@ -1236,7 +1240,7 @@ function clean(s) {
     .replace(/[^a-z0-9]+/g, "").trim();
 }
 
-export function extractOdds(data, requestedMarket="all", requestedBookmaker="") {
+export function extractOdds(data, requestedMarket="all", requestedBookmaker="", homeTeamName="", awayTeamName="") {
   const out = [];
   const books = data?.bookmakers && typeof data.bookmakers === "object" ? data.bookmakers : {};
   const selectedBooks = requestedBookmaker
@@ -1297,13 +1301,30 @@ export function extractOdds(data, requestedMarket="all", requestedBookmaker="") 
       }
 
       if (isMatch) {
+        const norm = v => String(v ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+        const homeN = norm(homeTeamName), awayN = norm(awayTeamName);
+        const pushOutcome = (label, odd) => {
+          const n = num(odd);
+          if (!n) return;
+          const l = norm(label);
+          if (["1","home","casa","team 1","home team","1x2 home"].includes(l) || (homeN && l === homeN) || (homeN && l.includes(homeN))) out.push({value:"1",odd:n,bookmaker});
+          else if (["x","draw","pareggio","tie"].includes(l)) out.push({value:"X",odd:n,bookmaker});
+          else if (["2","away","trasferta","team 2","away team","1x2 away"].includes(l) || (awayN && l === awayN) || (awayN && l.includes(awayN))) out.push({value:"2",odd:n,bookmaker});
+        };
         for (const row of rows) {
           const home = num(row?.home, row?.Home, row?.one, row?.['1']);
           const draw = num(row?.draw, row?.Draw, row?.x, row?.['X']);
           const away = num(row?.away, row?.Away, row?.two, row?.['2']);
-          if (home) out.push({value:"1",odd:home,bookmaker});
-          if (draw) out.push({value:"X",odd:draw,bookmaker});
-          if (away) out.push({value:"2",odd:away,bookmaker});
+          if (home || draw || away) {
+            if (home) out.push({value:"1",odd:home,bookmaker});
+            if (draw) out.push({value:"X",odd:draw,bookmaker});
+            if (away) out.push({value:"2",odd:away,bookmaker});
+            continue;
+          }
+          const label = row?.name ?? row?.label ?? row?.outcome ?? row?.selection ?? row?.type ?? row?.result;
+          const odd = row?.odd ?? row?.odds ?? row?.price ?? row?.value ?? row?.decimal;
+          if (label != null) pushOutcome(label, odd);
+          if (Array.isArray(row?.outcomes)) for (const o of row.outcomes) pushOutcome(o?.name ?? o?.label ?? o?.outcome ?? o?.selection, o?.odd ?? o?.odds ?? o?.price ?? o?.value ?? o?.decimal);
         }
       }
     }
@@ -1312,15 +1333,27 @@ export function extractOdds(data, requestedMarket="all", requestedBookmaker="") 
   // If the bookmaker supplied a direct ML object with draw but no recognizable
   // market name, still accept it rather than returning zero candidates.
   if (wants1x2 && !out.some(x=>["1","X","2"].includes(x.value))) {
+    const norm = v => String(v ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    const homeN=norm(homeTeamName), awayN=norm(awayTeamName);
+    const pushLabeled=(bookmaker,row)=>{
+      const label=norm(row?.name ?? row?.label ?? row?.outcome ?? row?.selection ?? row?.type ?? row?.result);
+      const odd=num(row?.odd,row?.odds,row?.price,row?.value,row?.decimal);
+      if(!odd)return;
+      if(["1","home","casa"].includes(label)||(homeN&&label.includes(homeN))) out.push({value:"1",odd,bookmaker});
+      else if(["x","draw","pareggio","tie"].includes(label)) out.push({value:"X",odd,bookmaker});
+      else if(["2","away","trasferta"].includes(label)||(awayN&&label.includes(awayN))) out.push({value:"2",odd,bookmaker});
+    };
     for (const [bookmaker, markets] of selectedBooks) {
       for (const bet of (Array.isArray(markets)?markets:[])) {
         for (const row of (Array.isArray(bet?.odds)?bet.odds:[])) {
           const home=num(row?.home,row?.Home,row?.one,row?.['1']);
           const draw=num(row?.draw,row?.Draw,row?.x,row?.['X']);
           const away=num(row?.away,row?.Away,row?.two,row?.['2']);
-          if(home&&draw&&away){
-            out.push({value:"1",odd:home,bookmaker},{value:"X",odd:draw,bookmaker},{value:"2",odd:away,bookmaker});
-          }
+          if(home) out.push({value:"1",odd:home,bookmaker});
+          if(draw) out.push({value:"X",odd:draw,bookmaker});
+          if(away) out.push({value:"2",odd:away,bookmaker});
+          if(!home&&!draw&&!away) pushLabeled(bookmaker,row);
+          if(Array.isArray(row?.outcomes)) for(const o of row.outcomes) pushLabeled(bookmaker,o);
         }
       }
     }
@@ -1431,12 +1464,18 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
     const analysisWeight=analysisParts.reduce((a,x)=>a+x[0],0);
     const analysisScore=analysisWeight ? analysisParts.reduce((a,x)=>a+x[0]*x[1],0)/analysisWeight : 45;
 
-    // Il valore quota pesa al massimo il 15% del punteggio finale.
+    // La PROBABILITÀ è il segnale principale per il ranking.
+    // La quota serve per misurare il valore (edge), non per far salire
+    // artificialmente una previsione meno probabile.
     const valueScore = clamp(50 + 50 * Math.tanh(edge / 20), 0, 100);
-    let score = analysisScore * 0.85 + valueScore * 0.15;
+    const probabilityScore = clamp(prob, 0, 100);
+    // Ranking: probabilità 60%, supporto analitico 25%, valore quota 15%.
+    // In questo modo un esito molto probabile e ben supportato precede
+    // normalmente una quota alta ma meno probabile.
+    let score = probabilityScore * 0.60 + analysisScore * 0.25 + valueScore * 0.15;
     // Se non abbiamo dati analitici reali, non consentiamo comunque una
     // promozione automatica dovuta alla sola quota.
-    if (analysisWeight < 35) score = Math.min(score, 52);
+    if (analysisWeight < 35) score = Math.min(score, Math.max(52, probabilityScore * 0.75));
     score = clamp(score, 0, 100);
 
     out.push({
