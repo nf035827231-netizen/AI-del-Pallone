@@ -56,8 +56,9 @@ async function handler(req, res) {
     // europee piu' rilevanti, pur non essendo campionati nazionali.
     if (/(champions-league|uefa-champions|europa-league|uefa-europa|conference-league|uefa-conference)/i.test(text)) return true;
 
-    // Europa: prima divisione dei principali paesi e delle federazioni europee
-    // normalmente presenti nel feed quote.
+    // Europa: solo i principali campionati. Escludiamo le federazioni piu\u0300 piccole
+    // (es. Macedonia del Nord, Azerbaigian, Armenia, Georgia, Malta, ecc.)
+    // per evitare che il feed globale porti in TOP gare con copertura statistica debole.
     const europeTop = [
       /england.*premier-league|premier-league.*england/,
       /spain.*la-liga|la-liga.*spain|spain.*primera-division/,
@@ -78,34 +79,11 @@ async function handler(req, res) {
       /poland.*ekstraklasa|ekstraklasa.*poland/,
       /czech.*first-league|czech-republic.*first-league|czechia.*first-league/,
       /croatia.*hnl|hnl.*croatia/,
-      /serbia.*super-liga|super-liga.*serbia/,
       /romania.*liga-1|liga-1.*romania/,
+      /serbia.*super-liga|super-liga.*serbia/,
       /ukraine.*premier-league|premier-league.*ukraine/,
-      /russia.*premier-league|premier-league.*russia/,
       /hungary.*nb-i|hungary.*nemzeti/,
-      /slovakia.*super-liga|super-liga.*slovakia/,
-      /slovenia.*prva-liga|prva-liga.*slovenia/,
-      /bulgaria.*first-league|bulgaria.*efbet-liga/,
-      /cyprus.*first-division|cyprus.*1st-division/,
-      /israel.*premier-league|premier-league.*israel/,
-      /ireland.*premier-division|premier-division.*ireland/,
-      /iceland.*urvalsdeild|iceland.*besta-deild/,
-      /finland.*veikkausliiga|veikkausliiga.*finland/,
-      /bosnia.*premier-league|premier-league.*bosnia/,
-      /kosovo.*superleague|superleague.*kosovo/,
-      /albania.*kategoria-superiore|kategoria-superiore.*albania/,
-      /north-macedonia.*first-league|macedonia.*first-league/,
-      /georgia.*erovnuli-liga|erovnuli-liga.*georgia/,
-      /armenia.*premier-league|premier-league.*armenia/,
-      /azerbaijan.*premier-league|premier-league.*azerbaijan/,
-      /moldova.*super-liga|super-liga.*moldova/,
-      /malta.*premier-league|premier-league.*malta/,
-      /wales.*cymru-premier|cymru-premier.*wales/,
-      /northern-ireland.*premiership|premiership.*northern-ireland/,
-      /estonia.*meistriliiga|meistriliiga.*estonia/,
-      /latvia.*virsliga|virsliga.*latvia/,
-      /lithuania.*a-lyga|a-lyga.*lithuania/,
-      /luxembourg.*national-division|national-division.*luxembourg/
+      /slovakia.*super-liga|super-liga.*slovakia/
     ];
     if (europeTop.some(re => re.test(text))) return true;
 
@@ -117,10 +95,7 @@ async function handler(req, res) {
       /chile.*primera-division|chile.*primera|primera-division.*chile/,
       /uruguay.*primera-division|uruguay.*primera/,
       /ecuador.*liga-pro|ecuador.*serie-a|liga-pro.*ecuador/,
-      /peru.*liga-1|liga-1.*peru/,
-      /paraguay.*primera-division|paraguay.*primera/,
-      /bolivia.*division-profesional|bolivia.*primera/,
-      /venezuela.*primera-division|venezuela.*primera/
+      /peru.*liga-1|liga-1.*peru/
     ];
     if (southAmericaTop.some(re => re.test(text))) return true;
 
@@ -152,7 +127,7 @@ async function handler(req, res) {
     requests++; requestBreakdown.oddsEventsDiscovery++;
     const events = Array.isArray(ev) ? ev : [];
     const dated = events.filter(e => localDate(e.date) === date);
-    const europeanMarkers = /(england|scotland|wales|northern-ireland|spain|italy|germany|france|portugal|netherlands|belgium|austria|switzerland|turkey|greece|denmark|sweden|norway|poland|czech|croatia|serbia|romania|ukraine|russia|hungary|slovakia|slovenia|bulgaria|cyprus|israel|ireland|iceland|finland|bosnia|kosovo|albania|north-macedonia|macedonia|georgia|armenia|azerbaijan|moldova|malta|estonia|latvia|lithuania|luxembourg|champions-league|uefa-champions|europa-league|uefa-europa|conference-league|uefa-conference)/i;
+    const europeanMarkers = /(england|scotland|spain|italy|germany|france|portugal|netherlands|belgium|austria|switzerland|turkey|greece|denmark|sweden|norway|poland|czech|croatia|serbia|romania|ukraine|hungary|slovakia|champions-league|uefa-champions|europa-league|uefa-europa|conference-league|uefa-conference)/i;
     const isEuropeanEvent = e => {
       const slug=String(e?.league?.slug||'').toLowerCase().replace(/_/g,'-');
       const name=String(e?.league?.name||'').toLowerCase();
@@ -160,7 +135,7 @@ async function handler(req, res) {
     };
     const relevant = dated.filter(preferredLeagueFilter).filter(e => !europeOnly || isEuropeanEvent(e));
     const rejected = dated.length - relevant.length;
-    diagnostics.push({ provider:"odds-api-events-global", results:relevant.length, totalReturned:events.length, dated:dated.length, rejectedByLeagueFilter:rejected, scope:europeOnly?"Europe top divisions + UEFA only":"Europe top divisions + UEFA + South America top divisions + MLS + J1", bookmaker:requestedBookmaker, europeOnly, error:ev?.error||null });
+    diagnostics.push({ provider:"odds-api-events-global", results:relevant.length, totalReturned:events.length, dated:dated.length, rejectedByLeagueFilter:rejected, scope:europeOnly?"Europe top divisions + UEFA only":"principali campionati europei + UEFA + Brasile/Argentina/Colombia/Cile/Uruguay/Ecuador/Peru + MLS/J1", bookmaker:requestedBookmaker, europeOnly, error:ev?.error||null });
     oddsEventResults = [{ code:null, slug:null, events, relevant, error:ev?.error||null }];
   } else {
     oddsEventResults = await Promise.all(codes.map(async code => {
@@ -451,8 +426,8 @@ function normalizeLeague(x) {
   const s = String(x || "").trim().toUpperCase();
   const map = { "135":"SA", "39":"PL", "140":"PD", "78":"BL1", "61":"FL1", "2":"CL", "88":"DED", "94":"PPL" };
   const allowed = [
-    "SA","PL","PD","BL1","FL1","PPL","DED","BEL1","SCO1","AUT1","SUI1","TUR1","GRE1","DEN1","SWE1","NOR1","POL1","CZE1","CRO1","SRB1","ROU1","UKR1","HUN1","SVK1","SVN1","BUL1","CYP1","ISR1","IRL1","ISL1","FIN1","BIH1","ALB1","MKD1","GEO1","ARM1","AZE1","MDA1","MLT1","WAL1","NIR1","EST1","LAT1","LTU1","LUX1",
-    "CL","EL","ECL","BRA1","ARG1","COL1","CHI1","URU1","ECU1","PER1","PAR1","BOL1","VEN1","MLS1","JPN1"
+    "SA","PL","PD","BL1","FL1","PPL","DED","BEL1","SCO1","AUT1","SUI1","TUR1","GRE1","DEN1","SWE1","NOR1","POL1","CZE1","CRO1","SRB1","ROU1","UKR1","HUN1","SVK1",
+    "CL","EL","ECL","BRA1","ARG1","COL1","CHI1","URU1","ECU1","PER1","MLS1","JPN1"
   ];
   return map[s] || (allowed.includes(s) ? s : null);
 }
@@ -501,25 +476,6 @@ function leaguePriority(league) {
     [/serbia.*super-liga|super-liga.*serbia/,750],
     [/ukraine.*premier-league|premier-league.*ukraine/,740],
     [/hungary.*nb-i|hungary.*nemzeti/,730],
-    [/ireland.*premier-division|premier-division.*ireland/,720],
-    [/cyprus.*first-division|cyprus.*1st-division/,710],
-    [/israel.*premier-league|premier-league.*israel/,700],
-    [/bulgaria.*first-league|bulgaria.*efbet-liga/,690],
-    [/slovakia.*super-liga|super-liga.*slovakia/,680],
-    [/slovenia.*prva-liga|prva-liga.*slovenia/,670],
-    [/bosnia.*premier-league|premier-league.*bosnia/,660],
-    [/albania.*kategoria-superiore|kategoria-superiore.*albania/,650],
-    [/georgia.*erovnuli-liga|erovnuli-liga.*georgia/,640],
-    [/armenia.*premier-league|premier-league.*armenia/,630],
-    [/azerbaijan.*premier-league|premier-league.*azerbaijan/,620],
-    [/moldova.*super-liga|super-liga.*moldova/,610],
-    [/malta.*premier-league|premier-league.*malta/,600],
-    [/wales.*cymru-premier|cymru-premier.*wales/,590],
-    [/northern-ireland.*premiership|premiership.*northern-ireland/,580],
-    [/estonia.*meistriliiga|meistriliiga.*estonia/,570],
-    [/latvia.*virsliga|virsliga.*latvia/,560],
-    [/lithuania.*a-lyga|a-lyga.*lithuania/,550],
-    [/luxembourg.*national-division|national-division.*luxembourg/,540]
   ];
   for (const [re, score] of europe) if (re.test(text)) return score;
 
@@ -531,10 +487,6 @@ function leaguePriority(league) {
     [/chile.*primera-division|chile.*primera|primera-division.*chile/,470],
     [/uruguay.*primera-division|uruguay.*primera/,460],
     [/ecuador.*liga-pro|ecuador.*serie-a|liga-pro.*ecuador/,450],
-    [/peru.*liga-1|liga-1.*peru/,440],
-    [/paraguay.*primera-division|paraguay.*primera/,430],
-    [/bolivia.*division-profesional|bolivia.*primera/,420],
-    [/venezuela.*primera-division|venezuela.*primera/,410]
   ];
   for (const [re, score] of southAmerica) if (re.test(text)) return score;
   if (/(usa|united-states|america).*mls|mls.*(usa|united-states|america)/.test(text)) return 390;
@@ -873,9 +825,14 @@ function applyEnrichedScore(c, av, pred) {
   // Penalita' di disaccordo: se due modelli seri sono lontani, la partita non
   // viene scartata ma perde priorita' rispetto a una previsione piu' coerente.
   const agreementScore = disagreement >= 25 ? 55 : disagreement >= 15 ? 72 : 92;
-  let score = probabilityScore * 0.50 + weighted * 0.25 + analysisSupport * 0.15 + agreementScore * 0.10;
-  if (analysisSupport < 30) score = Math.min(score, Math.max(50, probabilityScore * 0.78));
-  else if (analysisSupport < 45) score = Math.min(score, Math.max(56, probabilityScore * 0.88));
+  // Ranking coerente con il TOP 3: probabilita' 45%, qualita' dei segnali
+  // analitici 40%, valore della quota 15%. L'accordo tra modelli agisce come
+  // penalita' di cautela, non come fonte artificiale di probabilita'.
+  let score = probabilityScore * 0.45 + weighted * 0.40 + valueScore * 0.15;
+  if (disagreement >= 25) score -= 8;
+  else if (disagreement >= 15) score -= 4;
+  if (analysisSupport < 30) score = Math.min(score, Math.max(45, probabilityScore * 0.70));
+  else if (analysisSupport < 55) score = Math.min(score, Math.max(48, probabilityScore * 0.82));
   if (warningsPenaltyCount(c) > 0) score -= Math.min(8, warningsPenaltyCount(c) * 3);
   score = clamp(score, 0, 100);
 
