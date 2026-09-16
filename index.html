@@ -721,33 +721,44 @@ async function sharePreviousDaySocialImage(){
  ctx.fillStyle='#65748a';ctx.font='700 22px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',205,121);
  ctx.textAlign='right';ctx.fillStyle='#f04f92';ctx.font='italic 800 30px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('Numeri, non emozioni.',1025,78);
  // Titolo.
- ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 82px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('RIEPILOGO',55,260);
- ctx.fillStyle='#f04f92';ctx.fillText('DI IERI',55,335);
- ctx.fillStyle='#65748a';ctx.font='800 31px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(dateLabel,55,390);
+ ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 82px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('RIEPILOGO',48,258);
+ ctx.fillStyle='#f04f92';ctx.fillText('DI IERI',48,338);
+ ctx.fillStyle='#65748a';ctx.font='800 31px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(dateLabel,48,400);
  // Esito generale.
  const overall=wins===dayItems.length?'VINTA!':losses===dayItems.length?'PERSA!':'GIORNATA MISTA';
  const overallBg=wins===dayItems.length?'#d5f6e3':losses===dayItems.length?'#ffe0e5':'#fff0cf';
  const overallFg=wins===dayItems.length?'#12633a':losses===dayItems.length?'#b32636':'#8a5a00';
- ctx.fillStyle=overallBg;roundRect(ctx,55,455,970,175,38);ctx.fill();
- ctx.textAlign='center';ctx.fillStyle=overallFg;ctx.font='900 78px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(overall,540,535);
- ctx.font='900 27px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(wins===dayItems.length?'PRONOSTICO CENTRATO':losses===dayItems.length?'PRONOSTICO NON CENTRATO':'RISULTATI DELLA GIORNATA',540,580);
+ ctx.fillStyle=overallBg;roundRect(ctx,48,470,984,185,42);ctx.fill();
+ ctx.textAlign='center';
+ // Icona esito nello stile del mockup.
+ ctx.save();ctx.translate(245,550);ctx.strokeStyle=overallFg;ctx.fillStyle=overallFg;ctx.lineWidth=10;ctx.lineJoin='round';
+ if(wins===dayItems.length){
+   ctx.beginPath();ctx.moveTo(-34,-32);ctx.lineTo(34,-32);ctx.lineTo(26,20);ctx.quadraticCurveTo(0,45,-26,20);ctx.closePath();ctx.fill();
+   ctx.beginPath();ctx.arc(-42,-15,22,Math.PI*.5,Math.PI*1.5);ctx.stroke();ctx.beginPath();ctx.arc(42,-15,-Math.PI*.5,Math.PI*.5);ctx.stroke();
+   ctx.fillRect(-8,22,16,22);ctx.fillRect(-25,44,50,9);
+ }else if(losses===dayItems.length){
+   ctx.beginPath();ctx.arc(0,0,48,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=10;ctx.beginPath();ctx.moveTo(-20,-20);ctx.lineTo(20,20);ctx.moveTo(20,-20);ctx.lineTo(-20,20);ctx.stroke();
+ }
+ ctx.restore();
+ ctx.fillStyle=overallFg;ctx.font='900 80px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(overall,590,555);
+ ctx.font='900 27px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(wins===dayItems.length?'PRONOSTICO CENTRATO':losses===dayItems.length?'PRONOSTICO NON CENTRATO':'RISULTATI DELLA GIORNATA',540,603);
  const shown=dayItems.slice(0,3);
  if(shown.length===1){
    const b=shown[0],win=b.status==='win',loss=b.status==='loss';
    const accent=win?'#25b66a':loss?'#e54855':'#d49a17';
    const soft=win?'#f0fbf4':loss?'#fff2f3':'#fff9ea';
    // Card centrale più compatta e con gerarchia uguale al mockup.
-   ctx.fillStyle=soft;ctx.strokeStyle=accent+'70';ctx.lineWidth=3;roundRect(ctx,55,665,970,650,38);ctx.fill();ctx.stroke();
-   ctx.fillStyle=accent;roundRect(ctx,82,695,305,72,36);ctx.fill();ctx.fillStyle='#fff';ctx.font='900 32px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',234,743);
+   ctx.fillStyle=soft;ctx.strokeStyle=accent+'70';ctx.lineWidth=3;roundRect(ctx,48,690,984,640,42);ctx.fill();ctx.stroke();
+   ctx.fillStyle=accent;roundRect(ctx,72,720,310,72,36);ctx.fill();ctx.fillStyle='#fff';ctx.font='900 32px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',227,768);
    const homeImg=await loadImageSafe(b.homeLogo),awayImg=await loadImageSafe(b.awayLogo);
-   drawTeamBadge(ctx,homeImg,b.home,280,880,125);drawTeamBadge(ctx,awayImg,b.away,800,880,125);
-   ctx.fillStyle='#172334';ctx.font='900 39px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText('VS',540,895);
-   ctx.fillStyle='#172334';ctx.font='900 29px -apple-system,BlinkMacSystemFont,sans-serif';wrapCanvasText(ctx,b.home||'Casa',280,1035,360,36,2);wrapCanvasText(ctx,b.away||'Trasferta',800,1035,360,36,2);
+   drawTeamBadge(ctx,homeImg,b.home,265,895,145);drawTeamBadge(ctx,awayImg,b.away,815,895,145);
+   ctx.fillStyle='#172334';ctx.font='900 43px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText('VS',540,905);
+   ctx.fillStyle='#172334';ctx.font='900 29px -apple-system,BlinkMacSystemFont,sans-serif';wrapCanvasText(ctx,b.home||'Casa',265,1045,370,35,2);wrapCanvasText(ctx,b.away||'Trasferta',815,1045,370,35,2);
    const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?`${b.finalScoreHome} - ${b.finalScoreAway}`:'';
-   if(score){ctx.fillStyle='#172334';ctx.font='900 64px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText(score,540,1115);ctx.fillStyle='#65748a';ctx.font='800 19px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('RISULTATO FINALE',540,1148);}
-   ctx.strokeStyle='#d5dfe9';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(85,1178);ctx.lineTo(995,1178);ctx.stroke();
-   ctx.textAlign='left';ctx.fillStyle='#65748a';ctx.font='800 21px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('MERCATO',110,1225);ctx.fillStyle='#172334';ctx.font='900 36px -apple-system,BlinkMacSystemFont,sans-serif';wrapCanvasText(ctx,String(b.market||'Giocata'),110,1270,390,40,2);
-   ctx.fillStyle='#65748a';ctx.font='800 21px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('QUOTA',610,1225);ctx.fillStyle='#172334';ctx.font='900 50px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2),610,1273);
+   if(score){ctx.fillStyle='#172334';ctx.font='900 64px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText(score,540,1120);ctx.fillStyle='#65748a';ctx.font='800 19px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('RISULTATO FINALE',540,1150);}
+   ctx.strokeStyle='#d5dfe9';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(78,1180);ctx.lineTo(1002,1180);ctx.stroke();
+   ctx.textAlign='left';ctx.fillStyle='#65748a';ctx.font='800 21px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('MERCATO',95,1227);ctx.fillStyle='#172334';ctx.font='900 36px -apple-system,BlinkMacSystemFont,sans-serif';wrapCanvasText(ctx,String(b.market||'Giocata'),95,1270,410,40,2);
+   ctx.fillStyle='#65748a';ctx.font='800 21px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('QUOTA',600,1227);ctx.fillStyle='#172334';ctx.font='900 50px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2),600,1273);
  }else{
    let y=665;
    for(const b of shown){
@@ -761,14 +772,14 @@ async function sharePreviousDaySocialImage(){
    if(dayItems.length>3){ctx.textAlign='center';ctx.fillStyle='#65748a';ctx.font='700 20px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(`+ ${dayItems.length-3} altri eventi`,540,y-12);}
  }
  // Statistiche.
- const statY=1350;
+ const statY=1370;
  const stat=(x,label,value,accent)=>{ctx.fillStyle='#ffffff';ctx.strokeStyle='#d9e2ec';ctx.lineWidth=2;roundRect(ctx,x,statY,285,145,26);ctx.fill();ctx.stroke();ctx.textAlign='center';ctx.fillStyle=accent;ctx.font='900 58px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(value,x+142.5,statY+70);ctx.fillStyle='#65748a';ctx.font='900 20px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(label,x+142.5,statY+110);};
- stat(55,'EVENTI ANALIZZATI',String(dayItems.length),'#172334');stat(397,'VITTORIE',String(wins),'#25b66a');stat(739,'PERSE',String(losses),'#e54855');
- ctx.textAlign='center';ctx.fillStyle='#172334';ctx.font='italic 900 39px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(decided?`${wins}/${decided} pronostici vincenti`:'Nessun esito definitivo',540,1560);
- ctx.fillStyle='#f04f92';ctx.font='900 28px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(wins>losses?'Analisi che fanno la differenza!':losses>wins?'Si impara anche da qui!':'Ogni giornata racconta una storia.',540,1620);
+ stat(48,'EVENTI ANALIZZATI',String(dayItems.length),'#172334');stat(397,'VITTORIE',String(wins),'#25b66a');stat(746,'PERSE',String(losses),'#e54855');
+ ctx.textAlign='center';ctx.fillStyle='#172334';ctx.font='italic 900 39px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(decided?`${wins}/${decided} pronostici vincenti`:'Nessun esito definitivo',540,1570);
+ ctx.fillStyle='#f04f92';ctx.font='900 28px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(wins>losses?'Analisi che fanno la differenza!':losses>wins?'Si impara anche da qui!':'Ogni giornata racconta una storia.',540,1625);
  // Richiamo grafico tipo mockup.
- ctx.fillStyle='rgba(240,79,146,.12)';roundRect(ctx,150,1660,780,105,30);ctx.fill();
- ctx.fillStyle='#172334';ctx.font='italic 900 32px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(wins>losses?'Analizza. Sperimenta. Misura.':losses>wins?'Ogni errore migliora il modello.':'Ogni giornata racconta una storia.',540,1728);
+ ctx.fillStyle='rgba(240,79,146,.12)';roundRect(ctx,130,1660,700,105,30);ctx.fill();
+ ctx.fillStyle='#172334';ctx.font='italic 900 32px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(wins>losses?'Analizza. Sperimenta. Misura.':losses>wins?'Ogni errore migliora il modello.':'Ogni giornata racconta una storia.',480,1727);
  ctx.fillStyle='#172334';ctx.font='800 22px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('Dati di ieri, strategie per domani.',540,1805);
  ctx.fillStyle='#65748a';ctx.font='600 17px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('Statistiche del giorno · nessun importo economico',540,1845);
  canvas.toBlob(blob=>{if(!blob){alert('Non sono riuscito a generare l’immagine.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-giorno-precedente-social-${recapDate}-9x16.png`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)},'image/png');
@@ -946,13 +957,7 @@ async function run(){
   }finally{
     clearTimeout(timeoutId);
   }
-  const responseText=await r.text();
-  let d;
-  try{d=JSON.parse(responseText);}catch(parseErr){
-    const preview=String(responseText||'').replace(/\s+/g,' ').slice(0,240);
-    throw Error(`Risposta non JSON dal server (/api/pick). HTTP ${r.status}. ${preview||'risposta vuota'}`);
-  }
-  if(!r.ok)throw Error(d.error||d.detail||"Errore API");
+  const d=await r.json();if(!r.ok)throw Error(d.error||"Errore API");
   lastDiagnostics=d.diagnostics||[];
   const live=(d.liveFixtures||[]);
   const apiErrors=(d.diagnostics||[]).filter(x=>x.error);
