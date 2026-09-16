@@ -907,6 +907,8 @@ function switchTab(tab){
  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
  document.querySelectorAll('.tab-section').forEach(s=>s.classList.toggle('active',s.dataset.section===tab));
  window.scrollTo({top:0,behavior:'smooth'});
+ // Recupera gli stemmi solo quando servono, mai durante il caricamento iniziale.
+ if(tab==='bets'){ setTimeout(()=>hydrateMissingBetLogos().catch(()=>{}),120); }
 }
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
 
@@ -1078,6 +1080,8 @@ function render(cs){
  }).join('');
  lastPicks=picks;
  renderAIPicks(picks);
+ // Logo: recupero differito e limitato, dopo che la UI è già visibile.
+ setTimeout(()=>hydrateTopPickLogos(picks).catch(()=>{}),180);
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
  const minAnalysis=picks.length?Math.min(...picks.map(x=>Number(x.analysisSupport)||0)):0;
  const notice=picks.length<3
@@ -1412,10 +1416,10 @@ function betLogoHtml(url,name,betId,role){
  const attrs=`data-team-logo="${url?'ready':'missing'}" data-team-name="${esc(name||'')}" data-team-role="${esc(role||'')}" data-bet-id="${esc(betId||'')}"`;
  return url?`<img class="bet-team-logo" ${attrs} src="${esc(url)}" alt="Stemma ${esc(name||'squadra')}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="bet-team-fallback" style="display:none" data-team-fallback="1">${initial}</span>`:`<img class="bet-team-logo" ${attrs} src="" alt="Stemma ${esc(name||'squadra')}" loading="lazy" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="bet-team-fallback" data-team-fallback="1">${initial}</span>`;
 }
-const TEAM_LOGO_CACHE_KEY='AIP_TEAM_LOGOS_V3';
+const TEAM_LOGO_CACHE_KEY='AIP_TEAM_LOGOS_V4';
 const TEAM_LOGO_REFRESH_MONTHS=2;
 function readTeamLogoCache(){try{return JSON.parse(localStorage.getItem(TEAM_LOGO_CACHE_KEY)||'{}')||{}}catch{return{}}}
-function writeTeamLogoCache(c){}
+function writeTeamLogoCache(c){try{localStorage.setItem(TEAM_LOGO_CACHE_KEY,JSON.stringify(c||{}))}catch{}}
 function logoCacheEntry(v){
   if(!v)return null;
   if(typeof v==='string') return {logo:v,savedAt:0,source:'legacy'};
@@ -1437,8 +1441,56 @@ async function fetchTeamLogoFresh(team){
   }catch{}
   return null;
 }
-async function hydrateMissingBetLogos(){return;}
-async function hydrateTopPickLogos(){return;}
+async function hydrateTeamLogosForNames(names,maxTeams=6){
+  const cache=readTeamLogoCache();
+  const unique=[...new Set((names||[]).map(x=>String(x||'').trim()).filter(Boolean))];
+  const jobs=[];
+  for(const team of unique){
+    const entry=logoCacheEntry(cache[team]);
+    if(entry?.logo && !logoNeedsRefresh(entry)) continue;
+    if(jobs.length>=maxTeams) break;
+    jobs.push(team);
+  }
+  if(!jobs.length) return cache;
+  const results=await Promise.all(jobs.map(async team=>[team,await fetchTeamLogoFresh(team)]));
+  for(const [team,result] of results){ if(result?.logo) cache[team]=result; }
+  writeTeamLogoCache(cache);
+  return cache;
+}
+function patchVisibleTeamLogo(name,logo){
+  if(!logo) return;
+  const key=String(name||'').trim().toLowerCase();
+  document.querySelectorAll('[data-team-name]').forEach(img=>{
+    if(String(img.dataset.teamName||'').trim().toLowerCase()!==key) return;
+    if(img.tagName==='IMG'){ img.src=logo; img.style.display='block'; img.dataset.pickLogo='ready'; img.onerror=function(){this.style.display='none';this.nextElementSibling&&(this.nextElementSibling.style.display='flex');}; }
+  });
+}
+async function hydrateTopPickLogos(picks=lastPicks){
+  const rows=Array.isArray(picks)?picks:[];
+  const names=rows.flatMap(x=>[x?.home,x?.away]);
+  const cache=await hydrateTeamLogosForNames(names,6);
+  rows.forEach(x=>{
+    const h=logoCacheEntry(cache[x?.home]); const a=logoCacheEntry(cache[x?.away]);
+    if(h?.logo) x.homeLogo=h.logo;
+    if(a?.logo) x.awayLogo=a.logo;
+    patchVisibleTeamLogo(x?.home,h?.logo);
+    patchVisibleTeamLogo(x?.away,a?.logo);
+  });
+}
+async function hydrateMissingBetLogos(){
+  const items=visibleArchive().filter(b=>b.placed!==false);
+  const names=items.slice(0,4).flatMap(b=>[b?.home,b?.away]);
+  const cache=await hydrateTeamLogosForNames(names,6);
+  let changed=false;
+  const all=getArchive().map(b=>{
+    let x={...b};
+    const h=logoCacheEntry(cache[x.home]); const a=logoCacheEntry(cache[x.away]);
+    if(h?.logo && !x.homeLogo){x.homeLogo=h.logo;changed=true;}
+    if(a?.logo && !x.awayLogo){x.awayLogo=a.logo;changed=true;}
+    return x;
+  });
+  if(changed){ archiveMemory=all; try{localStorage.setItem(ARCHIVE_KEY,JSON.stringify(all))}catch{}; renderArchive(); }
+}
 
 function selectedOutcomeLabel(market,home,away){
  const m=String(market||'').trim();
