@@ -714,10 +714,11 @@ function warningsPenaltyCount(c) {
 }
 
 function applyEnrichedScore(c, av, pred) {
-  // V2: separiamo la probabilita' del mercato dalla probabilita' del modello.
-  // L'errore della versione precedente era lasciare c.prob quasi invariata
-  // anche quando API-Football forniva una previsione indipendente: in pratica
-  // il ranking continuava a seguire soprattutto la quota.
+  // V92: ogni mercato mantiene la propria probabilita'.
+  // Nelle versioni precedenti il cap fisso (es. 76%) poteva schiacciare
+  // mercati diversi della stessa partita sullo stesso valore. Qui usiamo
+  // invece una calibrazione morbida: piu' evidenze reali abbiamo, meno
+  // stringiamo la probabilita' verso il 50%.
   const components = [];
   const marketProb = Number.isFinite(c.pFair) ? clamp(c.pFair, 0, 100) : null;
   const statProb = Number.isFinite(c.pStat) ? clamp(c.pStat, 0, 100) : null;
@@ -727,16 +728,11 @@ function applyEnrichedScore(c, av, pred) {
   const predEvidence = predictionEvidenceScore(c.market, pred, c.home, c.away);
   const predComparison = predictionComparisonSignal(c.market, pred, c.home, c.away);
 
-  // Costruiamo la probabilita' finale dando piu' spazio alle evidenze di gioco
-  // quando esistono. Il mercato resta un prior importante, non il pilota unico.
   const sources = [];
-  // V4: probabilita' piu' conservativa e calibrata. Il modello statistico
-  // resta centrale, ma gli estremi vengono sempre verificati contro una fonte
-  // indipendente (prediction API quando disponibile) e contro il mercato.
-  if (statProb != null) sources.push([35, statProb, "storico/modello gol"]);
+  if (statProb != null) sources.push([40, statProb, "storico/modello gol"]);
   if (predictionProb != null) sources.push([35, predictionProb, "prediction API"]);
   if (freqProb != null) sources.push([10, freqProb, "frequenza storica"]);
-  if (marketProb != null) sources.push([20, marketProb, "mercato"]);
+  if (marketProb != null) sources.push([15, marketProb, "mercato"]);
 
   let modelProb;
   if (sources.length) {
@@ -746,50 +742,59 @@ function applyEnrichedScore(c, av, pred) {
     modelProb = Number.isFinite(c.prob) ? c.prob : 50;
   }
 
-  // Se modello storico e prediction API divergono molto, riduciamo
-  // l'overconfidence invece di scegliere arbitrariamente una delle due fonti.
   const agreementValues = [statProb, predictionProb].filter(v => v != null);
   const disagreement = agreementValues.length === 2 ? Math.abs(agreementValues[0] - agreementValues[1]) : 0;
   if (disagreement >= 25) modelProb = modelProb * 0.80 + 50 * 0.20;
   else if (disagreement >= 15) modelProb = modelProb * 0.90 + 50 * 0.10;
 
-  // Shrinkage anti-overconfidence: con dati base (senza prediction API) non
-  // permettiamo a una semplice stima Poisson/form di produrre percentuali
-  // estreme che il campione non giustifica. Con una prediction indipendente
-  // presente, lo shrinkage e' piu' leggero.
-  if (predictionProb == null) {
-    modelProb = 50 + (modelProb - 50) * 0.82;
-  } else {
-    modelProb = 50 + (modelProb - 50) * 0.92;
-  }
+  // V92: shrinkage proporzionale alla qualita' dei dati, non un tetto fisso.
+  // Con pochi dati evitiamo l'overconfidence; con molte evidenze lasciamo
+  // respirare la probabilita' specifica del mercato.
+  let evidence = 0;
+  if (statProb != null) evidence += 30;
+  if (freqProb != null) evidence += 15;
+  if (Number.isFinite(c.form)) evidence += 15;
+  const venueScore = venueComponent(c.market, Number.isFinite(c.homeForm) ? c.homeForm : null, Number.isFinite(c.awayForm) ? c.awayForm : null);
+  const oneXTwoMatchup = oneXTwoFieldComponent(c);
+  if (oneXTwoMatchup != null || venueScore != null) evidence += 10;
+  if (c.h2h?.sample >= 2) evidence += 5;
+  if (c.standingNote) evidence += 5;
+  if (predictionProb != null) evidence += 25;
+  if (predEvidence >= 50) evidence += 5;
+  if (predEvidence >= 75) evidence += 5;
+  const absenceScore = absenceComponent(c.market, c.home, c.away, av);
+  if (absenceScore != null) evidence += 5;
+  const analysisSupport = clamp(evidence, 0, 100);
+
+  // Coefficiente di fiducia continuo: 0.60 con dati molto scarsi, fino a
+  // 0.95 con un quadro ricco. Non imponiamo piu' lo stesso cap a tutti i
+  // mercati: Under, Goal e 1X2 possono quindi avere valori differenti.
+  const confidenceFactor = analysisSupport < 30 ? 0.60
+    : analysisSupport < 45 ? 0.68
+    : analysisSupport < 60 ? 0.76
+    : analysisSupport < 75 ? 0.86
+    : 0.95;
+  modelProb = 50 + (modelProb - 50) * confidenceFactor;
   modelProb = clamp(modelProb, 5, 95);
 
+  // Nei mercati complementari conserviamo la coerenza del modello quando
+  // entrambe le selezioni sono disponibili nel feed. La probabilita' di una
+  // singola selezione resta comunque specifica del mercato.
   const probabilityScore = modelProb;
   components.push([45, probabilityScore, "probabilità modello"]);
   if (statProb != null) components.push([15, statProb, "statistiche"]);
   if (freqProb != null) components.push([8, freqProb, "frequenza"]);
-
   const formRaw = Number.isFinite(c.form) ? c.form : null;
   if (formRaw != null) components.push([8, clamp(50 + formRaw * 5, 0, 100), "forma"]);
 
-  // EDGE: deve essere sempre ricalcolato sulla probabilita' finale del modello.
-  // Non riutilizziamo c.edge, che appartiene al punteggio precedente e puo'
-  // quindi diventare incoerente dopo l'arricchimento API-Football.
   const oddsNumber = Number(c.odds);
   const impliedProbability = oddsNumber > 1 ? (100 / oddsNumber) : null;
   const edge = impliedProbability != null ? (modelProb - impliedProbability) : null;
-  // Il valore si ricalcola sulla probabilita' aggiornata, ma resta secondario.
   const valueScore = edge != null ? clamp(50 + 50 * Math.tanh(edge / 20), 0, 100) : 50;
   components.push([8, valueScore, "quota"]);
 
-  const homeAdv = Number.isFinite(c.homeForm) ? c.homeForm : null;
-  const awayAdv = Number.isFinite(c.awayForm) ? c.awayForm : null;
-  const venueScore = venueComponent(c.market, homeAdv, awayAdv);
-  const oneXTwoMatchup = oneXTwoFieldComponent(c);
   if (oneXTwoMatchup != null) components.push([8, oneXTwoMatchup, "confronto 1X2"]);
   else if (venueScore != null) components.push([5, venueScore, "casa/trasferta"]);
-
-  const absenceScore = absenceComponent(c.market, c.home, c.away, av);
   if (absenceScore != null) components.push([5, absenceScore, "assenze"]);
   if (predictionProb != null) components.push([12, predictionProb, "prediction"]);
   if (predComparison != null) components.push([8, predComparison, "confronto API-Football"]);
@@ -797,57 +802,32 @@ function applyEnrichedScore(c, av, pred) {
   const totalWeight = components.reduce((s,x)=>s+x[0],0) || 1;
   const weighted = components.reduce((s,x)=>s + x[0] * x[1],0) / totalWeight;
 
-  // Supporto analitico: non conta quante API abbiamo chiamato, ma quante
-  // evidenze indipendenti abbiamo realmente a disposizione.
-  let evidence = 0;
-  if (statProb != null) evidence += 30;
-  if (freqProb != null) evidence += 15;
-  if (Number.isFinite(c.form)) evidence += 15;
-  if (oneXTwoMatchup != null || venueScore != null) evidence += 10;
-  if (c.h2h?.sample >= 2) evidence += 5;
-  if (c.standingNote) evidence += 5;
-  if (predictionProb != null) evidence += 30;
-  if (predEvidence >= 50) evidence += 10;
-  if (predEvidence >= 75) evidence += 5;
-  if (absenceScore != null) evidence += 5;
-  const analysisSupport = clamp(evidence, 0, 100);
-
-  // V91: una probabilita' molto alta richiede una base dati proporzionata.
-  // Non e' un limite alla previsione in assoluto: e' una protezione contro
-  // l'overconfidence quando il feed analitico e' incompleto.
-  const probabilityCap = analysisSupport < 30 ? 65
-    : analysisSupport < 45 ? 70
-    : analysisSupport < 60 ? 76
-    : analysisSupport < 75 ? 82
-    : 95;
-  if (modelProb > probabilityCap) modelProb = probabilityCap;
-
-  // Penalita' di disaccordo: se due modelli seri sono lontani, la partita non
-  // viene scartata ma perde priorita' rispetto a una previsione piu' coerente.
+  // Disaccordo tra fonti: abbassa la priorita', non elimina la partita.
   const agreementScore = disagreement >= 25 ? 55 : disagreement >= 15 ? 72 : 92;
-  let score = probabilityScore * 0.50 + weighted * 0.25 + analysisSupport * 0.15 + agreementScore * 0.10;
-  if (analysisSupport < 30) score = Math.min(score, Math.max(50, probabilityScore * 0.78));
-  else if (analysisSupport < 45) score = Math.min(score, Math.max(56, probabilityScore * 0.88));
+  let score = probabilityScore * 0.45 + weighted * 0.25 + analysisSupport * 0.20 + agreementScore * 0.10;
+  if (analysisSupport < 30) score = Math.min(score, 58);
+  else if (analysisSupport < 45) score = Math.min(score, 64);
   if (warningsPenaltyCount(c) > 0) score -= Math.min(8, warningsPenaltyCount(c) * 3);
   score = clamp(score, 0, 100);
 
+  const confidenceLabel = analysisSupport >= 75 ? "Alta" : analysisSupport >= 55 ? "Media" : "Limitata";
   return {
     ...c,
-    // Da ora prob/edge sono quelli del modello arricchito, quindi anche il
-    // TOP 3 frontend usa davvero la nuova analisi invece della sola quota.
     prob: round(modelProb),
     implied: impliedProbability == null ? null : round(impliedProbability),
     edge: edge == null ? null : round(edge),
     score: round(score),
     analysisSupport: round(analysisSupport),
-    analysisLimited: analysisSupport < 35,
+    analysisLimited: analysisSupport < 55,
+    analysisConfidenceLabel: confidenceLabel,
     modelAgreement: round(agreementScore),
     scoreComponents: components.map(x=>({name:x[2],weight:x[0],value:round(x[1])})),
     absence: absenceScore == null ? 0 : round(absenceScore),
     pred: predictionProb == null ? 0 : round(predictionProb),
     predictionEvidence: round(predEvidence),
     predictionComparison: predComparison == null ? null : round(predComparison),
-    probabilityCap: round(probabilityCap)
+    probabilityCap: null,
+    confidenceFactor: round(confidenceFactor * 100)
   };
 }
 
