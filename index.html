@@ -702,23 +702,63 @@ async function sharePreviousDaySocialImage(){
  const dayItems=items.filter(b=>b.date===recapDate).sort((a,b)=>Number(a.updatedAt||a.createdAt)-Number(b.updatedAt||b.createdAt));
  if(!dayItems.length){alert('Non ci sono eventi chiusi del giorno precedente da pubblicare.');return;}
  const m=socialMetrics(dayItems);
+ const wins=dayItems.filter(b=>b.status==='win').length;
+ const losses=dayItems.filter(b=>b.status==='loss').length;
+ const cashouts=dayItems.filter(b=>b.status==='cashout').length;
+ const decided=wins+losses;
  const dateLabel=d.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long',year:'numeric'}).replace(/^./,c=>c.toUpperCase());
  const W=1080,H=1350,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');
- const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#061321');bg.addColorStop(.55,'#10213a');bg.addColorStop(1,'#07111f');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
- ctx.fillStyle='rgba(255,128,171,.10)';ctx.beginPath();ctx.arc(540,1120,430,0,Math.PI*2);ctx.fill();
- const logo=await loadImageSafe(location.origin+'/logo-social.png');if(logo)ctx.drawImage(logo,55,42,82,82);
- ctx.textAlign='left';ctx.fillStyle='#f7f9fc';ctx.font='900 42px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',160,82);ctx.fillStyle='#aebbd0';ctx.font='500 20px -apple-system,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',160,113);
- ctx.textAlign='right';ctx.fillStyle='#ff80ab';ctx.font='italic 700 25px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',1015,78);
- ctx.textAlign='left';ctx.fillStyle='#ff80ab';ctx.font='900 39px -apple-system,sans-serif';ctx.fillText('RIEPILOGO DEL GIORNO',55,180);ctx.fillStyle='#f7f9fc';ctx.font='900 39px -apple-system,sans-serif';ctx.fillText('PRECEDENTE',55,225);ctx.fillStyle='#d8e2ee';ctx.font='500 23px -apple-system,sans-serif';ctx.fillText(dateLabel,55,260);
- function box(x,y,w,h,label,value,accent){ctx.fillStyle='#0b1727';ctx.strokeStyle='#2a3b55';ctx.lineWidth=2;roundRect(ctx,x,y,w,h,20);ctx.fill();ctx.stroke();ctx.fillStyle='#9eabc0';ctx.font='700 17px -apple-system,sans-serif';ctx.fillText(label,x+18,y+32);ctx.fillStyle=accent||'#f7f9fc';ctx.font='900 34px -apple-system,sans-serif';ctx.fillText(value,x+18,y+76);}
- box(55,305,300,112,'EVENTI',String(m.events));box(390,305,300,112,'VITTORIE',String(m.wins),'#43d17b');box(725,305,300,112,'% VITTORIE',`${m.winRate.toFixed(1)}%`,'#ff80ab');
- box(55,438,300,112,'PERSE',String(m.losses),'#ff6b72');box(390,438,300,112,'QUOTA MEDIA',m.avgOdds?m.avgOdds.toFixed(2):'—','#f5c446');box(725,438,300,112,'CASH OUT',String(m.cashouts),'#f5c446');
- ctx.fillStyle='#0b1727';ctx.strokeStyle='#2a3b55';roundRect(ctx,55,575,970,560,24);ctx.fill();ctx.stroke();ctx.fillStyle='#ff80ab';ctx.font='900 25px -apple-system,sans-serif';ctx.fillText('RISULTATI DELLE GIOCATE',80,620);
- const shown=dayItems.slice(0,5);const leagueMap={SA:'SERIE A',PL:'PREMIER LEAGUE',PD:'LA LIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
- shown.forEach((b,i)=>{const y=655+i*88;const win=b.status==='win',loss=b.status==='loss';const accent=win?'#43d17b':loss?'#ff6b72':'#f5c446';ctx.fillStyle='rgba(255,255,255,.035)';roundRect(ctx,75,y,930,72,16);ctx.fill();ctx.fillStyle=accent;ctx.font='900 19px -apple-system,sans-serif';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',92,y+28);ctx.fillStyle='#f7f9fc';ctx.font='800 20px -apple-system,sans-serif';ctx.fillText(`${b.home||'Casa'}  –  ${b.away||'Trasferta'}`,92,y+55);ctx.textAlign='right';ctx.fillStyle='#aebbd0';ctx.font='600 18px -apple-system,sans-serif';ctx.fillText(`${leagueMap[b.leagueCode]||b.leagueName||b.league||'CALCIO'} · Quota ${Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2)}`,988,y+28);const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?` · ${b.finalScoreHome}-${b.finalScoreAway}`:'';ctx.fillText(String(b.market||'Giocata')+score,988,y+55);ctx.textAlign='left';});
- if(dayItems.length>5){ctx.fillStyle='#7f91a8';ctx.font='600 17px -apple-system,sans-serif';ctx.fillText(`+ ${dayItems.length-5} altri eventi`,80,1110);}
- ctx.textAlign='left';ctx.fillStyle='#d8e2ee';ctx.font='700 19px -apple-system,sans-serif';ctx.fillText(`🔥 Serie vincente max: ${m.longWin} · serie perdente max: ${m.longLoss}`,80,1180);ctx.fillText(`📈 CLV medio: ${m.avgCLV==null?'—':(m.avgCLV>=0?'+':'')+m.avgCLV.toFixed(1)+'%'}`,80,1215);
- ctx.textAlign='center';ctx.fillStyle='#ffffff';ctx.font='italic 800 28px -apple-system,sans-serif';ctx.fillText('Dati di ieri, analisi di oggi.',540,1260);ctx.fillStyle='#aebbd0';ctx.font='500 16px -apple-system,sans-serif';ctx.fillText('Statistiche del giorno · nessun importo economico',540,1290);
+ // Layout social 4:5: chiaro, molto piu' leggibile e focalizzato sul risultato.
+ const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#ffffff');bg.addColorStop(.72,'#fffafb');bg.addColorStop(1,'#fdebf3');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+ ctx.fillStyle='rgba(255,128,171,.10)';ctx.beginPath();ctx.arc(970,1180,360,0,Math.PI*2);ctx.fill();
+ const logo=await loadImageSafe(location.origin+'/logo-social.png');if(logo)ctx.drawImage(logo,55,42,78,78);
+ ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 39px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',150,78);ctx.fillStyle='#65748a';ctx.font='500 18px -apple-system,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',150,105);
+ ctx.textAlign='right';ctx.fillStyle='#f04f92';ctx.font='italic 700 23px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',1025,72);
+ ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 49px -apple-system,sans-serif';ctx.fillText('RIEPILOGO',55,190);ctx.fillStyle='#f04f92';ctx.fillText('DI IERI',55,242);ctx.fillStyle='#65748a';ctx.font='600 22px -apple-system,sans-serif';ctx.fillText(dateLabel,55,277);
+ // Esito generale molto evidente: VINTA / PERSA / GIORNATA MISTA.
+ const overall=wins===dayItems.length?'VINTA!':losses===dayItems.length?'PERSA!':'GIORNATA MISTA';
+ const overallBg=wins===dayItems.length?'#d7f7e4':losses===dayItems.length?'#ffe0e2':'#fff0cf';
+ const overallFg=wins===dayItems.length?'#12633a':losses===dayItems.length?'#a51f2d':'#8a5a00';
+ ctx.fillStyle=overallBg;roundRect(ctx,55,315,970,112,28);ctx.fill();
+ ctx.textAlign='center';ctx.fillStyle=overallFg;ctx.font='900 55px -apple-system,sans-serif';ctx.fillText(overall,540,387);
+ // Pannello principale: se c'e' una sola partita occupa quasi tutto lo spazio.
+ const shown=dayItems.slice(0,3);
+ if(shown.length===1){
+   const b=shown[0],win=b.status==='win',loss=b.status==='loss';
+   const accent=win?'#25b66a':loss?'#e54855':'#d49a17';
+   const soft=win?'#f0fbf4':loss?'#fff2f3':'#fff9ea';
+   ctx.fillStyle=soft;ctx.strokeStyle=accent+'66';ctx.lineWidth=2;roundRect(ctx,55,455,970,520,28);ctx.fill();ctx.stroke();
+   ctx.fillStyle=accent;roundRect(ctx,80,480,210,58,29);ctx.fill();ctx.fillStyle='#fff';ctx.font='900 25px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',185,518);
+   const homeImg=await loadImageSafe(b.homeLogo),awayImg=await loadImageSafe(b.awayLogo);
+   drawTeamBadge(ctx,homeImg,b.home,300,650,72);drawTeamBadge(ctx,awayImg,b.away,780,650,72);
+   ctx.fillStyle='#172334';ctx.font='900 46px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText('VS',540,658);
+   ctx.fillStyle='#172334';ctx.font='800 25px -apple-system,sans-serif';wrapCanvasText(ctx,b.home||'Casa',300,760,300,30,2);wrapCanvasText(ctx,b.away||'Trasferta',780,760,300,30,2);
+   const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?`${b.finalScoreHome} - ${b.finalScoreAway}`:'';
+   if(score){ctx.fillStyle='#172334';ctx.font='900 45px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(score,540,810);}
+   ctx.strokeStyle='#d8e0ea';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(90,845);ctx.lineTo(990,845);ctx.stroke();
+   ctx.textAlign='left';ctx.fillStyle='#65748a';ctx.font='700 18px -apple-system,sans-serif';ctx.fillText('MERCATO',110,885);ctx.fillStyle='#172334';ctx.font='900 28px -apple-system,sans-serif';ctx.fillText(String(b.market||'Giocata'),110,920);
+   ctx.fillStyle='#65748a';ctx.font='700 18px -apple-system,sans-serif';ctx.fillText('QUOTA',560,885);ctx.fillStyle='#172334';ctx.font='900 28px -apple-system,sans-serif';ctx.fillText(Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2),560,920);
+ }else{
+   // Piu' partite: una scheda compatta per risultato, mantenendo il focus su VINTA/PERSA.
+   let y=455;
+   for(const b of shown){
+     const win=b.status==='win',loss=b.status==='loss',accent=win?'#25b66a':loss?'#e54855':'#d49a17',soft=win?'#f0fbf4':loss?'#fff2f3':'#fff9ea';
+     ctx.fillStyle=soft;ctx.strokeStyle=accent+'55';ctx.lineWidth=2;roundRect(ctx,55,y,970,150,22);ctx.fill();ctx.stroke();
+     ctx.fillStyle=accent;ctx.font='900 18px -apple-system,sans-serif';ctx.textAlign='left';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',78,y+33);
+     ctx.fillStyle='#172334';ctx.font='800 22px -apple-system,sans-serif';wrapCanvasText(ctx,`${b.home||'Casa'} – ${b.away||'Trasferta'}`,78,y+68,570,27,2);
+     const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?` · ${b.finalScoreHome}-${b.finalScoreAway}`:'';
+     ctx.textAlign='right';ctx.fillStyle='#65748a';ctx.font='600 17px -apple-system,sans-serif';ctx.fillText(String(b.market||'Giocata'),990,y+38);ctx.fillStyle='#172334';ctx.font='900 25px -apple-system,sans-serif';ctx.fillText((Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2))+score,990,y+76);
+     y+=172;
+   }
+   ctx.fillStyle='#65748a';ctx.font='600 16px -apple-system,sans-serif';ctx.textAlign='left';if(dayItems.length>3)ctx.fillText(`+ ${dayItems.length-3} altri eventi`,78,970);
+ }
+ // Solo tre numeri finali: niente dispersione.
+ const statY=1010;
+ const stat=(x,label,value,accent)=>{ctx.fillStyle='#ffffff';ctx.strokeStyle='#dce4ed';ctx.lineWidth=2;roundRect(ctx,x,statY,285,105,20);ctx.fill();ctx.stroke();ctx.textAlign='center';ctx.fillStyle=accent;ctx.font='900 33px -apple-system,sans-serif';ctx.fillText(value,x+142.5,statY+48);ctx.fillStyle='#65748a';ctx.font='700 16px -apple-system,sans-serif';ctx.fillText(label,x+142.5,statY+76)};
+ stat(55,'EVENTI',String(dayItems.length),'#172334');stat(397,'VITTORIE',String(wins),'#25b66a');stat(739,'PERSE',String(losses),'#e54855');
+ ctx.textAlign='center';ctx.fillStyle='#172334';ctx.font='italic 800 27px -apple-system,sans-serif';ctx.fillText(decided?`${wins}/${decided} pronostici vincenti`:'Nessun esito definitivo',540,1185);
+ ctx.fillStyle='#f04f92';ctx.font='800 19px -apple-system,sans-serif';ctx.fillText('Dati di ieri, analisi di oggi.',540,1225);
+ ctx.fillStyle='#65748a';ctx.font='500 15px -apple-system,sans-serif';ctx.fillText('Statistiche del giorno · nessun importo economico',540,1260);
  canvas.toBlob(blob=>{if(!blob){alert('Non sono riuscito a generare l’immagine.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-giorno-precedente-social-${recapDate}-4x5.png`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)},'image/png');
 }
 async function sharePeriodResultsImage(type,mode='internal'){
@@ -1324,48 +1364,94 @@ function betLogoHtml(url,name,betId,role){
  const attrs=`data-team-logo="${url?'ready':'missing'}" data-team-name="${esc(name||'')}" data-team-role="${esc(role||'')}" data-bet-id="${esc(betId||'')}"`;
  return url?`<img class="bet-team-logo" ${attrs} src="${esc(url)}" alt="Stemma ${esc(name||'squadra')}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="bet-team-fallback" style="display:none" data-team-fallback="1">${initial}</span>`:`<img class="bet-team-logo" ${attrs} src="" alt="Stemma ${esc(name||'squadra')}" loading="lazy" style="display:none" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="bet-team-fallback" data-team-fallback="1">${initial}</span>`;
 }
-/* Loghi squadre: caricamento leggero e non bloccante.
-   Non usiamo localStorage: per i TOP 3 chiediamo al server solo i 6 loghi
-   mancanti e aggiorniamo la card appena arrivano. L'API server-side gestisce
-   il cache e tiene la chiave API fuori dal browser. */
-function readTeamLogoCache(){return {}}
-function writeTeamLogoCache(c){}
-function logoCacheEntry(v){return null}
-function logoNeedsRefresh(entry){return false}
+const TEAM_LOGO_CACHE_KEY='AIP_TEAM_LOGOS_V3';
+const TEAM_LOGO_REFRESH_MONTHS=2;
+function readTeamLogoCache(){try{return JSON.parse(localStorage.getItem(TEAM_LOGO_CACHE_KEY)||'{}')||{}}catch{return{}}}
+function writeTeamLogoCache(c){try{localStorage.setItem(TEAM_LOGO_CACHE_KEY,JSON.stringify(c))}catch{}}
+function logoCacheEntry(v){
+  if(!v)return null;
+  if(typeof v==='string') return {logo:v,savedAt:0,source:'legacy'};
+  return v;
+}
+function logoNeedsRefresh(entry){
+  if(!entry?.logo || !entry?.savedAt)return true;
+  const d=new Date(Number(entry.savedAt));
+  const next=new Date(d);
+  next.setMonth(next.getMonth()+TEAM_LOGO_REFRESH_MONTHS);
+  return Date.now()>=next.getTime();
+}
 async function fetchTeamLogoFresh(team){
-  const name=String(team||'').trim();
-  if(!name)return null;
   try{
-    const r=await fetch('/api/team-logo?team='+encodeURIComponent(name),{headers:{'Accept':'application/json'}});
-    if(!r.ok)return null;
+    const r=await fetch('/api/team-logo?team='+encodeURIComponent(team)+'&v=3',{cache:'no-store'});
     const d=await r.json();
-    return d?.logo?d:null;
-  }catch{return null}
+    const logo=d?.logo||null;
+    if(logo)return {logo,savedAt:Date.now(),source:d?.source||'api',resolvedName:d?.resolvedName||null,teamId:d?.teamId||null};
+  }catch{}
+  return null;
 }
-async function hydrateMissingBetLogos(){return}
+async function hydrateMissingBetLogos(){
+ const nodes=[...document.querySelectorAll('img[data-team-logo]')];
+ if(!nodes.length)return;
+ const cache=readTeamLogoCache();
+ const unique=[...new Set(nodes.map(n=>String(n.dataset.teamName||'').trim()).filter(Boolean))];
+ for(const team of unique){
+   let entry=logoCacheEntry(cache[team]);
+   const currentNode=nodes.find(n=>n.dataset.teamName===team);
+   const currentLogo=currentNode?.getAttribute('src')||null;
+   let logo=entry?.logo||currentLogo||null;
+   if(!entry && currentLogo){
+     entry={logo:currentLogo,savedAt:Date.now(),source:'stored-bet'};
+     cache[team]=entry;
+     writeTeamLogoCache(cache);
+   }
+   if(logoNeedsRefresh(entry)){
+     const fresh=await fetchTeamLogoFresh(team);
+     if(fresh){entry=fresh;cache[team]=entry;writeTeamLogoCache(cache);logo=entry.logo;}
+   }
+   const teamNodes=nodes.filter(n=>n.dataset.teamName===team);
+   for(const img of teamNodes){
+     if(!logo) continue;
+     img.src=logo; img.dataset.teamLogo='ready'; img.style.display='block';
+     const fallback=img.nextElementSibling; if(fallback)fallback.style.display='none';
+     const id=img.dataset.betId, role=img.dataset.teamRole;
+     if(id&&role){
+       const a=getArchive(), b=a.find(x=>String(x.id)===String(id));
+       if(b){ if(role==='home')b.homeLogo=logo; else if(role==='away')b.awayLogo=logo; b.updatedAt=Date.now(); saveArchive(a); cloudUpsert(b); }
+     }
+   }
+ }
+}
 async function hydrateTopPickLogos(){
-  const picks=Array.isArray(lastPicks)?lastPicks:[];
-  if(!picks.length)return;
-  const targets=[];
-  picks.slice(0,3).forEach((x,i)=>{
-    if(!x.homeLogo)targets.push({i,role:'home',name:x.home});
-    if(!x.awayLogo)targets.push({i,role:'away',name:x.away});
-  });
-  if(!targets.length)return;
-  const results=await Promise.all(targets.map(async t=>({t,d:await fetchTeamLogoFresh(t.name)})));
-  results.forEach(({t,d})=>{
-    if(!d?.logo)return;
-    const x=lastPicks[t.i];
-    if(!x)return;
-    x[t.role+'Logo']=d.logo;
-    const card=document.querySelectorAll('#pick .pick')[t.i];
-    if(!card)return;
-    const img=card.querySelector('.team:nth-child('+ (t.role==='home'?'1':'3') +') img.team-logo');
-    const fallback=img?.nextElementSibling;
-    if(img){img.src=d.logo;img.style.display='block';img.dataset.pickLogo='ready';}
-    if(fallback)fallback.style.display='none';
-  });
+ const nodes=[...document.querySelectorAll('#pick img[data-pick-logo]')];
+ if(!nodes.length)return;
+ const cache=readTeamLogoCache();
+ const unique=[...new Set(nodes.map(n=>String(n.dataset.teamName||'').trim()).filter(Boolean))];
+ for(const team of unique){
+   let entry=logoCacheEntry(cache[team]);
+   const currentNode=nodes.find(n=>n.dataset.teamName===team);
+   const currentLogo=currentNode?.getAttribute('src')||null;
+   let logo=entry?.logo||currentLogo||null;
+   if(!entry && currentLogo){
+     entry={logo:currentLogo,savedAt:Date.now(),source:'stored-bet'};
+     cache[team]=entry;
+     writeTeamLogoCache(cache);
+   }
+   if(logoNeedsRefresh(entry)){
+     const fresh=await fetchTeamLogoFresh(team);
+     if(fresh){entry=fresh;cache[team]=entry;writeTeamLogoCache(cache);logo=entry.logo;}
+   }
+   if(!logo)continue;
+   nodes.filter(n=>n.dataset.teamName===team).forEach(img=>{
+     img.src=logo;img.dataset.pickLogo='ready';img.style.display='block';
+     const fallback=img.nextElementSibling;if(fallback)fallback.style.display='none';
+   });
+   lastPicks.forEach(x=>{
+     if(x.home===team)x.homeLogo=logo;
+     if(x.away===team)x.awayLogo=logo;
+   });
+ }
 }
+
 function selectedOutcomeLabel(market,home,away){
  const m=String(market||'').trim();
  const map={'No Goal':'Nogoal','Goal':'Goal','1 (Casa)':'1','X (Pareggio)':'X','2 (Trasferta)':'2'};
