@@ -35,16 +35,11 @@ function unwrapResults(payload){
 function bestPrice(list){
   if(!Array.isArray(list)||!list.length) return null;
   const sorted=[...list].filter(x=>Number.isFinite(Number(x.price))&&Number(x.price)>1)
-    .sort((a,b)=>Number(a.price)-Number(b.price));
+    .sort((a,b)=>Number(b.price)-Number(a.price));
   return sorted[0]||null;
 }
 
-function bestLay(list){
-  if(!Array.isArray(list)||!list.length) return null;
-  const sorted=[...list].filter(x=>Number.isFinite(Number(x.price))&&Number(x.price)>1)
-    .sort((a,b)=>Number(a.price)-Number(b.price));
-  return sorted[0]||null;
-}
+
 
 export default async function handler(req,res){
   res.setHeader('Cache-Control','no-store');
@@ -101,8 +96,9 @@ export default async function handler(req,res){
     if(!allowed.length)
       return res.status(404).json({ok:false,error:'Nessun mercato 1X2 o Under/Over trovato',home,away});
 
+    const uniqueAllowed=[...new Map(allowed.map(m=>[String(m.marketId),m])).values()];
     const output=[];
-    for(const found of allowed.slice(0,8)){
+    for(const found of uniqueAllowed.slice(0,8)){
       const books=await supa(
         `betfair_quotes?select=payload,received_at&data_type=eq.book&market_id=eq.${encodeURIComponent(found.marketId)}&order=received_at.desc&limit=1`
       );
@@ -116,15 +112,12 @@ export default async function handler(req,res){
 
       const normalized=runners.map(r=>{
         const back=bestPrice(r?.ex?.availableToBack);
-        const lay=bestLay(r?.ex?.availableToLay);
         return {
           selectionId:r.selectionId,
           name:bySelection.get(String(r.selectionId))||String(r.selectionId),
           status:r.status,
           backPrice:back?.price??null,
-          backSize:back?.size??null,
-          layPrice:lay?.price??null,
-          laySize:lay?.size??null
+          backSize:back?.size??null
         };
       });
 

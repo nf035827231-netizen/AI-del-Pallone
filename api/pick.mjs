@@ -2,11 +2,11 @@ async function handler(req, res) {
   const footballToken = process.env.FOOTBALL_DATA_TOKEN;
   const oddsKey = process.env.ODDS_API_KEY;
   const apiFootballKey = process.env.API_FOOTBALL_KEY;
-  const configuredBookmakers = (process.env.ODDS_BOOKMAKERS || "Bet365").split(",").map(s=>s.trim()).filter(Boolean);
   const u = new URL(req.url, "https://vercel.local");
-  const requestedBookmaker = (u.searchParams.get("bookmaker") || configuredBookmakers[0] || "Bet365").trim();
-  const bookmakersParam = requestedBookmaker;
   if (!oddsKey) return res.status(500).json({ error: "ODDS_API_KEY non configurata" });
+  const supaUrl = process.env.SUPABASE_URL || "";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+  if (!supaUrl || !serviceKey) return res.status(500).json({ error: "SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY non configurata" });
 
   const date = u.searchParams.get("date");
   const rawLeagues = u.searchParams.get("leagues") || "";
@@ -20,7 +20,7 @@ async function handler(req, res) {
   const market = u.searchParams.get("market") || "all";
   if (!date) return res.status(400).json({ error: "Data mancante" });
 
-  const cacheKey = `${date}|${requestedCodes.join(",")}|${market}|book:${requestedBookmaker}`;
+  const cacheKey = `${date}|${requestedCodes.join(",")}|${market}|source:betfair`;
   const cached = RESPONSE_CACHE.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return res.status(200).json({ ...cached.data, cached: true });
@@ -123,7 +123,7 @@ async function handler(req, res) {
   // When a specific league is selected, keep the more precise league endpoint.
   let oddsEventResults = [];
   if (!codes) {
-    const ev = await odds(`/v3/events?apiKey=${encodeURIComponent(oddsKey)}&sport=football&status=pending&bookmaker=${encodeURIComponent(requestedBookmaker)}`);
+    const ev = await odds(`/v3/events?apiKey=${encodeURIComponent(oddsKey)}&sport=football&status=pending`);
     requests++; requestBreakdown.oddsEventsDiscovery++;
     const events = Array.isArray(ev) ? ev : [];
     const dated = events.filter(e => localDate(e.date) === date);
@@ -135,14 +135,14 @@ async function handler(req, res) {
     };
     const relevant = dated.filter(preferredLeagueFilter).filter(e => !europeOnly || isEuropeanEvent(e));
     const rejected = dated.length - relevant.length;
-    diagnostics.push({ provider:"odds-api-events-global", results:relevant.length, totalReturned:events.length, dated:dated.length, rejectedByLeagueFilter:rejected, scope:europeOnly?"Europe top divisions + UEFA only":"principali campionati europei + UEFA + Brasile/Argentina/Colombia/Cile/Uruguay/Ecuador/Peru + MLS/J1", bookmaker:requestedBookmaker, europeOnly, error:ev?.error||null });
+    diagnostics.push({ provider:"odds-api-events-global", results:relevant.length, totalReturned:events.length, dated:dated.length, rejectedByLeagueFilter:rejected, scope:europeOnly?"Europe top divisions + UEFA only":"principali campionati europei + UEFA + Brasile/Argentina/Colombia/Cile/Uruguay/Ecuador/Peru + MLS/J1", europeOnly, error:ev?.error||null });
     oddsEventResults = [{ code:null, slug:null, events, relevant, error:ev?.error||null }];
   } else {
     oddsEventResults = await Promise.all(codes.map(async code => {
       const staticGuess = oddsLeagueSlug(code);
       const slug = resolveLeagueSlug(code, staticGuess, leaguesCatalog, diagnostics);
       if (!slug) { diagnostics.push({ provider:"odds-api-events", league:code, results:0, error:"Slug campionato non trovato (né statico né nel catalogo)" }); return { code, slug:null, events:[] }; }
-      const ev = await odds(`/v3/events?apiKey=${encodeURIComponent(oddsKey)}&sport=football&league=${encodeURIComponent(slug)}&status=pending&bookmaker=${encodeURIComponent(requestedBookmaker)}`);
+      const ev = await odds(`/v3/events?apiKey=${encodeURIComponent(oddsKey)}&sport=football&league=${encodeURIComponent(slug)}&status=pending`);
       requests++; requestBreakdown.oddsEventsDiscovery++;
       const events = Array.isArray(ev) ? ev : [];
       const relevant = events.filter(e => localDate(e.date) === date);
@@ -166,6 +166,18 @@ async function handler(req, res) {
       });
     }
   }
+
+  // BETFAIR: le quote usate dal modello arrivano esclusivamente dall'Exchange.
+  // Odds-API viene usato solo per scoprire le partite; NON fornisce più la quota
+  // usata per Probabilità, Edge, TOP o Pick.
+  const betfairSnapshot = await loadBetfairSnapshot(supaUrl, serviceKey);
+  diagnostics.push({
+    provider:"betfair-exchange",
+    catalogueMarkets:betfairSnapshot.catalogueMarkets,
+    bookMarkets:betfairSnapshot.bookMarkets,
+    matchedFixtures:betfairSnapshot.fixtures.size,
+    error:betfairSnapshot.error||null
+  });
 
   // STEP 2: football-data.org is now queried ONLY for competitions that
   // actually have a pending fixture on the selected date. This is the key
@@ -289,14 +301,13 @@ async function handler(req, res) {
 
   const candidates=[];
   const analyzedFixtureIds=new Set();
-  // Fetch odds in batches: /odds/multi supports up to 10 events in ONE request.
-  // This avoids the old 1-request-per-match fan-out that could consume the free quota quickly.
   const eligiblePool = unique.map(f=>{
     const home=f.homeTeam?.name||f.homeTeam?.shortName;
     const away=f.awayTeam?.name||f.awayTeam?.shortName;
     const event=home&&away ? oddsByPair.get(normalizePair(home,away)) : null;
-    return {f,home,away,event};
-  }).filter(x=>x.home&&x.away&&x.event&&!livePairs.has(normalizePair(x.home,x.away)));
+    const betfair=findBestBetfairFixture(home,away,betfairSnapshot.fixtures);
+    return {f,home,away,event,betfair};
+  }).filter(x=>x.home&&x.away&&x.event&&x.betfair&&!livePairs.has(normalizePair(x.home,x.away)));
 
   // In modalita' "Tutti i campionati selezionati" non prendiamo piu'
   // semplicemente i primi 30 eventi restituiti dal provider: l'ordine del feed
@@ -344,38 +355,22 @@ async function handler(req, res) {
     eligible = eligiblePool.slice(0,30);
   }
 
-  const oddsResponses = new Map();
-  for(let i=0;i<eligible.length;i+=10){
-    const batch=eligible.slice(i,i+10);
-    const ids=batch.map(x=>x.event.id).join(',');
-    const oddsData=await odds(`/v3/odds/multi?apiKey=${encodeURIComponent(oddsKey)}&eventIds=${encodeURIComponent(ids)}&bookmakers=${encodeURIComponent(bookmakersParam)}`);
-    requests++; requestBreakdown.oddsBatches++;
-    const rows=Array.isArray(oddsData)?oddsData:[];
-    for(const row of rows) oddsResponses.set(String(row.id),row);
-    diagnostics.push({provider:"odds-analysis-batch",events:batch.length,returned:rows.length,bookmaker:requestedBookmaker,error:oddsData?.error||null});
-  }
-
-  for(const {f,home,away,event} of eligible){
+  for(const {f,home,away,event,betfair} of eligible){
     const homeStats=f.homeTeam?.id?{teamId:f.homeTeam.id,teamName:home,matches:recentByTeam.get(f.homeTeam.id)||[]}:null;
     const awayStats=f.awayTeam?.id?{teamId:f.awayTeam.id,teamName:away,matches:recentByTeam.get(f.awayTeam.id)||[]}:null;
     const h2hMatches=(f.homeTeam?.id&&f.awayTeam?.id)?(h2hByPair.get(h2hKey(f.homeTeam.id,f.awayTeam.id))||[]):[];
     const homeStanding=f.homeTeam?.id?standingsByTeam.get(f.homeTeam.id)||null:null;
     const awayStanding=f.awayTeam?.id?standingsByTeam.get(f.awayTeam.id)||null:null;
-    const oddsData=oddsResponses.get(String(event.id));
-    if(!oddsData){
-      diagnostics.push({provider:"odds-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:"Nessuna risposta odds per l'evento"});
-      continue;
-    }
     // try/catch difensivo: un errore sull'analisi di UNA partita non deve
     // far fallire l'intera risposta API (le altre partite restano valide).
     try {
-      const extracted=extractOdds(oddsData,market,requestedBookmaker,home,away);
+      const extracted=extractBetfairOdds(betfair,market,home,away);
       const markets=buildMarkets(extracted,homeStats,awayStats,h2hMatches,f.homeTeam?.id,f.awayTeam?.id,homeStanding,awayStanding);
-      diagnostics.push({provider:"odds-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:markets.length,bookmaker:requestedBookmaker,availableBookmakers:Object.keys(oddsData?.bookmakers||{}),error:oddsData?.error||null});
+      diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:markets.length,bookmaker:"Betfair Exchange",marketIds:betfair.map(x=>x.marketId)});
       if(markets.length) analyzedFixtureIds.add(f.id);
-      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event.id,kickoff:f.utcDate||event.date,oddsSource:"Odds-API.io",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId});
+      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event.id,kickoff:f.utcDate||event.date,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId});
     } catch (e) {
-      diagnostics.push({provider:"odds-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:`Errore interno analisi: ${e?.message||String(e)}`});
+      diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:`Errore interno analisi Betfair: ${e?.message||String(e)}`});
     }
   }
 
@@ -1426,6 +1421,145 @@ function clean(s) {
     .replace(/[^a-z0-9]+/g, "").trim();
 }
 
+async function supaRead(supaUrl, serviceKey, path) {
+  const r = await fetch(`${supaUrl}/rest/v1/${path}`, {
+    headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` }
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`Supabase ${r.status}: ${text.slice(0,500)}`);
+  return text ? JSON.parse(text) : [];
+}
+
+function unwrapBetfairCatalogue(payload) {
+  const out=[];
+  const walk=v=>{
+    if(Array.isArray(v)){ for(const x of v) walk(x); return; }
+    if(v && typeof v==='object'){
+      if(Array.isArray(v.result)){ for(const x of v.result) walk(x); return; }
+      if(v.marketId) out.push(v);
+    }
+  };
+  walk(payload);
+  return out;
+}
+
+function bestBackForRunner(r) {
+  if(Number.isFinite(Number(r?.backPrice)) && Number(r.backPrice)>1) return Number(r.backPrice);
+  const list=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];
+  const valid=list.map(x=>({price:Number(x?.price),size:Number(x?.size)})).filter(x=>x.price>1 && Number.isFinite(x.price));
+  valid.sort((a,b)=>b.price-a.price);
+  return valid[0]?.price ?? null;
+}
+
+function bestBackSizeForRunner(r) {
+  if(r?.backSize!=null && Number.isFinite(Number(r.backSize))) return Number(r.backSize);
+  const list=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];
+  const valid=list.map(x=>({price:Number(x?.price),size:Number(x?.size)})).filter(x=>x.price>1 && Number.isFinite(x.price));
+  valid.sort((a,b)=>b.price-a.price);
+  return valid[0]?.size ?? null;
+}
+
+async function loadBetfairSnapshot(supaUrl, serviceKey) {
+  try {
+    // Il bridge salva un catalogo completo per sincronizzazione e uno snapshot
+    // book per ogni market. Prendiamo il catalogo più recente e gli ultimi book.
+    const catRows=await supaRead(supaUrl,serviceKey,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');
+    const bookRows=await supaRead(supaUrl,serviceKey,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=500');
+    const latestBook=new Map();
+    for(const row of bookRows){ if(row?.market_id && !latestBook.has(String(row.market_id))) latestBook.set(String(row.market_id),row); }
+    const fixtures=new Map();
+    const catalogue=catRows[0]?.payload;
+    for(const m of unwrapBetfairCatalogue(catalogue)) {
+      const name=String(m.marketName||'');
+      const isMatch=/match odds|1x2|esito finale/i.test(name);
+      const lineMatch=name.match(/(?:under\s*\/\s*over|over\s*\/\s*under|under.*over|over.*under)[^0-9]*(0\.5|1\.5|2\.5|3\.5|4\.5)/i);
+      if(!isMatch && !lineMatch) continue;
+      const book=latestBook.get(String(m.marketId));
+      if(!book) continue;
+      const runners=(Array.isArray(book.payload?.runners)?book.payload.runners:[]).map(r=>({
+        selectionId:r.selectionId,
+        status:r.status,
+        backPrice:bestBackForRunner(r),
+        backSize:bestBackSizeForRunner(r),
+        name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r?.selectionId))?.runnerName:null)||String(r.selectionId)
+      }));
+      const item={marketId:String(m.marketId),marketName:name,event:m.event||null,competition:m.competition||null,receivedAt:book.received_at||m.received_at,runners};
+      const eventName=String(m.event?.name||'');
+      const parts=eventName.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
+      let pair=null;
+      if(parts.length>=2) pair=[parts[0],parts.slice(1).join(' ')];
+      if(pair){
+        const key=normalizePair(pair[0],pair[1]);
+        if(!fixtures.has(key)) fixtures.set(key,[]);
+        fixtures.get(key).push(item);
+      }
+    }
+    return {fixtures,catalogueMarkets:unwrapBetfairCatalogue(catalogue).length,bookMarkets:latestBook.size,error:null};
+  } catch(e) {
+    return {fixtures:new Map(),catalogueMarkets:0,bookMarkets:0,error:e?.message||String(e)};
+  }
+}
+
+function findBestBetfairFixture(home, away, fixtures) {
+  if(!home||!away) return null;
+  const exact=fixtures.get(normalizePair(home,away));
+  if(exact) return exact;
+  const reverse=fixtures.get(normalizePair(away,home));
+  if(reverse) return reverse;
+  let best=null,bestScore=0;
+  for(const [key,markets] of fixtures){
+    const sample=markets[0]?.event?.name||'';
+    const parts=String(sample).split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
+    if(parts.length<2) continue;
+    const h=parts[0],a=parts.slice(1).join(' ');
+    const hs=teamSimilarity(home,h), as=teamSimilarity(away,a);
+    const revhs=teamSimilarity(home,a), revas=teamSimilarity(away,h);
+    const score=Math.max((hs+as)/2,(revhs+revas)/2);
+    if(Math.max(hs,revhs)>=0.68 && Math.max(as,revas)>=0.68 && score>bestScore){best=markets;bestScore=score;}
+  }
+  return best;
+}
+
+function extractBetfairOdds(markets, requestedMarket="all", homeTeamName="", awayTeamName="") {
+  const out=[];
+  const wantsTotals = requestedMarket === "all" || requestedMarket === "totals";
+  const wants1x2 = requestedMarket === "all" || requestedMarket === "1x2";
+  const wantedLines=[0.5,1.5,2.5,3.5,4.5];
+  const norm=v=>String(v??"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
+  const homeN=norm(homeTeamName), awayN=norm(awayTeamName);
+  const num=v=>{ const n=Number(v); return Number.isFinite(n)&&n>1?n:null; };
+
+  for(const m of (Array.isArray(markets)?markets:[])){
+    const name=String(m.marketName||"");
+    const isMatch=/match odds|1x2|esito finale/i.test(name);
+    const lineMatch=name.match(/(?:under\s*\/\s*over|over\s*\/\s*under|under.*over|over.*under)[^0-9]*(0\.5|1\.5|2\.5|3\.5|4\.5)/i);
+    const line=lineMatch?Number(lineMatch[1]):null;
+    if(!isMatch && !(wantsTotals && line!=null && wantedLines.some(x=>Math.abs(x-line)<0.001))) continue;
+    if(isMatch && !wants1x2) continue;
+    if(line!=null && !wantsTotals) continue;
+
+    for(const r of (Array.isArray(m.runners)?m.runners:[])){
+      const odd=num(r.backPrice);
+      if(!odd) continue;
+      const label=norm(r.name);
+      let value=null;
+      if(isMatch){
+        if(["1","home","casa"].includes(label) || (homeN&&label===homeN) || (homeN&&label.includes(homeN))) value="1";
+        else if(["x","draw","pareggio","tie","the draw"].includes(label)) value="X";
+        else if(["2","away","trasferta"].includes(label) || (awayN&&label===awayN) || (awayN&&label.includes(awayN))) value="2";
+      } else if(line!=null){
+        if(/\bover\b/i.test(r.name)) value=`Over ${line.toFixed(1)}`;
+        else if(/\bunder\b/i.test(r.name)) value=`Under ${line.toFixed(1)}`;
+      }
+      if(value) out.push({value,odd,bookmaker:"Betfair Exchange",liquidity:r.backSize??null,marketId:m.marketId});
+    }
+  }
+  // Una sola quota BACK per esito: prendiamo la migliore disponibile.
+  const best=new Map();
+  for(const x of out){ const old=best.get(x.value); if(!old||x.odd>old.odd) best.set(x.value,x); }
+  return [...best.values()];
+}
+
 export function extractOdds(data, requestedMarket="all", requestedBookmaker="", homeTeamName="", awayTeamName="") {
   const out = [];
   const books = data?.bookmakers && typeof data.bookmakers === "object" ? data.bookmakers : {};
@@ -1592,10 +1726,16 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
     if (!(Number(o.odd) >= 1.5 && Number(o.odd) <= 3.75)) continue;
     let pStat = null;
     if (total != null) {
-      if (o.value === "Over 2.5") pStat = poissonAtLeast(total, 3) * 100;
+      if (o.value === "Over 0.5") pStat = poissonAtLeast(total, 1) * 100;
+      else if (o.value === "Under 0.5") pStat = poissonAtMost(total, 0) * 100;
+      else if (o.value === "Over 1.5") pStat = poissonAtLeast(total, 2) * 100;
+      else if (o.value === "Under 1.5") pStat = poissonAtMost(total, 1) * 100;
+      else if (o.value === "Over 2.5") pStat = poissonAtLeast(total, 3) * 100;
       else if (o.value === "Under 2.5") pStat = poissonAtMost(total, 2) * 100;
       else if (o.value === "Over 3.5") pStat = poissonAtLeast(total, 4) * 100;
       else if (o.value === "Under 3.5") pStat = poissonAtMost(total, 3) * 100;
+      else if (o.value === "Over 4.5") pStat = poissonAtLeast(total, 5) * 100;
+      else if (o.value === "Under 4.5") pStat = poissonAtMost(total, 4) * 100;
     }
     if ((o.value === "Goal" || o.value === "No Goal") && lambdaH != null && lambdaA != null) {
       const yes = (1 - Math.exp(-lambdaH)) * (1 - Math.exp(-lambdaA));
@@ -1750,9 +1890,11 @@ function poissonProb(lambda, k) {
 
 function fairProbabilities(odds) {
   const groups = [
-    ["Goal", "No Goal"],
+    ["Over 0.5", "Under 0.5"],
+    ["Over 1.5", "Under 1.5"],
     ["Over 2.5", "Under 2.5"],
     ["Over 3.5", "Under 3.5"],
+    ["Over 4.5", "Under 4.5"],
     ["1", "X", "2"]
   ];
   const out = {};
