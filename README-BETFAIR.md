@@ -1,23 +1,23 @@
-# Betfair Exchange — AI DEL PALLONE
+# AI DEL PALLONE — Betfair Exchange
 
-Questo pacchetto mantiene l'app v15 completa e aggiunge `api/betfair-status.mjs` per verificare il collegamento server-side a Betfair Exchange Italia.
+Questa versione aggiunge `api/betfair-status.mjs` per verificare il collegamento server-side a Betfair Exchange Italia.
 
 ## Variabili Vercel
 
-Impostare su Production:
+Impostare in **Production** (e Preview se serve):
 
-- `BETFAIR_APP_KEY` — usare la Delayed App Key per i test
-- `BETFAIR_USERNAME`
-- `BETFAIR_PASSWORD`
-- `BETFAIR_CERT` — contenuto del certificato `.crt`, incluse le righe BEGIN/END
-- `BETFAIR_KEY` — contenuto della chiave privata `.key`, incluse le righe BEGIN/END
+- `BETFAIR_APP_KEY` — Application Key Betfair (Delayed per i test o Live se attiva)
+- `BETFAIR_USERNAME` — username Betfair
+- `BETFAIR_PASSWORD` — password Betfair
+- `BETFAIR_CERT` — certificato PEM associato all'account
+- `BETFAIR_PRIVATE_KEY` — chiave privata PEM del certificato
 
-Non inserire mai queste credenziali nel codice o nel repository.
+`BETFAIR_KEY` resta accettata come fallback per compatibilità con la versione precedente, ma è preferibile usare `BETFAIR_PRIVATE_KEY` per evitare confusione con l'Application Key.
 
 ## Test
 
-Dopo il deployment aprire:
+Aprire `/api/betfair-status` sul dominio Vercel.
 
-`/api/betfair-status`
+Se compare `BETTING_RESTRICTED_LOCATION`, Betfair ha raggiunto e verificato la richiesta ma nega il login API perché l'origine IP della funzione server non è autorizzata per il betting italiano. Non è un errore risolvibile cambiando l'Application Key.
 
-Se tutto è configurato correttamente restituisce `ok: true`, `login: SUCCESS` ed `exchangeApi: OK` senza esporre il session token.
+Non inserire mai password, session token o chiavi private nel codice o nei messaggi.
