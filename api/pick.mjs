@@ -141,7 +141,7 @@ async function handler(req, res) {
     oddsEventResults = await Promise.all(codes.map(async code => {
       const staticGuess = oddsLeagueSlug(code);
       const slug = resolveLeagueSlug(code, staticGuess, leaguesCatalog, diagnostics);
-      if (!slug) { diagnostics.push({ provider:"odds-api-events", league:code, results:0, error:"Slug campionato non trovato (né statico né nel catalogo)" }); return { code, slug:null, events:[] }; }
+      if (!slug) { diagnostics.push({ provider:"odds-api-events", league:code, results:0, error:"Slug campionato non trovato (nÃ© statico nÃ© nel catalogo)" }); return { code, slug:null, events:[] }; }
       const ev = await odds(`/v3/events?apiKey=${encodeURIComponent(oddsKey)}&sport=football&league=${encodeURIComponent(slug)}&status=pending`);
       requests++; requestBreakdown.oddsEventsDiscovery++;
       const events = Array.isArray(ev) ? ev : [];
@@ -168,8 +168,8 @@ async function handler(req, res) {
   }
 
   // BETFAIR: le quote usate dal modello arrivano esclusivamente dall'Exchange.
-  // Odds-API viene usato solo per scoprire le partite; NON fornisce più la quota
-  // usata per Probabilità, Edge, TOP o Pick.
+  // Odds-API viene usato solo per scoprire le partite; NON fornisce piÃ¹ la quota
+  // usata per ProbabilitÃ , Edge, TOP o Pick.
   const betfairSnapshot = await loadBetfairSnapshot(supaUrl, serviceKey);
   diagnostics.push({
     provider:"betfair-exchange",
@@ -317,42 +317,21 @@ async function handler(req, res) {
   // hanno precedenza senza monopolizzare tutte le chiamate odds.
   let eligible = eligiblePool;
   if (!codes) {
-    const ranked = eligiblePool
+    // V16: con "Tutti" analizziamo tutto il perimetro disponibile. La
+    // domenica può contenere centinaia di eventi: nessun cap artificiale a 30.
+    // La priorità di campionato resta un tie-break, non un filtro.
+    eligible = eligiblePool
       .map(x => ({...x, _priority: leaguePriority(x.event?.league)}))
       .sort((a,b) => b._priority - a._priority || new Date(a.f.utcDate||a.event?.date) - new Date(b.f.utcDate||b.event?.date));
-    const selected = [];
-    const counts = new Map();
-    // Prima passata: massimo 2 eventi per lega, rispettando la priorita'.
-    for (const x of ranked) {
-      const key = String(x.event?.league?.slug || x.event?.league?.name || 'other').toLowerCase();
-      const count = counts.get(key) || 0;
-      if (count >= 3) continue;
-      selected.push(x);
-      counts.set(key, count + 1);
-      if (selected.length >= 30) break;
-    }
-    // Seconda passata: se restano slot, riempi con i migliori eventi ancora
-    // esclusi, sempre secondo la priorita' dei campionati.
-    if (selected.length < 30) {
-      const picked = new Set(selected.map(x => `${x.home}|${x.away}|${x.f.utcDate}`));
-      for (const x of ranked) {
-        const id = `${x.home}|${x.away}|${x.f.utcDate}`;
-        if (picked.has(id)) continue;
-        selected.push(x);
-        picked.add(id);
-        if (selected.length >= 30) break;
-      }
-    }
-    eligible = selected;
     diagnostics.push({
       provider:"editorial-league-priority",
       pool:eligiblePool.length,
       selected:eligible.length,
-      rule:"priorita' campionati + massimo 3 partite per lega nella prima passata",
-      topLeagues:ranked.slice(0,10).map(x=>x.event?.league?.name||x.event?.league?.slug).filter(Boolean)
+      rule:"tutte le partite disponibili; nessun cap a 30; priorita campionato solo come tie-break",
+      topLeagues:eligible.slice(0,12).map(x=>x.event?.league?.name||x.event?.league?.slug).filter(Boolean)
     });
   } else {
-    eligible = eligiblePool.slice(0,30);
+    eligible = eligiblePool;
   }
 
   for(const {f,home,away,event,betfair} of eligible){
@@ -366,8 +345,11 @@ async function handler(req, res) {
     try {
       const extracted=extractBetfairOdds(betfair,market,home,away);
       const markets=buildMarkets(extracted,homeStats,awayStats,h2hMatches,f.homeTeam?.id,f.awayTeam?.id,homeStanding,awayStanding);
-      diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:markets.length,bookmaker:"Betfair Exchange",marketIds:betfair.map(x=>x.marketId)});
       if(markets.length) analyzedFixtureIds.add(f.id);
+      // Non gonfiamo la risposta con una riga diagnostica per ogni partita:
+      // con centinaia di eventi il browser deve ricevere soprattutto i risultati.
+      // Conserviamo invece gli errori e i casi senza mercati analizzabili.
+      if(!markets.length) diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:0,bookmaker:"Betfair Exchange",marketIds:betfair.map(x=>x.marketId),error:"Nessun mercato BACK nel perimetro richiesto"});
       for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event.id,kickoff:f.utcDate||event.date,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId});
     } catch (e) {
       diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:`Errore interno analisi Betfair: ${e?.message||String(e)}`});
@@ -553,6 +535,20 @@ async function enrichMissingCandidateLogos(rows, diagnostics) {
   }));
 }
 
+function preEnrichmentScore(c) {
+  const odds=Number(c?.odds);
+  const implied=Number.isFinite(odds)&&odds>1 ? 100/odds : 50;
+  const liq=liquidityScore(c);
+  const p=Number(c?.pStat);
+  const freq=Number(c?.pFreq);
+  const support=(Number.isFinite(p)?p:Number.isFinite(freq)?freq:implied);
+  const distance=Math.abs(support-implied);
+  const valuePotential=clamp(55+distance*1.8,0,100);
+  const league=clamp(leaguePriority({name:c?.league||''}),0,1000)/10;
+  const marketBonus=(c?.marketType==='1x2'?4:0);
+  return support*0.50 + liq*0.18 + valuePotential*0.17 + league*0.10 + marketBonus;
+}
+
 async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnostics) {
   if (!candidates.length) return { candidates, requests: 0 };
   let requests = 0;
@@ -560,17 +556,20 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
   const fixtureLogos = new Map();
   const availability = new Map();
   const predictions = new Map();
+  let enrichedFixtureCount = 0;
 
   if (!apiKey) {
-    diagnostics.push({ provider:"api-football-fixtures", results:0, error:"API_FOOTBALL_KEY non configurata su Vercel: assenze/infortuni e lettura tattica avanzata non disponibili. Le motivazioni usano comunque lo storico gol/forma quando c'è." });
+    diagnostics.push({ provider:"api-football-fixtures", results:0, error:"API_FOOTBALL_KEY non configurata su Vercel: assenze/infortuni e lettura tattica avanzata non disponibili. Le motivazioni usano comunque lo storico gol/forma quando c'Ã¨." });
   } else {
   const uniqueFixtures = [];
   const seen = new Set();
-  for (const c of [...candidates].sort((a,b)=>b.score-a.score)) {
+  for (const c of [...candidates].sort((a,b)=>preEnrichmentScore(b)-preEnrichmentScore(a))) {
     const key = normalizePair(c.home, c.away);
     if (!seen.has(key)) { seen.add(key); uniqueFixtures.push(c); }
-    if (uniqueFixtures.length >= 6) break;
+    if (uniqueFixtures.length >= 18) break;
   }
+  enrichedFixtureCount = uniqueFixtures.length;
+  // Le 18 partite vengono arricchite, ma il ranking finale resta libero su tutti gli scenari.
   try {
     const fx = await apiFootball(`/fixtures?date=${encodeURIComponent(date)}&timezone=Europe%2FRome`, apiKey);
     requests++; breakdown.apiFootballFixtures++; 
@@ -591,7 +590,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
 
   // V15: nessuna chiamata /leagues preventiva.
   // Proviamo direttamente /injuries e /predictions sul fixture trovato.
-  // In questo modo un problema di coverage non può bloccare la Function.
+  // In questo modo un problema di coverage non puÃ² bloccare la Function.
 
   for (const c of uniqueFixtures) {
     const af = findBestApiFootballFixture(c, fixtureMap);
@@ -636,7 +635,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     const key=normalizePair(c.home,c.away);
     if(seenMc.has(key)) continue;
     seenMc.add(key); uniqueForMc.push(c);
-    if(uniqueForMc.length>=12) break;
+    if(uniqueForMc.length>=20) break;
   }
   for (const c of uniqueForMc) {
     try { mcByPair.set(normalizePair(c.home,c.away), monteCarloFixture(c, availability.get(normalizePair(c.home,c.away)), predictions.get(normalizePair(c.home,c.away)), 10000)); }
@@ -645,8 +644,8 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
 
   // Questo map gira SEMPRE, con o senza chiave API-Football: garantisce che
   // ogni candidato abbia sempre una motivazione e un punteggio di fiducia
-  // validi (mai "-/100"), usando l'arricchimento quando c'è ed eventualmente
-  // degradando allo storico gol/forma quando non c'è.
+  // validi (mai "-/100"), usando l'arricchimento quando c'Ã¨ ed eventualmente
+  // degradando allo storico gol/forma quando non c'Ã¨.
   let out = candidates.map(c => {
     const key = normalizePair(c.home,c.away);
     const av = availability.get(key);
@@ -665,7 +664,10 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     const missingAfter = out.reduce((n,c)=>n + (!c.homeLogo?1:0) + (!c.awayLogo?1:0),0);
     diagnostics.push({provider:'thesportsdb-logos',requested:Math.min(8,missingBefore),resolved:missingBefore-missingAfter,error:null});
   }
-  return {candidates:out, requests};
+  out.sort((a,b)=>Number(b.score||0)-Number(a.score||0) || Number(b.prob||0)-Number(a.prob||0) || Number(b.edge||0)-Number(a.edge||0));
+  const returned=out.slice(0,120);
+  diagnostics.push({provider:'final-ranking',totalScenarios:out.length,returned:returned.length,enrichedFixtures:enrichedFixtureCount,rule:'ranking su tutto il perimetro; risposta limitata ai 120 scenari migliori per mantenere cache e browser leggeri'});
+  return {candidates:returned, requests};
 }
 
 async function apiFootball(path, key) {
@@ -756,7 +758,7 @@ function normalize(s) {
 }
 
 function warningsPenaltyCount(c) {
-  // Penalità leggere per segnali di cautela già rilevati dal modello base.
+  // PenalitÃ  leggere per segnali di cautela giÃ  rilevati dal modello base.
   // Qui non ricalcoliamo le warning testuali per evitare dipendenze circolari.
   let n = 0;
   const m = String(c?.market || "");
@@ -821,7 +823,7 @@ function hashString(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCod
 function liquidityScore(c) {
   const n=Number(c?.liquidity);
   if(!Number.isFinite(n) || n<=0) return 45;
-  // Scala logaritmica: evita che un mercato con liquidità enorme domini il ranking.
+  // Scala logaritmica: evita che un mercato con liquiditÃ  enorme domini il ranking.
   return clamp(25 + 22*Math.log10(1+n), 25, 100);
 }
 
@@ -841,8 +843,8 @@ function applyEnrichedScore(c, av, pred) {
   const mc=c.monteCarlo||null;
   const mcProb=mc?.prob?.[c.market]!=null && Number(mc.historicalSample||0)>=3 ? clamp(Number(mc.prob[c.market]),0,100):null;
 
-  // Probabilità del modello: più peso alle fonti indipendenti, Betfair resta
-  // il riferimento di mercato ma non può da sola creare un TOP.
+  // ProbabilitÃ  del modello: piÃ¹ peso alle fonti indipendenti, Betfair resta
+  // il riferimento di mercato ma non puÃ² da sola creare un TOP.
   const sources=[];
   if(mcProb!=null) sources.push([40,mcProb]);
   if(statProb!=null) sources.push([25,statProb]);
@@ -864,7 +866,7 @@ function applyEnrichedScore(c, av, pred) {
 
   const implied=Number.isFinite(Number(c.odds))?100/Number(c.odds):null;
   const edge=implied!=null?modelProb-implied:(Number.isFinite(c.edge)?c.edge:0);
-  // Edge molto alto è utile, ma oltre una certa soglia è spesso sintomo di
+  // Edge molto alto Ã¨ utile, ma oltre una certa soglia Ã¨ spesso sintomo di
   // modello poco calibrato: lo facciamo rendere meno nel ranking.
   let valueScore=clamp(50+50*Math.tanh(edge/18),0,100);
   if(edge>18) valueScore-=Math.min(18,(edge-18)*0.65);
@@ -900,30 +902,32 @@ function applyEnrichedScore(c, av, pred) {
   const liq=liquidityScore(c);
   const type=marketType(c);
   let score =
-    modelProb*0.38 +
-    analysisSupport*0.22 +
-    valueScore*0.16 +
+    modelProb*0.30 +
+    analysisSupport*0.25 +
+    valueScore*0.20 +
     agreement*0.10 +
-    contextScore*0.08 +
-    liq*0.06;
+    contextScore*0.10 +
+    liq*0.05;
 
   // Regole di sicurezza del ranking: uno scenario poco probabile o con dati
-  // incoerenti non deve scalare il TOP solo perché offre una quota alta.
+  // incoerenti non deve scalare il TOP solo perchÃ© offre una quota alta.
   if(type==='1x2' && modelProb<48) score-=Math.min(12,(48-modelProb)*0.55);
   if(type==='totals' && modelProb<55) score-=Math.min(10,(55-modelProb)*0.35);
   if(edge<0) score-=Math.min(12,Math.abs(edge)*0.35);
   if(agreement<55) score-=Math.min(10,(55-agreement)*0.35);
-  if(analysisSupport<40) score-=Math.min(8,(40-analysisSupport)*0.20);
+  if(analysisSupport<15) score=Math.min(score,38);
+  else if(analysisSupport<25) score=Math.min(score,48);
+  else if(analysisSupport<40) score-=Math.min(6,(40-analysisSupport)*0.18);
   if(av && (av.home?.length||av.away?.length)) score-=Math.min(4,Math.abs((av.home?.length||0)-(av.away?.length||0))*0.5);
   score=clamp(score,0,100);
 
   const components=[
-    {name:'probabilità modello',weight:38,value:modelProb},
-    {name:'qualità dati',weight:22,value:analysisSupport},
-    {name:'valore quota',weight:16,value:valueScore},
+    {name:'probabilità modello',weight:30,value:modelProb},
+    {name:'qualità dati',weight:25,value:analysisSupport},
+    {name:'valore quota Betfair',weight:20,value:valueScore},
     {name:'concordanza fonti',weight:10,value:agreement},
-    {name:'contesto partita',weight:8,value:contextScore},
-    {name:'liquidità Betfair',weight:6,value:liq}
+    {name:'contesto e stabilità',weight:10,value:contextScore},
+    {name:'liquidità Betfair',weight:5,value:liq}
   ];
   return {
     ...c,
@@ -1018,13 +1022,13 @@ function buildFieldAnalysis(c, av, pred) {
   const tactical = tacticalMatchReason(c, market, h, a);
   const warnings=[];
   const hForm=h.form, aForm=a.form;
-  if (Number.isFinite(hForm)&&Number.isFinite(aForm)&&Math.abs(hForm-aForm)<0.35 && ["1 (Casa)","1","2 (Trasferta)","2"].includes(market)) warnings.push("Le due squadre arrivano in condizioni simili: il risultato secco è meno protetto.");
+  if (Number.isFinite(hForm)&&Number.isFinite(aForm)&&Math.abs(hForm-aForm)<0.35 && ["1 (Casa)","1","2 (Trasferta)","2"].includes(market)) warnings.push("Le due squadre arrivano in condizioni simili: il risultato secco Ã¨ meno protetto.");
   if (["1 (Casa)","1","2 (Trasferta)","2"].includes(market)) {
     const mx=oneXTwoFieldComponent(c);
     if (mx!=null && mx>=43 && mx<=57) warnings.push("Il confronto casa/trasferta non offre un vantaggio abbastanza netto: il segno secco va trattato con cautela.");
   }
-  if ((market === "Goal" || market.startsWith("Over")) && Number.isFinite(h.gf)&&Number.isFinite(a.gf) && h.gf<1.1 && a.gf<1.1) warnings.push("Negli ultimi risultati manca una produzione offensiva continua: è il principale elemento di cautela.");
-  if ((market === "Under 2.5" || market === "Under 3.5") && Number.isFinite(h.ga)&&Number.isFinite(a.ga) && h.ga>=1.5 && a.ga>=1.5) warnings.push("Entrambe concedono occasioni con una certa frequenza: l'Under è meno protetto.");
+  if ((market === "Goal" || market.startsWith("Over")) && Number.isFinite(h.gf)&&Number.isFinite(a.gf) && h.gf<1.1 && a.gf<1.1) warnings.push("Negli ultimi risultati manca una produzione offensiva continua: Ã¨ il principale elemento di cautela.");
+  if ((market === "Under 2.5" || market === "Under 3.5") && Number.isFinite(h.ga)&&Number.isFinite(a.ga) && h.ga>=1.5 && a.ga>=1.5) warnings.push("Entrambe concedono occasioni con una certa frequenza: l'Under Ã¨ meno protetto.");
   if ((market === "Goal" || market === "No Goal") && !av) warnings.push("Le informazioni sulle assenze non sono disponibili per questa partita.");
 
   const rawValue = market.startsWith("1") ? "1" : market.startsWith("2") ? "2" : market.startsWith("X") ? "X" : market;
@@ -1051,18 +1055,18 @@ function tacticalMatchReason(c, market, h, a) {
     if (hm.scored>=4 && hm.conceded>=3 && am.scored>=4 && am.conceded>=3)
       bits.push(`${home} e ${away} stanno mostrando due copioni favorevoli al Goal: riescono a trovare la rete ma lasciano anche occasioni agli avversari.`);
     else if (hm.scored>=4 && am.conceded>=3)
-      bits.push(`${home} sta trovando con continuità la porta, mentre ${away} ha mostrato difficoltà nel proteggere l'area: è il tipo di incrocio che può portare a un gol della squadra di casa.`);
+      bits.push(`${home} sta trovando con continuitÃ  la porta, mentre ${away} ha mostrato difficoltÃ  nel proteggere l'area: Ã¨ il tipo di incrocio che puÃ² portare a un gol della squadra di casa.`);
     else if (am.scored>=4 && hm.conceded>=3)
-      bits.push(`${away} ha continuità davanti e ${home} ha concesso gol con frequenza: la squadra ospite ha quindi condizioni concrete per creare occasioni.`);
+      bits.push(`${away} ha continuitÃ  davanti e ${home} ha concesso gol con frequenza: la squadra ospite ha quindi condizioni concrete per creare occasioni.`);
     else if (hm.scored>=3 && am.scored>=3)
-      bits.push(`Entrambe hanno mostrato di saper trovare la porta nelle ultime gare: il confronto può produrre occasioni da entrambe le parti.`);
+      bits.push(`Entrambe hanno mostrato di saper trovare la porta nelle ultime gare: il confronto puÃ² produrre occasioni da entrambe le parti.`);
   } else if (m === "No Goal") {
     if (hm.clean>=3 && am.clean>=3)
-      bits.push(`Le due difese stanno proteggendo bene l'area: entrambe hanno mantenuto la porta inviolata più volte nelle ultime gare.`);
+      bits.push(`Le due difese stanno proteggendo bene l'area: entrambe hanno mantenuto la porta inviolata piÃ¹ volte nelle ultime gare.`);
     else if (hm.clean>=3)
-      bits.push(`${home} sta concedendo poco e può togliere spazio all'attacco di ${away}, rendendo difficile il Goal ospite.`);
+      bits.push(`${home} sta concedendo poco e puÃ² togliere spazio all'attacco di ${away}, rendendo difficile il Goal ospite.`);
     else if (am.clean>=3)
-      bits.push(`${away} sta difendendo con continuità e può limitare le occasioni di ${home}.`);
+      bits.push(`${away} sta difendendo con continuitÃ  e puÃ² limitare le occasioni di ${home}.`);
   } else if (m === "Over 2.5" || m === "Over 3.5") {
     const line=m === "Over 3.5" ? 4 : 3;
     if (hm.overLine>=3 && am.overLine>=3)
@@ -1070,34 +1074,34 @@ function tacticalMatchReason(c, market, h, a) {
     else if (hm.overLine>=3 || am.overLine>=3)
       bits.push(`${hm.overLine>=3?home:away} arriva da diverse partite aperte, mentre l'altra squadra ha caratteristiche che possono contribuire ad alzare il ritmo.`);
     else if (hm.scored>=4 && am.scored>=4)
-      bits.push(`Entrambe arrivano con continuità realizzativa: se il primo gol arriva presto, la partita può diventare rapidamente aperta.`);
+      bits.push(`Entrambe arrivano con continuitÃ  realizzativa: se il primo gol arriva presto, la partita puÃ² diventare rapidamente aperta.`);
   } else if (m === "Under 2.5" || m === "Under 3.5") {
     const line=m === "Under 3.5" ? 3 : 2;
     if (hm.underLine>=4 && am.underLine>=4)
       bits.push(`Le ultime gare delle due squadre sono state generalmente contenute nel punteggio: il contesto favorisce una partita con pochi gol.`);
     else if (hm.clean>=3 && am.clean>=2)
-      bits.push(`La fase difensiva di entrambe sta dando buone risposte: questo può ridurre il numero di occasioni pulite.`);
+      bits.push(`La fase difensiva di entrambe sta dando buone risposte: questo puÃ² ridurre il numero di occasioni pulite.`);
     else if (hm.sample>=2 && am.sample>=2 && hm.scored<=2 && am.scored<=2)
-      bits.push(`Nelle ultime uscite è mancata continuità sotto porta da entrambe le parti, un elemento favorevole a una gara con punteggio contenuto.`);
+      bits.push(`Nelle ultime uscite Ã¨ mancata continuitÃ  sotto porta da entrambe le parti, un elemento favorevole a una gara con punteggio contenuto.`);
   } else if (m === "1 (Casa)" || m === "1") {
     if (hm.homeWins>=3 && am.awayLosses>=2)
-      bits.push(`${home} sta sfruttando bene il fattore campo, mentre ${away} ha mostrato più difficoltà lontano da casa: il confronto premia la squadra di casa.`);
+      bits.push(`${home} sta sfruttando bene il fattore campo, mentre ${away} ha mostrato piÃ¹ difficoltÃ  lontano da casa: il confronto premia la squadra di casa.`);
     else if (hm.homeWins>=3)
-      bits.push(`${home} ha costruito le prestazioni migliori davanti al proprio pubblico e può provare a prendere il controllo della gara.`);
+      bits.push(`${home} ha costruito le prestazioni migliori davanti al proprio pubblico e puÃ² provare a prendere il controllo della gara.`);
     else if (am.awayLosses>=3)
-      bits.push(`${away} ha faticato in trasferta nelle ultime uscite: ${home} può approfittare di questa difficoltà per giocare più avanti.`);
+      bits.push(`${away} ha faticato in trasferta nelle ultime uscite: ${home} puÃ² approfittare di questa difficoltÃ  per giocare piÃ¹ avanti.`);
   } else if (m === "2 (Trasferta)" || m === "2") {
     if (am.awayWins>=3 && hm.homeLosses>=2)
-      bits.push(`${away} sta rendendo bene anche fuori casa, mentre ${home} ha mostrato fragilità davanti al proprio pubblico: è un incrocio favorevole agli ospiti.`);
+      bits.push(`${away} sta rendendo bene anche fuori casa, mentre ${home} ha mostrato fragilitÃ  davanti al proprio pubblico: Ã¨ un incrocio favorevole agli ospiti.`);
     else if (am.awayWins>=3)
-      bits.push(`${away} ha mostrato personalità in trasferta e può riuscire a portare la partita sul proprio terreno.`);
+      bits.push(`${away} ha mostrato personalitÃ  in trasferta e puÃ² riuscire a portare la partita sul proprio terreno.`);
     else if (hm.homeLosses>=3)
-      bits.push(`${home} ha faticato a proteggere il proprio campo nelle ultime uscite: ${away} può sfruttare questa vulnerabilità.`);
+      bits.push(`${home} ha faticato a proteggere il proprio campo nelle ultime uscite: ${away} puÃ² sfruttare questa vulnerabilitÃ .`);
   } else if (m === "X (Pareggio)" || m === "X") {
     if (hm.draws>=2 && am.draws>=2)
-      bits.push(`Entrambe hanno mostrato la tendenza a partite equilibrate e difficili da sbloccare: il pareggio è coerente con questo tipo di confronto.`);
+      bits.push(`Entrambe hanno mostrato la tendenza a partite equilibrate e difficili da sbloccare: il pareggio Ã¨ coerente con questo tipo di confronto.`);
     else
-      bits.push(`Le caratteristiche recenti non indicano una squadra nettamente dominante: la partita può restare in equilibrio a lungo.`);
+      bits.push(`Le caratteristiche recenti non indicano una squadra nettamente dominante: la partita puÃ² restare in equilibrio a lungo.`);
   }
   return bits.join(" ");
 }
@@ -1152,7 +1156,7 @@ function buildBarReason(c, av, pred) {
 
   // La spiegazione deve parlare soprattutto di calcio giocato: forma,
   // atteggiamento offensivo/difensivo, rendimento casa/trasferta e assenze.
-  // Evitiamo percentuali, probabilità e gergo da modello nel testo principale.
+  // Evitiamo percentuali, probabilitÃ  e gergo da modello nel testo principale.
   if (fieldText) parts.push(fieldText);
 
   const absenceSentences = [];
@@ -1163,7 +1167,7 @@ function buildBarReason(c, av, pred) {
   // Per 1X2 non aggiungiamo mai una frase generica sul fattore campo senza
   // un segnale reale a supporto (era il bug che generava spiegazioni
   // contraddittorie: "i dati non sostengono il segno 1" scritto proprio
-  // sotto un pronostico che consigliava il segno 1). Se non c'è nessun
+  // sotto un pronostico che consigliava il segno 1). Se non c'Ã¨ nessun
   // segnale vero, si passa al fallback qui sotto basato sul valore quota.
 
   if (!parts.length) {
@@ -1171,12 +1175,12 @@ function buildBarReason(c, av, pred) {
     const edge = Number(c.edge);
     const label = market.startsWith("1") ? "il segno 1" : market.startsWith("2") ? "il segno 2" : market.startsWith("X") ? "il pareggio" : null;
     if (label && Number.isFinite(odd) && Number.isFinite(edge) && edge > 0) {
-      return `Non c'è una tendenza recente abbastanza netta da spiegare da sola ${label}: il modello lo segnala soprattutto perché la quota (${odd.toFixed(2)}) sembra più alta di quanto meriterebbe questo esito, un margine di valore stimato di circa il ${Math.round(edge)}%.`;
+      return `Non c'Ã¨ una tendenza recente abbastanza netta da spiegare da sola ${label}: il modello lo segnala soprattutto perchÃ© la quota (${odd.toFixed(2)}) sembra piÃ¹ alta di quanto meriterebbe questo esito, un margine di valore stimato di circa il ${Math.round(edge)}%.`;
     }
     if (Number.isFinite(odd) && Number.isFinite(edge) && edge > 0) {
       return `Per questa partita non abbiamo ancora abbastanza storico recente delle due squadre. La scelta si basa soprattutto sul confronto tra la quota proposta (${odd.toFixed(2)}) e quanto succede di solito in mercati simili, che lascia un margine di valore stimato di circa il ${Math.round(edge)}%.`;
     }
-    return `Per questa partita non abbiamo ancora abbastanza storico recente delle due squadre per un giudizio più preciso: la valutazione resta soprattutto legata alla quota e va presa con più cautela del solito.`;
+    return `Per questa partita non abbiamo ancora abbastanza storico recente delle due squadre per un giudizio piÃ¹ preciso: la valutazione resta soprattutto legata alla quota e va presa con piÃ¹ cautela del solito.`;
   }
   return parts.slice(0, 3).join(" ");
 }
@@ -1193,7 +1197,7 @@ function fieldMatchReason(c, market) {
   // Number.isFinite(Number(h.ga)) risulterebbe sempre vero anche a zero
   // partite storiche disponibili (h.ga=null), facendo scattare affermazioni
   // specifiche tipo "difesa solidissima" basate sul nulla. Si controllano
-  // quindi i valori grezzi, che restano null finché non c'è un campione reale.
+  // quindi i valori grezzi, che restano null finchÃ© non c'Ã¨ un campione reale.
   const hg=h.gf, ag=a.gf, hga=h.ga, aga=a.ga;
   const hStrongAttack=Number.isFinite(hg)&&hg>=1.4, aStrongAttack=Number.isFinite(ag)&&ag>=1.4;
   const hSolidDefense=Number.isFinite(hga)&&hga<=1.1, aSolidDefense=Number.isFinite(aga)&&aga<=1.1;
@@ -1203,61 +1207,61 @@ function fieldMatchReason(c, market) {
   // Prefer descriptions of scoring/conceding patterns and home/away behaviour.
   if(market === "Goal") {
     if(evH.scored>=4 && evH.conceded>=3 && evA.scored>=4 && evA.conceded>=3)
-      parts.push(`${home} sta trovando la porta con continuità ma concede anche occasioni; ${away} presenta lo stesso tipo di equilibrio tra pericolosità davanti e vulnerabilità dietro.`);
+      parts.push(`${home} sta trovando la porta con continuitÃ  ma concede anche occasioni; ${away} presenta lo stesso tipo di equilibrio tra pericolositÃ  davanti e vulnerabilitÃ  dietro.`);
     else if(evH.scored>=4 && evA.conceded>=3)
-      parts.push(`${home} arriva con una buona continuità realizzativa, mentre ${away} ha lasciato spesso spazio agli avversari nella propria area.`);
+      parts.push(`${home} arriva con una buona continuitÃ  realizzativa, mentre ${away} ha lasciato spesso spazio agli avversari nella propria area.`);
     else if(evA.scored>=4 && evH.conceded>=3)
-      parts.push(`${away} sta trovando la porta con continuità e può attaccare una difesa di ${home} che nelle ultime uscite ha concesso con frequenza.`);
+      parts.push(`${away} sta trovando la porta con continuitÃ  e puÃ² attaccare una difesa di ${home} che nelle ultime uscite ha concesso con frequenza.`);
     else if(hStrongAttack && aLeaky)
-      parts.push(`${home} ha più soluzioni per attaccare l'area, mentre ${away} ha mostrato difficoltà nel proteggere gli ultimi metri.`);
+      parts.push(`${home} ha piÃ¹ soluzioni per attaccare l'area, mentre ${away} ha mostrato difficoltÃ  nel proteggere gli ultimi metri.`);
     else if(aStrongAttack && hLeaky)
-      parts.push(`${away} ha armi per attaccare la profondità e ${home} ha mostrato difficoltà nel proteggere la propria area.`);
+      parts.push(`${away} ha armi per attaccare la profonditÃ  e ${home} ha mostrato difficoltÃ  nel proteggere la propria area.`);
     else if(evH.scored>=3 && evA.scored>=3)
-      parts.push(`Entrambe hanno mostrato una discreta continuità nel trovare la porta, quindi il confronto può produrre occasioni su entrambi i fronti.`);
+      parts.push(`Entrambe hanno mostrato una discreta continuitÃ  nel trovare la porta, quindi il confronto puÃ² produrre occasioni su entrambi i fronti.`);
   } else if(market === "No Goal") {
     if(evH.clean>=3 && evA.clean>=3)
-      parts.push(`Le due squadre stanno proteggendo bene l'area e hanno mantenuto più volte la porta inviolata nelle ultime gare.`);
+      parts.push(`Le due squadre stanno proteggendo bene l'area e hanno mantenuto piÃ¹ volte la porta inviolata nelle ultime gare.`);
     else if(hSolidDefense && aSolidDefense)
       parts.push(`Entrambe hanno una struttura difensiva solida e stanno concedendo poche occasioni pulite.`);
     else if(hSolidDefense)
-      parts.push(`${home} sta concedendo poco e può togliere spazio alle iniziative offensive di ${away}.`);
+      parts.push(`${home} sta concedendo poco e puÃ² togliere spazio alle iniziative offensive di ${away}.`);
     else if(aSolidDefense)
-      parts.push(`${away} sta proteggendo bene la propria area e può limitare la produzione offensiva di ${home}.`);
+      parts.push(`${away} sta proteggendo bene la propria area e puÃ² limitare la produzione offensiva di ${home}.`);
   } else if(market === "Over 2.5" || market === "Over 3.5") {
     if(evH.overLine>=3 && evA.overLine>=3)
       parts.push(`Entrambe arrivano da partite spesso aperte e con diversi momenti di campo lungo: se il ritmo cresce, gli spazi possono moltiplicarsi.`);
     else if(hStrongAttack && aStrongAttack)
-      parts.push(`Entrambe hanno qualità per attaccare con continuità e creare occasioni da più zone del campo.`);
+      parts.push(`Entrambe hanno qualitÃ  per attaccare con continuitÃ  e creare occasioni da piÃ¹ zone del campo.`);
     else if((hStrongAttack||aStrongAttack)&&(hLeaky||aLeaky))
-      parts.push(`Una delle due ha qualità per spingere, mentre l'altra ha mostrato vulnerabilità quando deve difendere gli spazi.`);
+      parts.push(`Una delle due ha qualitÃ  per spingere, mentre l'altra ha mostrato vulnerabilitÃ  quando deve difendere gli spazi.`);
   } else if(market === "Under 2.5" || market === "Under 3.5") {
     if(evH.underLine>=4 && evA.underLine>=4)
-      parts.push(`Le ultime gare hanno avuto un andamento generalmente controllato e con pochi gol: il copione può restare prudente.`);
+      parts.push(`Le ultime gare hanno avuto un andamento generalmente controllato e con pochi gol: il copione puÃ² restare prudente.`);
     else if(hSolidDefense && aSolidDefense)
-      parts.push(`Le due difese stanno concedendo poco spazio e possono tenere la gara su ritmi più controllati.`);
+      parts.push(`Le due difese stanno concedendo poco spazio e possono tenere la gara su ritmi piÃ¹ controllati.`);
     else if(hSolidDefense || aSolidDefense)
       parts.push(`Almeno una delle due ha una fase difensiva capace di rallentare il ritmo e limitare le occasioni pulite.`);
     else if(Number.isFinite(hg)&&Number.isFinite(ag)&&hStrongAttack===false && aStrongAttack===false)
-      parts.push(`Nelle ultime uscite entrambe hanno mostrato poca continuità nella finalizzazione: questo può favorire un punteggio contenuto.`);
+      parts.push(`Nelle ultime uscite entrambe hanno mostrato poca continuitÃ  nella finalizzazione: questo puÃ² favorire un punteggio contenuto.`);
   } else if(market === "1 (Casa)" || market === "1") {
     if(evH.homeWins>=3 && evA.awayLosses>=2)
-      parts.push(`${home} sta sfruttando bene il proprio campo, mentre ${away} ha mostrato più difficoltà quando gioca lontano da casa.`);
+      parts.push(`${home} sta sfruttando bene il proprio campo, mentre ${away} ha mostrato piÃ¹ difficoltÃ  quando gioca lontano da casa.`);
     else if(evH.homeWins>=3)
-      parts.push(`${home} ha costruito le prestazioni migliori davanti al proprio pubblico e può provare a prendere il controllo della gara.`);
+      parts.push(`${home} ha costruito le prestazioni migliori davanti al proprio pubblico e puÃ² provare a prendere il controllo della gara.`);
     else if(evA.awayLosses>=3)
-      parts.push(`${away} ha faticato in trasferta nelle ultime uscite: ${home} può provare ad attaccare questa vulnerabilità.`);
+      parts.push(`${away} ha faticato in trasferta nelle ultime uscite: ${home} puÃ² provare ad attaccare questa vulnerabilitÃ .`);
   } else if(market === "2 (Trasferta)" || market === "2") {
     if(evA.awayWins>=3 && evH.homeLosses>=2)
-      parts.push(`${away} sta rendendo bene anche fuori casa, mentre ${home} ha mostrato fragilità davanti al proprio pubblico.`);
+      parts.push(`${away} sta rendendo bene anche fuori casa, mentre ${home} ha mostrato fragilitÃ  davanti al proprio pubblico.`);
     else if(evA.awayWins>=3)
-      parts.push(`${away} ha mostrato personalità in trasferta e può riuscire a portare la partita sul proprio terreno.`);
+      parts.push(`${away} ha mostrato personalitÃ  in trasferta e puÃ² riuscire a portare la partita sul proprio terreno.`);
     else if(evH.homeLosses>=3)
-      parts.push(`${home} ha faticato a proteggere il proprio campo nelle ultime uscite: ${away} può sfruttare questa vulnerabilità.`);
+      parts.push(`${home} ha faticato a proteggere il proprio campo nelle ultime uscite: ${away} puÃ² sfruttare questa vulnerabilitÃ .`);
   } else if(market === "X (Pareggio)" || market === "X") {
     if(evH.draws>=2 && evA.draws>=2)
-      parts.push(`Entrambe hanno mostrato la tendenza a partite equilibrate e difficili da sbloccare: il pareggio è coerente con questo tipo di confronto.`);
+      parts.push(`Entrambe hanno mostrato la tendenza a partite equilibrate e difficili da sbloccare: il pareggio Ã¨ coerente con questo tipo di confronto.`);
     else
-      parts.push(`Le caratteristiche recenti non indicano una squadra nettamente dominante: la partita può restare in equilibrio a lungo.`);
+      parts.push(`Le caratteristiche recenti non indicano una squadra nettamente dominante: la partita puÃ² restare in equilibrio a lungo.`);
   }
   return parts.join(" ");
 }
@@ -1286,9 +1290,9 @@ function predictionReason(market, pred) {
   if (!pred) return "";
   const m=String(market||"");
   const pct=pred.percent||{};
-  if (m.startsWith("1") && Number.isFinite(Number(pct.home))) return `Anche la previsione API vede ${Number(pct.home).toFixed(0)}% di probabilità per la vittoria di casa.`;
-  if (m.startsWith("X") && Number.isFinite(Number(pct.draw))) return `Anche la previsione API vede ${Number(pct.draw).toFixed(0)}% di probabilità per il pareggio.`;
-  if (m.startsWith("2") && Number.isFinite(Number(pct.away))) return `Anche la previsione API vede ${Number(pct.away).toFixed(0)}% di probabilità per la vittoria ospite.`;
+  if (m.startsWith("1") && Number.isFinite(Number(pct.home))) return `Anche la previsione API vede ${Number(pct.home).toFixed(0)}% di probabilitÃ  per la vittoria di casa.`;
+  if (m.startsWith("X") && Number.isFinite(Number(pct.draw))) return `Anche la previsione API vede ${Number(pct.draw).toFixed(0)}% di probabilitÃ  per il pareggio.`;
+  if (m.startsWith("2") && Number.isFinite(Number(pct.away))) return `Anche la previsione API vede ${Number(pct.away).toFixed(0)}% di probabilitÃ  per la vittoria ospite.`;
   if (Number.isFinite(Number(pred.goals?.home)) && Number.isFinite(Number(pred.goals?.away))) {
     const t=Number(pred.goals.home)+Number(pred.goals.away);
     if (m.includes("Under") && t<3.0) return `La previsione API si aspetta circa ${t.toFixed(1)} gol, quindi va nella stessa direzione dell'Under.`;
@@ -1320,11 +1324,11 @@ function streakInfo(rows, teamName) {
   const unbeaten=results.slice().reverse().findIndex(x=>x.result==='L');
   const unbeatenN=unbeaten<0?results.length:unbeaten;
   let seq;
-  if (last === 'W') seq = n === 1 ? 'ha vinto l’ultima partita' : `viene da ${n} vittorie consecutive`;
-  else if (last === 'D') seq = n === 1 ? 'ha pareggiato l’ultima partita' : `viene da ${n} pareggi consecutivi`;
-  else seq = n === 1 ? 'ha perso l’ultima partita' : `viene da ${n} sconfitte consecutive`;
+  if (last === 'W') seq = n === 1 ? 'ha vinto lâultima partita' : `viene da ${n} vittorie consecutive`;
+  else if (last === 'D') seq = n === 1 ? 'ha pareggiato lâultima partita' : `viene da ${n} pareggi consecutivi`;
+  else seq = n === 1 ? 'ha perso lâultima partita' : `viene da ${n} sconfitte consecutive`;
   const bits=[seq];
-  if(unbeatenN>=5) bits.push(`ed è imbattuta da ${unbeatenN} partite`);
+  if(unbeatenN>=5) bits.push(`ed Ã¨ imbattuta da ${unbeatenN} partite`);
   return bits.join(" ")+".";
 }
 
@@ -1350,9 +1354,9 @@ async function odds(path) {
 // --- Risoluzione dinamica degli slug campionato --------------------------
 // Gli slug statici sotto sono usati come scorciatoia veloce (zero richieste
 // extra) ma vengono sempre verificati contro il catalogo REALE restituito
-// da Odds-API.io (/v3/leagues). Se uno slug è sbagliato o mancante, viene
+// da Odds-API.io (/v3/leagues). Se uno slug Ã¨ sbagliato o mancante, viene
 // cercato automaticamente per nome nel catalogo e la scelta viene registrata
-// in diagnostics. Questo è il fix del bug "Champions League mai analizzata":
+// in diagnostics. Questo Ã¨ il fix del bug "Champions League mai analizzata":
 // lo slug statico "uefa-champions-league" non esisteva nel catalogo reale,
 // quindi la fase di discovery trovava sempre 0 eventi per quel campionato.
 let LEAGUES_CATALOG_CACHE = { list: null, fetchedAt: 0 };
@@ -1456,7 +1460,7 @@ function bestBackSizeForRunner(r) {
 async function loadBetfairSnapshot(supaUrl, serviceKey) {
   try {
     // Il bridge salva un catalogo completo per sincronizzazione e uno snapshot
-    // book per ogni market. Prendiamo il catalogo più recente e gli ultimi book.
+    // book per ogni market. Prendiamo il catalogo piÃ¹ recente e gli ultimi book.
     const catRows=await supaRead(supaUrl,serviceKey,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');
     const bookRows=await supaRead(supaUrl,serviceKey,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=500');
     const latestBook=new Map();
@@ -1675,8 +1679,8 @@ export function extractOdds(data, requestedMarket="all", requestedBookmaker="", 
 
   // Ignore long-shot prices AND overly short prices: the app only considers
   // odds between 1.50 (incluso) e 3.75. Sotto 1.50 il margine di guadagno
-  // è troppo risicato per valere il rischio, anche quando il modello stima
-  // una probabilità alta.
+  // Ã¨ troppo risicato per valere il rischio, anche quando il modello stima
+  // una probabilitÃ  alta.
   // IMPORTANT: never replace the selected bookmaker with another book's price.
   // If a bookmaker is selected, every returned quote must come from that book.
   const filtered = out.filter(x => Number(x.odd) >= 1.5 && Number(x.odd) <= 3.75);
@@ -1690,14 +1694,14 @@ export function extractOdds(data, requestedMarket="all", requestedBookmaker="", 
 
 // Genera una frase di contesto solo quando la posizione in classifica dice
 // davvero qualcosa (zona Champions o zona retrocessione) e ci sono
-// abbastanza partite giocate perché la classifica sia significativa.
+// abbastanza partite giocate perchÃ© la classifica sia significativa.
 // A centro classifica o a inizio stagione non forziamo nessuna frase.
 function standingContext(name, standing) {
   if (!standing || !Number.isFinite(standing.position) || !Number.isFinite(standing.totalTeams)) return null;
   if (!Number.isFinite(standing.playedGames) || standing.playedGames < 8) return null;
   const { position, totalTeams } = standing;
-  if (position <= 4) return `${name} è in piena zona Champions League (${position}° posto)`;
-  if (position > totalTeams - 3) return `${name} è invischiata nella lotta salvezza (${position}° posto su ${totalTeams})`;
+  if (position <= 4) return `${name} Ã¨ in piena zona Champions League (${position}Â° posto)`;
+  if (position > totalTeams - 3) return `${name} Ã¨ invischiata nella lotta salvezza (${position}Â° posto su ${totalTeams})`;
   return null;
 }
 
@@ -1784,12 +1788,12 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
     const analysisWeight=analysisParts.reduce((a,x)=>a+x[0],0);
     const analysisScore=analysisWeight ? analysisParts.reduce((a,x)=>a+x[0]*x[1],0)/analysisWeight : 35;
 
-    // La PROBABILITÀ è il segnale principale per il ranking.
+    // La PROBABILITÃ Ã¨ il segnale principale per il ranking.
     // La quota serve per misurare il valore (edge), non per far salire
     // artificialmente una previsione meno probabile.
     const valueScore = clamp(50 + 50 * Math.tanh(edge / 20), 0, 100);
     const probabilityScore = clamp(prob, 0, 100);
-    // Ranking: probabilità 60%, supporto analitico 25%, valore quota 15%.
+    // Ranking: probabilitÃ  60%, supporto analitico 25%, valore quota 15%.
     // In questo modo un esito molto probabile e ben supportato precede
     // normalmente una quota alta ma meno probabile.
     let score = probabilityScore * 0.60 + analysisScore * 0.25 + valueScore * 0.15;
@@ -1813,12 +1817,12 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
 }
 
 function h2hSentence(value, home, away, h2h) {
-  if (!h2h || h2h.sample < 2) return null; // meno di 2 precedenti non è un pattern, è rumore
+  if (!h2h || h2h.sample < 2) return null; // meno di 2 precedenti non Ã¨ un pattern, Ã¨ rumore
   const { sample, homeWins, draws, awayWins, overRate, bttsRate } = h2h;
   if (value === "1" || value === "2" || value === "X") {
     if (homeWins/sample >= 0.6 && homeWins>=2) return `Negli ultimi ${sample} scontri diretti, ${home} ha vinto ${homeWins} volte.`;
     if (awayWins/sample >= 0.6 && awayWins>=2) return `Negli ultimi ${sample} scontri diretti, ${away} ha vinto ${awayWins} volte, anche fuori casa.`;
-    if (draws/sample >= 0.5 && draws>=2) return `Negli ultimi ${sample} scontri diretti, il pareggio è uscito ${draws} volte.`;
+    if (draws/sample >= 0.5 && draws>=2) return `Negli ultimi ${sample} scontri diretti, il pareggio Ã¨ uscito ${draws} volte.`;
     return null;
   }
   const overCount = Math.round(overRate*sample), underCount = sample - overCount;
@@ -1849,16 +1853,16 @@ function buildSimpleReason(value, prob, edge, pStat, pFreq, odd, marketObj, home
   if (value === "1" || value === "2" || value === "X") {
     const label = value === "1" ? "il segno 1" : value === "2" ? "il segno 2" : "il pareggio";
     if (Number.isFinite(odd) && Number.isFinite(edge) && edge > 0) {
-      return `Non c'è una tendenza recente abbastanza netta da spiegare da sola ${label}: il modello lo segnala soprattutto perché la quota (${odd.toFixed(2)}) sembra più alta di quanto meriterebbe questo esito, un margine di valore stimato di circa il ${Math.round(edge)}%.`;
+      return `Non c'Ã¨ una tendenza recente abbastanza netta da spiegare da sola ${label}: il modello lo segnala soprattutto perchÃ© la quota (${odd.toFixed(2)}) sembra piÃ¹ alta di quanto meriterebbe questo esito, un margine di valore stimato di circa il ${Math.round(edge)}%.`;
     }
-    if (value === "1") return `${home} ha il fattore campo, ma i dati recenti disponibili non mostrano un vantaggio abbastanza concreto per sostenere il segno 1: valutalo con più cautela del solito.`;
-    if (value === "2") return `${away} può avere elementi a favore, ma i dati recenti disponibili non mostrano un vantaggio abbastanza concreto per sostenere il segno 2: valutalo con più cautela del solito.`;
-    return `Il confronto recente non mostra una squadra abbastanza superiore da rendere il pareggio una scelta nettamente sostenuta dal campo: valutalo con più cautela del solito.`;
+    if (value === "1") return `${home} ha il fattore campo, ma i dati recenti disponibili non mostrano un vantaggio abbastanza concreto per sostenere il segno 1: valutalo con piÃ¹ cautela del solito.`;
+    if (value === "2") return `${away} puÃ² avere elementi a favore, ma i dati recenti disponibili non mostrano un vantaggio abbastanza concreto per sostenere il segno 2: valutalo con piÃ¹ cautela del solito.`;
+    return `Il confronto recente non mostra una squadra abbastanza superiore da rendere il pareggio una scelta nettamente sostenuta dal campo: valutalo con piÃ¹ cautela del solito.`;
   }
   if (Number.isFinite(odd) && Number.isFinite(edge) && edge > 0) {
     return `Per questa partita non abbiamo ancora abbastanza storico recente delle due squadre. La scelta si basa soprattutto sul confronto tra la quota proposta (${odd.toFixed(2)}) e quanto succede di solito in mercati simili, che lascia un margine di valore stimato di circa il ${Math.round(edge)}%.`;
   }
-  return `Per questa partita non abbiamo ancora abbastanza storico recente delle due squadre per un giudizio più preciso: la valutazione resta soprattutto legata alla quota e va presa con più cautela del solito.`;
+  return `Per questa partita non abbiamo ancora abbastanza storico recente delle due squadre per un giudizio piÃ¹ preciso: la valutazione resta soprattutto legata alla quota e va presa con piÃ¹ cautela del solito.`;
 }
 
 function marketLabel(v) {
@@ -1963,7 +1967,7 @@ function summarize(ms, teamId) {
   const recent = ordered.slice(-8);
   recent.forEach((m,idx)=>{
     const hg=m.score.fullTime.home, ag=m.score.fullTime.away;
-    // Peso crescente: le ultime partite contano di più, ma non cancelliamo lo storico.
+    // Peso crescente: le ultime partite contano di piÃ¹, ma non cancelliamo lo storico.
     const w=1 + (idx/(Math.max(1,recent.length-1))) * 0.75;
     const isHome = m.homeTeam?.id === teamId;
     const isAway = m.awayTeam?.id === teamId;
