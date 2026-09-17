@@ -33,7 +33,8 @@ async function betfairLogin() {
   const username = requireEnv('BETFAIR_USERNAME');
   const password = requireEnv('BETFAIR_PASSWORD');
   const cert = requireEnv('BETFAIR_CERT');
-  const key = requireEnv('BETFAIR_KEY');
+  // BETFAIR_PRIVATE_KEY is the PEM private key. BETFAIR_KEY is kept as a backward-compatible fallback.
+  const key = process.env.BETFAIR_PRIVATE_KEY?.trim() || requireEnv('BETFAIR_KEY');
 
   const body = new URLSearchParams({ username, password }).toString();
   const response = await httpsPost({
@@ -102,10 +103,18 @@ export default async function handler(req, res) {
       testedAt: new Date().toISOString(),
     });
   } catch (e) {
-    return res.status(500).json({
+    const message = String(e?.message || e);
+    const locationRestricted = /BETTING_RESTRICTED_LOCATION/i.test(message);
+    return res.status(200).json({
       ok: false,
       provider: 'Betfair Exchange Italia',
-      error: String(e?.message || e),
+      error: message,
+      diagnosis: locationRestricted
+        ? 'Betfair ha rifiutato il login per la posizione IP da cui parte la funzione server. Le credenziali e il certificato hanno raggiunto Betfair, ma il betting API non è autorizzato da quella posizione.'
+        : 'Controllare Application Key, username/password e certificato PEM.',
+      nextStep: locationRestricted
+        ? 'La funzione Vercel non può cambiare la posizione IP del tuo browser/account. Per usare le API Exchange italiane serve un ambiente server con origine IP consentita da Betfair.'
+        : 'Verificare le variabili BETFAIR_APP_KEY, BETFAIR_USERNAME, BETFAIR_PASSWORD, BETFAIR_CERT e BETFAIR_PRIVATE_KEY.',
       testedAt: new Date().toISOString(),
     });
   }
