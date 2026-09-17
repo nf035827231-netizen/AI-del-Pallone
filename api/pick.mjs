@@ -818,129 +818,123 @@ function monteCarloFixture(c,av,pred,iterations=10000) {
 }
 function hashString(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
 
+function liquidityScore(c) {
+  const n=Number(c?.liquidity);
+  if(!Number.isFinite(n) || n<=0) return 45;
+  // Scala logaritmica: evita che un mercato con liquidità enorme domini il ranking.
+  return clamp(25 + 22*Math.log10(1+n), 25, 100);
+}
+
+function marketType(c) {
+  const m=String(c?.market||'');
+  if(m.startsWith('1')||m.startsWith('2')||m.startsWith('X')) return '1x2';
+  if(m.startsWith('Over')||m.startsWith('Under')) return 'totals';
+  return 'other';
+}
+
 function applyEnrichedScore(c, av, pred) {
-  // V2: separiamo la probabilita' del mercato dalla probabilita' del modello.
-  // L'errore della versione precedente era lasciare c.prob quasi invariata
-  // anche quando API-Football forniva una previsione indipendente: in pratica
-  // il ranking continuava a seguire soprattutto la quota.
-  const components = [];
-  const marketProb = Number.isFinite(c.pFair) ? clamp(c.pFair, 0, 100) : null;
-  const statProb = Number.isFinite(c.pStat) ? clamp(c.pStat, 0, 100) : null;
-  const freqProb = Number.isFinite(c.pFreq) ? clamp(c.pFreq, 0, 100) : null;
-  const predScore = predictionComponent(c.market, pred, c.home, c.away);
-  const predictionProb = predScore != null ? clamp(predScore, 0, 100) : null;
-  const mc = c.monteCarlo || null;
-  const mcProb = mc?.prob?.[c.market] != null && Number(mc.historicalSample||0) >= 3 ? clamp(Number(mc.prob[c.market]),0,100) : null;
+  const marketProb=Number.isFinite(c.pFair)?clamp(c.pFair,0,100):null;
+  const statProb=Number.isFinite(c.pStat)?clamp(c.pStat,0,100):null;
+  const freqProb=Number.isFinite(c.pFreq)?clamp(c.pFreq,0,100):null;
+  const predScore=predictionComponent(c.market,pred,c.home,c.away);
+  const predictionProb=predScore!=null?clamp(predScore,0,100):null;
+  const mc=c.monteCarlo||null;
+  const mcProb=mc?.prob?.[c.market]!=null && Number(mc.historicalSample||0)>=3 ? clamp(Number(mc.prob[c.market]),0,100):null;
 
-  // Costruiamo la probabilita' finale dando piu' spazio alle evidenze di gioco
-  // quando esistono. Il mercato resta un prior importante, non il pilota unico.
-  const sources = [];
-  if (mcProb != null) sources.push([35, mcProb, "Monte Carlo + ELO"]);
-  if (statProb != null) sources.push([30, statProb, "storico/modello gol"]);
-  if (predictionProb != null) sources.push([20, predictionProb, "prediction API"]);
-  if (freqProb != null) sources.push([5, freqProb, "frequenza storica"]);
-  if (marketProb != null) sources.push([10, marketProb, "mercato"]);
+  // Probabilità del modello: più peso alle fonti indipendenti, Betfair resta
+  // il riferimento di mercato ma non può da sola creare un TOP.
+  const sources=[];
+  if(mcProb!=null) sources.push([40,mcProb]);
+  if(statProb!=null) sources.push([25,statProb]);
+  if(predictionProb!=null) sources.push([15,predictionProb]);
+  if(freqProb!=null) sources.push([10,freqProb]);
+  if(marketProb!=null) sources.push([10,marketProb]);
+  let modelProb=sources.length ? sources.reduce((a,x)=>a+x[0]*x[1],0)/sources.reduce((a,x)=>a+x[0],0) : (Number.isFinite(c.prob)?c.prob:50);
+  modelProb=clamp(modelProb,5,95);
 
-  let modelProb;
-  if (sources.length) {
-    const w = sources.reduce((a, x) => a + x[0], 0);
-    modelProb = sources.reduce((a, x) => a + x[0] * x[1], 0) / w;
-  } else {
-    modelProb = Number.isFinite(c.prob) ? c.prob : 50;
+  // Concordanza: premia scenari dove le fonti indipendenti convergono e
+  // penalizza gli outlier. Non trasformiamo una singola previsione estrema in certezza.
+  const vals=[mcProb,statProb,predictionProb,marketProb].filter(v=>v!=null);
+  let agreement=72;
+  if(vals.length>=2){
+    const mean=vals.reduce((a,v)=>a+v,0)/vals.length;
+    const mad=vals.reduce((a,v)=>a+Math.abs(v-mean),0)/vals.length;
+    agreement=clamp(100-mad*2.2,35,100);
   }
 
-  // Se modello storico e prediction API divergono molto, riduciamo
-  // l'overconfidence invece di scegliere arbitrariamente una delle due fonti.
-  const agreementValues = [statProb, predictionProb].filter(v => v != null);
-  const disagreement = agreementValues.length === 2 ? Math.abs(agreementValues[0] - agreementValues[1]) : 0;
-  if (disagreement >= 25) modelProb = modelProb * 0.80 + 50 * 0.20;
-  else if (disagreement >= 15) modelProb = modelProb * 0.90 + 50 * 0.10;
-  modelProb = clamp(modelProb, 5, 95);
+  const implied=Number.isFinite(Number(c.odds))?100/Number(c.odds):null;
+  const edge=implied!=null?modelProb-implied:(Number.isFinite(c.edge)?c.edge:0);
+  // Edge molto alto è utile, ma oltre una certa soglia è spesso sintomo di
+  // modello poco calibrato: lo facciamo rendere meno nel ranking.
+  let valueScore=clamp(50+50*Math.tanh(edge/18),0,100);
+  if(edge>18) valueScore-=Math.min(18,(edge-18)*0.65);
+  if(edge<0) valueScore*=0.70;
+  valueScore=clamp(valueScore,0,100);
 
-  const probabilityScore = modelProb;
-  components.push([45, probabilityScore, "probabilità modello"]);
-  if (statProb != null) components.push([15, statProb, "statistiche"]);
-  if (freqProb != null) components.push([8, freqProb, "frequenza"]);
+  const formRaw=Number.isFinite(c.form)?c.form:null;
+  const formScore=formRaw!=null?clamp(50+formRaw*7,0,100):50;
+  const matchup=oneXTwoFieldComponent(c);
+  const venue=venueComponent(c.market,c.homeForm,c.awayForm);
+  const absence=absenceComponent(c.market,c.home,c.away,av);
+  const contextScores=[
+    formScore,
+    matchup!=null?matchup:null,
+    venue!=null?venue:null,
+    absence!=null?absence:null
+  ].filter(v=>v!=null);
+  const contextScore=contextScores.length?contextScores.reduce((a,v)=>a+v,0)/contextScores.length:50;
 
-  const formRaw = Number.isFinite(c.form) ? c.form : null;
-  if (formRaw != null) components.push([8, clamp(50 + formRaw * 5, 0, 100), "forma"]);
+  let evidence=0;
+  if(mcProb!=null) evidence+=28;
+  if(statProb!=null) evidence+=25;
+  if(predictionProb!=null) evidence+=18;
+  if(freqProb!=null) evidence+=8;
+  if(Number.isFinite(c.form)) evidence+=7;
+  if(matchup!=null||venue!=null) evidence+=5;
+  if(c.h2h?.sample>=3) evidence+=4;
+  if(c.standingNote) evidence+=3;
+  if(absence!=null) evidence+=2;
+  if(Number.isFinite(Number(c.odds))) evidence+=5;
+  const analysisSupport=clamp(evidence,0,100);
 
-  const edge = Number.isFinite(c.edge) ? c.edge : (modelProb - (100 / Number(c.odds)));
-  // Il valore si ricalcola sulla probabilita' aggiornata, ma resta secondario.
-  const valueScore = clamp(50 + 50 * Math.tanh(edge / 20), 0, 100);
-  components.push([8, valueScore, "quota"]);
+  const liq=liquidityScore(c);
+  const type=marketType(c);
+  let score =
+    modelProb*0.38 +
+    analysisSupport*0.22 +
+    valueScore*0.16 +
+    agreement*0.10 +
+    contextScore*0.08 +
+    liq*0.06;
 
-  const homeAdv = Number.isFinite(c.homeForm) ? c.homeForm : null;
-  const awayAdv = Number.isFinite(c.awayForm) ? c.awayForm : null;
-  const venueScore = venueComponent(c.market, homeAdv, awayAdv);
-  const oneXTwoMatchup = oneXTwoFieldComponent(c);
-  if (oneXTwoMatchup != null) components.push([8, oneXTwoMatchup, "confronto 1X2"]);
-  else if (venueScore != null) components.push([5, venueScore, "casa/trasferta"]);
+  // Regole di sicurezza del ranking: uno scenario poco probabile o con dati
+  // incoerenti non deve scalare il TOP solo perché offre una quota alta.
+  if(type==='1x2' && modelProb<48) score-=Math.min(12,(48-modelProb)*0.55);
+  if(type==='totals' && modelProb<55) score-=Math.min(10,(55-modelProb)*0.35);
+  if(edge<0) score-=Math.min(12,Math.abs(edge)*0.35);
+  if(agreement<55) score-=Math.min(10,(55-agreement)*0.35);
+  if(analysisSupport<40) score-=Math.min(8,(40-analysisSupport)*0.20);
+  if(av && (av.home?.length||av.away?.length)) score-=Math.min(4,Math.abs((av.home?.length||0)-(av.away?.length||0))*0.5);
+  score=clamp(score,0,100);
 
-  const absenceScore = absenceComponent(c.market, c.home, c.away, av);
-  if (absenceScore != null) components.push([5, absenceScore, "assenze"]);
-  if (predictionProb != null) components.push([12, predictionProb, "prediction"]);
-
-  const totalWeight = components.reduce((s,x)=>s+x[0],0) || 1;
-  const weighted = components.reduce((s,x)=>s + x[0] * x[1],0) / totalWeight;
-
-  // Supporto analitico: non conta quante API abbiamo chiamato, ma quante
-  // evidenze indipendenti abbiamo realmente a disposizione.
-  // QUALITÀ DELL'ANALISI: il punteggio misura la solidità dei dati disponibili,
-  // non il numero di endpoint interrogati. Un modello statistico Poisson
-  // costruito su uno storico reale è già una base analitica utilizzabile;
-  // fonti indipendenti aggiungono robustezza.
-  // Anche quando i provider statistici non hanno una scheda completa della partita,
-  // la quota contiene comunque un'informazione quantitativa utile come baseline.
-  // Non la trattiamo come analisi forte: vale solo 20 punti e viene sempre mostrata
-  // come "Limitata". In questo modo la classifica non resta vuota solo perché una
-  // competizione ha copertura statistica parziale.
-  let evidence = Number.isFinite(Number(c.odds)) ? 15 : 0; // baseline mercato: informazione, non analisi forte
-  const homeSample = Number(c?._homeMatches?.length || 0);
-  const awaySample = Number(c?._awayMatches?.length || 0);
-  const usableSample = Math.min(Math.max(homeSample,awaySample),10);
-  if (mcProb != null) evidence += 20;        // simulazione indipendente locale (10.000 iterazioni)
-  if (statProb != null) evidence += 35;       // modello statistico da storico gol
-  if (usableSample >= 5) evidence += 5;       // campione recente sufficiente
-  if (freqProb != null) evidence += 10;      // frequenze osservate
-  if (Number.isFinite(c.form)) evidence += 10; // forma recente
-  if (oneXTwoMatchup != null || venueScore != null) evidence += 8; // casa/trasferta
-  if (c.h2h?.sample >= 2) evidence += 5;     // H2H con campione minimo
-  if (c.standingNote) evidence += 5;         // posizione significativa
-  if (predictionProb != null) evidence += 20; // modello indipendente API-Football
-  if (absenceScore != null) evidence += 5;   // disponibilità rosa
-  const analysisSupport = clamp(evidence, 0, 100);
-
-  // Penalita' di disaccordo: se due modelli seri sono lontani, la partita non
-  // viene scartata ma perde priorita' rispetto a una previsione piu' coerente.
-  const agreementScore = disagreement >= 25 ? 55 : disagreement >= 15 ? 72 : 92;
-  // Ranking coerente con il TOP 3: probabilita' 45%, qualita' dei segnali
-  // analitici 40%, valore della quota 15%. L'accordo tra modelli agisce come
-  // penalita' di cautela, non come fonte artificiale di probabilita'.
-  let score = probabilityScore * 0.45 + weighted * 0.40 + valueScore * 0.15;
-  if (disagreement >= 25) score -= 8;
-  else if (disagreement >= 15) score -= 4;
-  if (analysisSupport < 30) score = Math.min(score, Math.max(45, probabilityScore * 0.70));
-  else if (analysisSupport < 55) score = Math.min(score, Math.max(48, probabilityScore * 0.82));
-  if (warningsPenaltyCount(c) > 0) score -= Math.min(8, warningsPenaltyCount(c) * 3);
-  score = clamp(score, 0, 100);
-
+  const components=[
+    {name:'probabilità modello',weight:38,value:modelProb},
+    {name:'qualità dati',weight:22,value:analysisSupport},
+    {name:'valore quota',weight:16,value:valueScore},
+    {name:'concordanza fonti',weight:10,value:agreement},
+    {name:'contesto partita',weight:8,value:contextScore},
+    {name:'liquidità Betfair',weight:6,value:liq}
+  ];
   return {
     ...c,
-    // Da ora prob/edge sono quelli del modello arricchito, quindi anche il
-    // TOP 3 frontend usa davvero la nuova analisi invece della sola quota.
-    prob: round(modelProb),
-    edge: round(edge),
-    score: round(score),
-    analysisSupport: round(analysisSupport),
-    analysisLimited: analysisSupport < 35,
-    modelAgreement: round(agreementScore),
-    scoreComponents: components.map(x=>({name:x[2],weight:x[0],value:round(x[1])})),
-    absence: absenceScore == null ? 0 : round(absenceScore),
-    pred: predictionProb == null ? 0 : round(predictionProb),
-    monteCarlo: mc || null,
-    eloHome: mc?.eloHome ?? null,
-    eloAway: mc?.eloAway ?? null
+    prob:round(modelProb), edge:round(edge), score:round(score),
+    topSelectionScore:round(score), analysisSupport:round(analysisSupport),
+    analysisLimited:analysisSupport<40, modelAgreement:round(agreement),
+    liquidity: c.liquidity!=null?Number(c.liquidity):null,
+    scoreComponents:components.map(x=>({...x,value:round(x.value)})),
+    absence:absence==null?0:round(absence), pred:predictionProb==null?0:round(predictionProb),
+    monteCarlo:mc||null, eloHome:mc?.eloHome??null, eloAway:mc?.eloAway??null,
+    marketType:type, valueScore:round(valueScore), contextScore:round(contextScore)
   };
 }
 
@@ -1809,7 +1803,7 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
       form: round(formBonus), absence: 0, pred: 0, confidence: round(confidence * 100),
       homeForm: h.form==null?null:round(h.form), awayForm: a.form==null?null:round(a.form),
       pStat: pStat == null ? null : round(pStat), pFreq: pFreq == null ? null : round(pFreq),
-      pFair: round(pFair), score: round(score),
+      pFair: round(pFair), liquidity: o.liquidity ?? null, score: round(score),
       reason: buildSimpleReason(o.value, prob, edge, pStat, pFreq, o.odd, {...o, homeName: homeStats?.teamName, awayName: awayStats?.teamName}, homeStats, awayStats, h2h, standingNote),
       h2h: h2h ? { sample:h2h.sample, homeWins:h2h.homeWins, draws:h2h.draws, awayWins:h2h.awayWins, overRate:h2h.overRate, bttsRate:h2h.bttsRate } : null,
       standingNote: standingNote
