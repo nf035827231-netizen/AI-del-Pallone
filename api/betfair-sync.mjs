@@ -73,15 +73,21 @@ export default async function handler(req,res){
       // 4) envelope JSON-RPC con result annidato
       let arr = payload;
 
-      if (!Array.isArray(arr) && arr && Array.isArray(arr.result)) {
+      // The bridge can receive Betfair JSON-RPC envelopes as an array:
+      // [{ jsonrpc:"2.0", result:[{ marketId:"..." }] }]
+      // Unwrap every envelope before looking for marketId.
+      if (Array.isArray(arr)) {
+        arr = arr.flatMap(item => {
+          if (Array.isArray(item)) return item;
+          if (Array.isArray(item?.result)) return item.result;
+          if (Array.isArray(item?.result?.result)) return item.result.result;
+          return item?.marketId ? [item] : [];
+        });
+      } else if (arr && Array.isArray(arr.result)) {
         arr = arr.result;
-      }
-
-      if (!Array.isArray(arr) && arr?.result && Array.isArray(arr.result.result)) {
+      } else if (arr?.result && Array.isArray(arr.result.result)) {
         arr = arr.result.result;
-      }
-
-      if (!Array.isArray(arr)) {
+      } else {
         arr = [];
       }
 
