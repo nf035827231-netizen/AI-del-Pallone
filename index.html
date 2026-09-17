@@ -28,6 +28,20 @@ select{background:#0b1220!important;color:#eef3fa!important;border-color:#2a3850
 .err{background:#2a1518!important;color:#f2c7cc!important}
 .warn{background:#2a2110!important;color:#f1d998!important}
 
+
+.betfair-panel{margin-top:11px;background:#0b1220;border:1px solid #30405a;border-radius:12px;padding:11px}
+.betfair-title{font-size:14px;font-weight:800;color:#dce6f3;display:flex;justify-content:space-between;gap:8px}
+.betfair-state{font-size:12px;font-weight:700;color:#aebbd0}
+.betfair-state.ok{color:#bfe8c9}
+.betfair-state.err{color:#f2c7cc}
+.betfair-rows{margin-top:8px;display:grid;gap:6px}
+.betfair-row{display:grid;grid-template-columns:minmax(90px,1fr) 1fr 1fr;gap:6px;align-items:center;font-size:13px}
+.betfair-runner{font-weight:750;color:#eef3fa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.betfair-cell{background:#ffffff10;border:1px solid #ffffff0b;border-radius:8px;padding:7px;text-align:center}
+.betfair-cell span{display:block;color:#aebbd0;font-size:10px;text-transform:uppercase}
+.betfair-cell b{display:block;color:#fff;font-size:16px;margin-top:1px}
+.betfair-cell small{color:#aebbd0;font-size:10px}
+
 .pick{background:#111827;border:1px solid #2b3a53;box-shadow:0 12px 30px #0005;position:relative;overflow:hidden;color:#fff;border-radius:20px;padding:19px}
 .pick:first-child{border-color:#b99a4a;box-shadow:0 14px 38px #b99a4a22}
 .pick:first-child:before{content:"";position:absolute;inset:0 0 auto;height:3px;background:linear-gradient(90deg,#b99a4a,#f0d58b,#b99a4a)}
@@ -1012,6 +1026,45 @@ function renderLive(live){
  box.style.background="#fff4df";box.style.border="1px solid #f2d49a";box.style.borderRadius="12px";box.style.padding="12px";box.style.marginBottom="12px";box.style.color="#6b4d00";
  box.innerHTML='<b>🟠 Partite LIVE</b><div style="margin-top:6px">'+live.map(x=>`<div style="margin-top:4px">${esc(x.home)} – ${esc(x.away)} <b>LIVE</b></div>`).join('')+'</div><div class="small" style="margin-top:7px;color:#6b4d00">Queste partite non entrano nelle 3 giocate pre-partita perché sono già iniziate.</div>';
 }
+
+async function hydrateBetfairPicks(picks){
+  const cards=document.querySelectorAll('.betfair-panel');
+  if(!cards.length)return;
+  for(const box of cards){
+    const home=box.dataset.betfairPanel||'';
+    const away=box.dataset.away||'';
+    const state=box.querySelector('.betfair-state');
+    const rows=box.querySelector('.betfair-rows');
+    try{
+      const q=new URLSearchParams({home,away});
+      const r=await fetch('/api/betfair-odds?'+q,{cache:'no-store'});
+      const d=await r.json();
+      if(!r.ok||!d.ok) throw new Error(d?.error||'Quote Betfair non disponibili');
+      const markets=d.markets||[];
+      if(!markets.length) throw new Error('Nessun mercato 1X2 / Under-Over disponibile');
+      state.textContent='LIVE';
+      state.className='betfair-state ok';
+
+      const labelMarket=(name)=>{
+        if(/match odds|1x2|esito finale/i.test(name)) return '⚽ 1X2';
+        const m=String(name).match(/(?:over|under)[^0-9]*(0\\.5|1\\.5|2\\.5|3\\.5|4\\.5)/i);
+        return m ? `⚽ Under/Over ${m[1]}` : `⚽ ${name}`;
+      };
+
+      rows.innerHTML=markets.map(m=>{
+        const list=(m.runners||[]).filter(x=>x.status!=='REMOVED');
+        return `<div style="margin-top:7px;font-weight:800">${esc(labelMarket(m.marketName||''))}</div>`+
+          list.map(x=>`<div class="betfair-row"><div class="betfair-runner">${esc(x.name)}</div><div class="betfair-cell"><span>BACK</span><b>${x.backPrice!=null?Number(x.backPrice).toFixed(2):'—'}</b><small>${x.backSize!=null?'€ '+Number(x.backSize).toFixed(2):''}</small></div><div class="betfair-cell"><span>LAY</span><b>${x.layPrice!=null?Number(x.layPrice).toFixed(2):'—'}</b><small>${x.laySize!=null?'€ '+Number(x.laySize).toFixed(2):''}</small></div></div>`).join('');
+      }).join('')+
+      `<div class="small" style="margin-top:5px">Aggiornato: ${d.markets[0]?.receivedAt?new Date(d.markets[0].receivedAt).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—'}</div>`;
+    }catch(e){
+      state.textContent='non disponibile';
+      state.className='betfair-state err';
+      rows.innerHTML=`<div class="small">${esc(e.message||'Quote Betfair non disponibili')}</div>`;
+    }
+  }
+}
+
 function render(cs){
  if(!cs.length){
    $("pick").innerHTML='<div class="empty">🟡 Nessun candidato disponibile.</div>';
@@ -1076,12 +1129,13 @@ function render(cs){
    const strength=topScore>=70?'Alta':topScore>=60?'Media':'Bassa';
    const analysisLevel=analysis>=70?'Forte':analysis>=55?'Discreta':'Limitata';
    const analysisClass=analysis>=70?'ok':analysis>=55?'warn':'muted';
-   return `<div class="pick" style="margin-bottom:${i<picks.length-1?10:0}px"><div class="pick-head"><span class="tag">${i===0?'⭐ TOP 1':i===1?'🥈 TOP 2':'🥉 TOP 3'}</span>${kLabel?`<span class="bet-kickoff">📅 ${kLabel}</span>`:''}<span class="confidence-badge ${strength.toLowerCase()}">${strength}</span></div><div class="matchup"><div class="team"><div class="logo-wrap">${logoHtml(x.homeLogo,x.home)}</div><b>${esc(x.home)}</b></div><div class="vs">VS</div><div class="team"><div class="logo-wrap">${logoHtml(x.awayLogo,x.away)}</div><b>${esc(x.away)}</b></div></div><div class="market-row"><div class="market">${esc(x.market)}</div><div class="odds-big">${x.odds.toFixed(2)} <small>${esc(x.bookmaker||'fonte quota')}</small></div></div><div class="reason"><b>Perché?</b> ${esc(x.reason||'La scelta nasce dalle caratteristiche della partita.')}</div>${x.fieldAnalysis?.tactical?`<div class="field-box"><div class="field-title">🧠 Lettura del match</div>${esc(x.fieldAnalysis.tactical)}</div>`:''}${x.fieldAnalysis?.warnings?.length?`<div class="warning-box"><div class="field-title">⚠️ Attenzione</div>${x.fieldAnalysis.warnings.map(w=>`<div>${esc(w)}</div>`).join('')}</div>`:''}${absenceHtml(x)}${analysis<45?`<div class="warning-box"><div class="field-title">⚠️ Qualità dell'analisi</div><div>Analisi ${analysis}/100 · ${analysisLevel}. I dati disponibili sono parziali: il modello lo mantiene solo quando non ci sono abbastanza scenari con analisi ≥45/100.</div></div>`:''}<div class="confidence-line"><span>Fiducia <b>${strength}</b></span><span>Prob. ${prob.toFixed(1)}% · Analisi ${analysis}/100 · ${analysisLevel}</span></div>${x.monteCarlo?`<div class="field-box" style="font-size:12px"><div class="field-title">📊 Modello locale</div>10.000 simulazioni Monte Carlo · ELO ${Number(x.eloHome||1500).toFixed(0)} vs ${Number(x.eloAway||1500).toFixed(0)} · dati storici: ${Number(x.monteCarlo.historicalSample||0)} gare</div>`:''}<div class="metrics"><div class="metric"><span>Probabilità</span><b>${prob.toFixed(1)}%</b></div><div class="metric"><span>Edge</span><b>${edge>=0?'+':''}${edge.toFixed(1)}%</b></div><div class="metric"><span>Indice TOP</span><b>${topScore.toFixed(0)}/100</b></div></div><div class="bet-actions"><button onclick='selectAndShare(${JSON.stringify(x).replace(/'/g,"&#39;")},${i})'>➕ Seleziona e crea immagine</button><button class="secondary" style="width:auto;padding:10px 14px;flex:0 0 auto" onclick="shareCandidateImage(${i})">📸 Immagine</button></div></div>`;
+   return `<div class="pick" style="margin-bottom:${i<picks.length-1?10:0}px"><div class="pick-head"><span class="tag">${i===0?'⭐ TOP 1':i===1?'🥈 TOP 2':'🥉 TOP 3'}</span>${kLabel?`<span class="bet-kickoff">📅 ${kLabel}</span>`:''}<span class="confidence-badge ${strength.toLowerCase()}">${strength}</span></div><div class="matchup"><div class="team"><div class="logo-wrap">${logoHtml(x.homeLogo,x.home)}</div><b>${esc(x.home)}</b></div><div class="vs">VS</div><div class="team"><div class="logo-wrap">${logoHtml(x.awayLogo,x.away)}</div><b>${esc(x.away)}</b></div></div><div class="market-row"><div class="market">${esc(x.market)}</div><div class="odds-big">${x.odds.toFixed(2)} <small>${esc(x.bookmaker||'fonte quota')}</small></div></div><div class="reason"><b>Perché?</b> ${esc(x.reason||'La scelta nasce dalle caratteristiche della partita.')}</div>${x.fieldAnalysis?.tactical?`<div class="field-box"><div class="field-title">🧠 Lettura del match</div>${esc(x.fieldAnalysis.tactical)}</div>`:''}${x.fieldAnalysis?.warnings?.length?`<div class="warning-box"><div class="field-title">⚠️ Attenzione</div>${x.fieldAnalysis.warnings.map(w=>`<div>${esc(w)}</div>`).join('')}</div>`:''}${absenceHtml(x)}${analysis<45?`<div class="warning-box"><div class="field-title">⚠️ Qualità dell'analisi</div><div>Analisi ${analysis}/100 · ${analysisLevel}. I dati disponibili sono parziali: il modello lo mantiene solo quando non ci sono abbastanza scenari con analisi ≥45/100.</div></div>`:''}<div class="confidence-line"><span>Fiducia <b>${strength}</b></span><span>Prob. ${prob.toFixed(1)}% · Analisi ${analysis}/100 · ${analysisLevel}</span></div>${x.monteCarlo?`<div class="field-box" style="font-size:12px"><div class="field-title">📊 Modello locale</div>10.000 simulazioni Monte Carlo · ELO ${Number(x.eloHome||1500).toFixed(0)} vs ${Number(x.eloAway||1500).toFixed(0)} · dati storici: ${Number(x.monteCarlo.historicalSample||0)} gare</div>`:''}<div class="metrics"><div class="metric"><span>Probabilità</span><b>${prob.toFixed(1)}%</b></div><div class="metric"><span>Edge</span><b>${edge>=0?'+':''}${edge.toFixed(1)}%</b></div><div class="metric"><span>Indice TOP</span><b>${topScore.toFixed(0)}/100</b></div></div><div class="betfair-panel" data-betfair-panel="${esc(x.home)}" data-away="${esc(x.away)}"><div class="betfair-title">🎯 Betfair Exchange <span class="betfair-state">caricamento…</span></div><div class="betfair-rows"><div class="small">Recupero quote reali BACK/LAY…</div></div></div><div class="bet-actions"><button onclick='selectAndShare(${JSON.stringify(x).replace(/'/g,"&#39;")},${i})'>➕ Seleziona e crea immagine</button><button class="secondary" style="width:auto;padding:10px 14px;flex:0 0 auto" onclick="shareCandidateImage(${i})">📸 Immagine</button></div></div>`;
  }).join('');
  lastPicks=picks;
  renderAIPicks(picks);
  // Logo: recupero differito e limitato, dopo che la UI è già visibile.
  setTimeout(()=>hydrateTopPickLogos(picks).catch(()=>{}),180);
+ setTimeout(()=>hydrateBetfairPicks(picks).catch(()=>{}),250);
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
  const minAnalysis=picks.length?Math.min(...picks.map(x=>Number(x.analysisSupport)||0)):0;
  const notice=picks.length<3
