@@ -19,6 +19,46 @@ function norm(s){
     .replace(/[^a-z0-9]+/g,' ').trim();
 }
 
+// Stesso motore di matching usato da pick.mjs: gestisce accenti,
+// abbreviazioni e prefissi/suffissi comuni dei nomi squadra.
+function teamMatchKey(s){
+  return norm(s)
+    .replace(/\b(fc|cf|sc|ac|afc|fk|sk|club|calcio|football|futbol|de|the)\b/g,' ')
+    .replace(/\b(1st|first|ii)\b/g,' ')
+    .replace(/\d{2,4}/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function teamSimilarity(a,b){
+  const aa=teamMatchKey(a), bb=teamMatchKey(b);
+  if(!aa||!bb)return 0;
+  if(aa===bb)return 1;
+  if(aa.includes(bb)||bb.includes(aa))return 0.94;
+  const A=new Set(aa.split(' ').filter(x=>x.length>2));
+  const B=new Set(bb.split(' ').filter(x=>x.length>2));
+  if(!A.size||!B.size)return 0;
+  let common=0; for(const x of A) if(B.has(x))common++;
+  const jaccard=common/(A.size+B.size-common);
+  const containment=common/Math.min(A.size,B.size);
+  return Math.max(jaccard,containment*0.92);
+}
+
+function eventTeams(name){
+  const parts=String(name||'').split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
+  if(parts.length<2)return null;
+  return {home:parts[0].trim(),away:parts.slice(1).join(' ').trim()};
+}
+
+function sameEvent(home,away,eventName){
+  const teams=eventTeams(eventName);
+  if(!teams)return {ok:false,score:0};
+  const hs=teamSimilarity(home,teams.home), as=teamSimilarity(away,teams.away);
+  const revhs=teamSimilarity(home,teams.away), revas=teamSimilarity(away,teams.home);
+  const direct=(hs+as)/2, reverse=(revhs+revas)/2;
+  return {ok:Math.max(hs,revhs)>=0.68 && Math.max(as,revas)>=0.68,score:Math.max(direct,reverse)};
+}
+
 function unwrapResults(payload){
   let out=[];
   const walk=v=>{
@@ -68,10 +108,30 @@ export default async function handler(req,res){
       }
     }
 
-    const matching=markets.filter(m=>{
-      const n=norm(m.event?.name);
-      return (n.includes(home)&&n.includes(away))||(n.includes(away)&&n.includes(home));
+    // Prima prova con la stessa chiave esatta di pick.mjs, poi con lo stesso
+    // matching fuzzy. In questo modo il pannello mostra la quota quando
+    // l'algoritmo TOP l'ha già trovata, anche se i provider scrivono i nomi
+    // in modo diverso (es. Wisła/ Wisla, WKS Śląsk/Slask, FC/Club, ecc.).
+    const exactKey=norm(home)+'|'+norm(away);
+    let matching=markets.filter(m=>{
+      const t=eventTeams(m.event?.name);
+      return t && ((norm(t.home)===norm(home)&&norm(t.away)===norm(away)) ||
+                   (norm(t.home)===norm(away)&&norm(t.away)===norm(home)));
     });
+    let matchScore=1;
+    if(!matching.length){
+      let bestScore=0;
+      const grouped=new Map();
+      for(const m of markets){
+        const key=norm(m.event?.name||'');
+        if(!key)continue;
+        const sim=sameEvent(home,away,m.event?.name||'');
+        if(sim.ok && sim.score>bestScore){bestScore=sim.score;grouped.clear();grouped.set(key,m);}
+        else if(sim.ok && Math.abs(sim.score-bestScore)<0.0001) grouped.set(key,m);
+      }
+      matching=[...grouped.values()];
+      matchScore=bestScore;
+    }
 
     if(!matching.length)
       return res.status(404).json({ok:false,error:'Mercato Betfair non trovato',home,away});
@@ -135,7 +195,8 @@ export default async function handler(req,res){
       ok:true,
       event:matching[0].event,
       competition:matching[0].competition,
-      markets:output
+      markets:output,
+      matchScore
     });
   }catch(e){
     return res.status(500).json({ok:false,error:String(e?.message||e)});
