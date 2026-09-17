@@ -480,7 +480,7 @@ body[data-theme="light"] .pending{background:#fff8e5;color:#775900}
 
 <section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="market"><option value="all">Tutti i mercati</option><option value="totals">Under / Over 0.5 · 1.5 · 2.5 · 3.5 · 4.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Per ridurre le chiamate API, i risultati utili vengono memorizzati per 15 minuti. Le quote usate dal modello arrivano da Betfair Exchange (BACK); Bet365 non viene usato per Probabilità, Edge o TOP. Una nuova analisi usa la cache finché è valida.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
-<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le 3 migliori del giorno</h2><p class="small top3-subtitle">Probabilità stimata, qualità dell'analisi e valore della quota vengono combinati per ordinare gli scenari disponibili.</p></div><div id="dailySummaryBtnWrap" style="display:none"><button class="secondary top3-summary-btn" onclick="shareDailySummaryImage()">📸 Riepilogo del giorno</button></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">📊</span><div><b>45%</b><small>Probabilità stimata</small></div></div><div class="top3-method-item"><span class="method-icon">🧠</span><div><b>40%</b><small>Qualità dell'analisi</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>15%</b><small>Valore della quota</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🛡️</span><div><b>1 partita = 1 esito</b><small>Nel TOP 3 non ripetiamo la stessa gara</small></div></div></div></section>
+<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le 3 migliori del giorno</h2><p class="small top3-subtitle">Probabilità stimata, qualità dell'analisi e valore della quota vengono combinati per ordinare gli scenari disponibili.</p></div><div id="dailySummaryBtnWrap" style="display:none"><button class="secondary top3-summary-btn" onclick="shareDailySummaryImage()">📸 Riepilogo del giorno</button></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">📊</span><div><b>38%</b><small>Probabilità modello</small></div></div><div class="top3-method-item"><span class="method-icon">🧠</span><div><b>22%</b><small>Qualità dei dati</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>16%</b><small>Valore della quota</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🛡️</span><div><b>1 partita = 1 esito</b><small>Nel TOP 3 non ripetiamo la stessa gara</small></div></div></div></section>
 
 <section class="card tab-section active" data-section="today"><h2>📊 Classifica candidati</h2><div id="candidates" class="empty">Nessun candidato.</div></section>
 
@@ -929,17 +929,12 @@ document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>swit
 function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 function status(t,k=""){$("status").textContent=t;$("status").className="status "+k}
 function scoreCandidate(x){
-  const implied=100/x.odds;
-  const edge=Number.isFinite(x.edge)?x.edge:(x.prob-implied);
-  const score=Number.isFinite(x.score)?x.score:50;
-  // Indice TOP: probabilità 45% + qualità analisi 40% + valore/edge 15%.
-  // La probabilità resta il fattore principale; l'analisi pesa davvero quando i dati sono disponibili.
-  const prob=Number.isFinite(Number(x.prob))?Number(x.prob):50;
-  const analysis=Number.isFinite(Number(x.analysisSupport))?Number(x.analysisSupport):0;
-  const edgeValue=Number.isFinite(edge) ? Math.max(0,Math.min(100,50+50*Math.tanh(edge/20))) : 50;
-  const topSelectionScore=prob*0.45 + analysis*0.40 + edgeValue*0.15;
-  return {...x,implied,edge,score,topSelectionScore};
+  const implied=Number.isFinite(Number(x.odds))?100/Number(x.odds):50;
+  const edge=Number.isFinite(x.edge)?Number(x.edge):(Number(x.prob||0)-implied);
+  const score=Number.isFinite(x.topSelectionScore)?Number(x.topSelectionScore):(Number.isFinite(x.score)?Number(x.score):50);
+  return {...x,implied,edge,score,topSelectionScore:score};
 }
+
 const API_CACHE_PREFIX='pickDelGiorno.apiCache.v14.';
 // Migrazione: elimina le cache delle versioni precedenti, che potevano contenere
 // candidati ormai esclusi dai nuovi filtri.
@@ -1070,40 +1065,34 @@ function render(cs){
    $("pick").innerHTML='<div class="empty">🟡 Nessun candidato disponibile.</div>';
    $("candidates").innerHTML='<div class="empty">Nessun candidato.</div>';return;
  }
- // TOP 1/2/3: niente soglia rigida che possa lasciare la sezione vuota.
- // Prima privilegiamo gli scenari con analisi almeno utilizzabile (>=45/100); se non bastano,
- // selezioniamo solo candidati con analisi almeno 45/100. L'ordine interno usa:
- // PROBABILITÀ 45% → ANALISI 40% → EDGE 15%.
- const picks=[];const usedMatch=new Set();const exact=new Set();
+ // TOP 1/2/3: ranking a più livelli con una sola scelta per partita.
+ const picks=[]; const usedMatch=new Set(); const exact=new Set();
  const usable=[...cs].filter(v=>{
    const key=`${v.fixtureId||''}|${v.market||''}`;
-   if(exact.has(key))return false;
+   if(exact.has(key)) return false;
    exact.add(key);
-   const prob=Number(v.prob), odds=Number(v.odds), analysis=Number(v.analysisSupport);
-   return Number.isFinite(prob) && prob>0 && prob<=100 && Number.isFinite(odds) && odds>1 && Number.isFinite(analysis) && analysis>0;
+   const prob=Number(v.prob), odds=Number(v.odds), analysis=Number(v.analysisSupport), score=Number(v.topSelectionScore);
+   return Number.isFinite(prob)&&prob>0&&prob<=100&&Number.isFinite(odds)&&odds>1&&Number.isFinite(analysis)&&analysis>0&&Number.isFinite(score);
  }).sort((a,b)=>{
-   const ta=Number(a.topSelectionScore)||0, tb=Number(b.topSelectionScore)||0;
-   if(tb!==ta)return tb-ta;
-   const pa=Number(a.prob)||0, pb=Number(b.prob)||0;
+   const sa=Number(a.topSelectionScore)||0, sb=Number(b.topSelectionScore)||0;
+   if(sb!==sa)return sb-sa;
+   const pa=Number(a.prob)||0,pb=Number(b.prob)||0;
    if(pb!==pa)return pb-pa;
-   const aa=Number(a.analysisSupport)||0, ab=Number(b.analysisSupport)||0;
-   if(ab!==aa)return ab-aa;
    return (Number(b.edge)||0)-(Number(a.edge)||0);
  });
- const matchKey=v=>`${String(v.home||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'')}|${String(v.away||'').toLowerCase().normalize('NFD').replace(/\p{M}/gu,'').replace(/[^a-z0-9]+/g,'')}`;
- const preferred=usable.filter(v=>(Number(v.analysisSupport)||0)>=45);
- const fallback=usable.filter(v=>{const a=Number(v.analysisSupport)||0;return a>=30 && a<45;});
- const emergency=usable.filter(v=>{const a=Number(v.analysisSupport)||0;return a>0 && a<30;});
- // Se abbiamo almeno tre scenari ben supportati, usiamo solo quelli.
- // Se non bastano, allarghiamo progressivamente a dati parziali e poi limitati.
- // In questo modo la TOP non resta vuota quando il provider non offre tutti
- // gli endpoint statistici, ma il livello di affidabilità viene mostrato sulla card.
- const selectionPool=preferred.length>=3 ? preferred : [...preferred,...fallback,...emergency];
- for(const v of selectionPool){
+ const matchKey=v=>String(`${v.home||''}|${v.away||''}`).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'');
+ // Prima fase: scenari con dati solidi e edge non negativo.
+ const strong=usable.filter(v=>(Number(v.analysisSupport)||0)>=55 && (Number(v.edge)||0)>=0);
+ const normal=usable.filter(v=>!strong.includes(v) && (Number(v.analysisSupport)||0)>=40 && (Number(v.edge)||0)>=-2);
+ const fallback=usable.filter(v=>!strong.includes(v)&&!normal.includes(v));
+ for(const pool of [strong,normal,fallback]){
+   for(const v of pool){
+     if(picks.length>=3)break;
+     const mk=matchKey(v);
+     if(usedMatch.has(mk))continue;
+     picks.push(v);usedMatch.add(mk);
+   }
    if(picks.length>=3)break;
-   const mk=matchKey(v);
-   if(usedMatch.has(mk))continue;
-   picks.push(v);usedMatch.add(mk);
  }
  const absenceHtml=x=>{
    if(!x.availability){
@@ -1142,7 +1131,7 @@ function render(cs){
    ?`<div class="top3-notice empty">🟡 ${picks.length} scenario/i disponibili. Il modello privilegia analisi ≥45/100 e amplia il perimetro solo se non bastano.</div>`
    :minAnalysis<45
      ?`<div class="top3-notice empty">⚠️ TOP 3 disponibile, ma alcuni scenari hanno dati analitici limitati. Quelli con analisi ≥45/100 hanno sempre priorità.</div>`
-     :`<div class="top3-notice small">ℹ️ TOP 3 ordinato per probabilità stimata (45%), qualità dell'analisi (40%) e valore della quota/edge (15%).</div>`;
+     :`<div class="top3-notice small">ℹ️ TOP 3 calcolato combinando probabilità del modello, qualità dei dati, valore della quota, concordanza delle fonti, contesto della partita e liquidità Betfair.</div>`;
  $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
  /* Loghi TOP: nessun recupero automatico durante il render. Usa solo quelli già presenti nei dati. */
  $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Edge</th><th>Analisi</th><th>Indice TOP</th></tr>'+cs.filter(x=>Number(x.analysisSupport||0)>0).slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:` <small>(Betfair Exchange)</small>`}</td><td>${x.edge>=0?'+':''}${x.edge.toFixed(1)}%</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td><td>${Number(x.topSelectionScore||0).toFixed(0)}</td></tr>`).join("")+'</table></div>';
