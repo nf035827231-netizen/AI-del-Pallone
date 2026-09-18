@@ -146,9 +146,9 @@ export default async function handler(req,res){
 
     const allowed=selected.filter(m=>{
       const name=String(m.marketName||'');
-      // Under/Over: solo linee goal classiche 0.5, 1.5, 2.5, 3.5, 4.5.
+      // Under/Over: solo linee goal 1.5, 2.5, 3.5, 4.5.
       if(/under.*over|over.*under/i.test(name)){
-        return /(?:0\.5|1\.5|2\.5|3\.5|4\.5)/.test(name);
+        return /(?:1\.5|2\.5|3\.5|4\.5)/.test(name);
       }
       return /match odds|1x2|esito finale/i.test(name);
     });

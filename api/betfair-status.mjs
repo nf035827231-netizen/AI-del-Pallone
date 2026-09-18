@@ -1,121 +1,53 @@
-import https from 'node:https';
+const SUPA_URL = process.env.SUPABASE_URL || '';
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
-function requireEnv(name) {
-  const value = process.env[name];
-  if (!value || !String(value).trim()) throw new Error(`${name} non configurata su Vercel`);
-  return String(value);
-}
-
-function httpsPost({ hostname, path, headers = {}, body, cert, key }) {
-  return new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname,
-      path,
-      method: 'POST',
-      headers: { ...headers, 'Content-Length': Buffer.byteLength(body) },
-      cert,
-      key,
-      timeout: 15000,
-    }, res => {
-      let data = '';
-      res.setEncoding('utf8');
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => resolve({ status: res.statusCode || 0, body: data }));
-    });
-    req.on('timeout', () => req.destroy(new Error('Timeout richiesta Betfair')));
-    req.on('error', reject);
-    req.end(body);
-  });
-}
-
-async function betfairLogin() {
-  const appKey = requireEnv('BETFAIR_APP_KEY');
-  const username = requireEnv('BETFAIR_USERNAME');
-  const password = requireEnv('BETFAIR_PASSWORD');
-  const cert = requireEnv('BETFAIR_CERT');
-  // BETFAIR_PRIVATE_KEY is the PEM private key. BETFAIR_KEY is kept as a backward-compatible fallback.
-  const key = process.env.BETFAIR_PRIVATE_KEY?.trim() || requireEnv('BETFAIR_KEY');
-
-  const body = new URLSearchParams({ username, password }).toString();
-  const response = await httpsPost({
-    hostname: 'identitysso-cert.betfair.it',
-    path: '/api/certlogin',
+async function supa(path) {
+  const r = await fetch(`${SUPA_URL}/rest/v1/${path}`, {
     headers: {
-      'X-Application': appKey,
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Accept': 'application/json',
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
     },
-    body,
-    cert,
-    key,
   });
-
-  let json = null;
-  try { json = JSON.parse(response.body); } catch {}
-  if (!json || json.loginStatus !== 'SUCCESS' || !json.sessionToken) {
-    const status = json?.loginStatus || 'LOGIN_FAILED';
-    const detail = json?.error || json?.errorCode || '';
-    throw new Error(`Betfair login: ${status}${detail ? ` · ${detail}` : ''}`);
-  }
-  return { appKey, sessionToken: json.sessionToken };
-}
-
-async function listSoccerEventTypes(appKey, sessionToken) {
-  const payload = JSON.stringify([{
-    jsonrpc: '2.0',
-    method: 'SportsAPING/v1.0/listEventTypes',
-    params: { filter: { eventTypeIds: ['1'] } },
-    id: 1,
-  }]);
-
-  const response = await httpsPost({
-    hostname: 'api.betfair.com',
-    path: '/exchange/betting/json-rpc/v1',
-    headers: {
-      'X-Application': appKey,
-      'X-Authentication': sessionToken,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-    body: payload,
-  });
-
-  let json = null;
-  try { json = JSON.parse(response.body); } catch {}
-  const error = Array.isArray(json) ? json[0]?.error : json?.error;
-  if (error) throw new Error(`Exchange API: ${error.errorCode || 'ERRORE'}${error.errorDetails ? ` · ${error.errorDetails}` : ''}`);
-  return { httpStatus: response.status, ok: true };
+  const t = await r.text();
+  if (!r.ok) throw new Error(`Supabase ${r.status}: ${t}`);
+  return t ? JSON.parse(t) : [];
 }
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'Metodo non consentito' });
+  if (!SUPA_URL || !SERVICE_KEY) {
+    return res.status(500).json({ ok: false, error: 'Supabase non configurato' });
+  }
 
   try {
-    const { appKey, sessionToken } = await betfairLogin();
-    const exchange = await listSoccerEventTypes(appKey, sessionToken);
+    const rows = await supa(
+      'betfair_quotes?select=data_type,market_id,received_at&order=received_at.desc&limit=1000'
+    );
+    const books = rows.filter(x => x?.data_type === 'book');
+    const catalogues = rows.filter(x => x?.data_type === 'catalogue');
+    const latestBook = books[0]?.received_at || null;
+    const latestCatalogue = catalogues[0]?.received_at || null;
+    const freshCutoff = Date.now() - 15 * 60 * 1000;
+    const freshBooks = books.filter(x => Date.parse(x.received_at || '') >= freshCutoff);
+    const uniqueFreshMarkets = new Set(freshBooks.map(x => String(x.market_id || '')).filter(Boolean));
+
     return res.status(200).json({
-      ok: true,
-      provider: 'Betfair Exchange Italia',
-      login: 'SUCCESS',
-      exchangeApi: exchange.ok ? 'OK' : 'FAILED',
-      appKeyType: /^sk_live_/i.test(appKey) ? 'LIVE' : 'DELAYED_OR_OTHER',
+      ok: uniqueFreshMarkets.size > 0,
+      provider: 'Betfair Exchange via Bridge',
+      mode: 'read-only-supabase',
+      directBetfairLogin: false,
+      freshMarkets: uniqueFreshMarkets.size,
+      latestBook,
+      latestCatalogue,
       testedAt: new Date().toISOString(),
     });
   } catch (e) {
-    const message = String(e?.message || e);
-    const locationRestricted = /BETTING_RESTRICTED_LOCATION/i.test(message);
-    return res.status(200).json({
+    return res.status(500).json({
       ok: false,
-      provider: 'Betfair Exchange Italia',
-      error: message,
-      diagnosis: locationRestricted
-        ? 'Betfair ha rifiutato il login per la posizione IP da cui parte la funzione server. Le credenziali e il certificato hanno raggiunto Betfair, ma il betting API non è autorizzato da quella posizione.'
-        : 'Controllare Application Key, username/password e certificato PEM.',
-      nextStep: locationRestricted
-        ? 'La funzione Vercel non può cambiare la posizione IP del tuo browser/account. Per usare le API Exchange italiane serve un ambiente server con origine IP consentita da Betfair.'
-        : 'Verificare le variabili BETFAIR_APP_KEY, BETFAIR_USERNAME, BETFAIR_PASSWORD, BETFAIR_CERT e BETFAIR_PRIVATE_KEY.',
-      testedAt: new Date().toISOString(),
+      provider: 'Betfair Exchange via Bridge',
+      mode: 'read-only-supabase',
+      error: String(e?.message || e),
     });
   }
 }
