@@ -288,6 +288,7 @@ async function handler(req, res) {
     }
   }
   const uniqueLive=[...new Map(liveFixtures.map(f=>[normalizePair(f.home,f.away),f])).values()];
+  const livePairs=new Set(uniqueLive.map(x=>normalizePair(x.home,x.away)));
 
   // De-duplicate fixtures and prefer football-data when it also knows the
   // same fixture, because it supplies team IDs for local statistics.
