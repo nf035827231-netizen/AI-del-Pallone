@@ -361,7 +361,7 @@ async function handler(req, res) {
   // fixture keeps the free 100 requests/day quota under control.
   const enriched = await enrichTopCandidates(candidates, date, apiFootballKey, requestBreakdown, diagnostics);
   requests += enriched.requests;
-  const data={date,fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
+  const data={date,modelVersion:"V6.3-independent",fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?30_000:90_000),data});
   res.setHeader("Cache-Control","no-store");
   return res.status(200).json(data);
@@ -843,20 +843,18 @@ function applyEnrichedScore(c, av, pred) {
   const mc=c.monteCarlo||null;
   const mcProb=mc?.prob?.[c.market]!=null && Number(mc.historicalSample||0)>=3 ? clamp(Number(mc.prob[c.market]),0,100):null;
 
-  // ProbabilitÃ  del modello: piÃ¹ peso alle fonti indipendenti, Betfair resta
-  // il riferimento di mercato ma non puÃ² da sola creare un TOP.
+  // V6.3: Betfair and API-Football prediction are NOT ingredients of P_model.
+  // They remain external information used for market benchmark/context only.
   const sources=[];
-  if(mcProb!=null) sources.push([40,mcProb]);
+  if(mcProb!=null) sources.push([65,mcProb]);
   if(statProb!=null) sources.push([25,statProb]);
-  if(predictionProb!=null) sources.push([15,predictionProb]);
   if(freqProb!=null) sources.push([10,freqProb]);
-  if(marketProb!=null) sources.push([10,marketProb]);
   let modelProb=sources.length ? sources.reduce((a,x)=>a+x[0]*x[1],0)/sources.reduce((a,x)=>a+x[0],0) : (Number.isFinite(c.prob)?c.prob:50);
   modelProb=clamp(modelProb,5,95);
 
   // Concordanza: premia scenari dove le fonti indipendenti convergono e
   // penalizza gli outlier. Non trasformiamo una singola previsione estrema in certezza.
-  const vals=[mcProb,statProb,predictionProb,marketProb].filter(v=>v!=null);
+  const vals=[mcProb,statProb,freqProb].filter(v=>v!=null);
   let agreement=72;
   if(vals.length>=2){
     const mean=vals.reduce((a,v)=>a+v,0)/vals.length;
@@ -889,14 +887,13 @@ function applyEnrichedScore(c, av, pred) {
   let evidence=0;
   if(mcProb!=null) evidence+=28;
   if(statProb!=null) evidence+=25;
-  if(predictionProb!=null) evidence+=18;
   if(freqProb!=null) evidence+=8;
   if(Number.isFinite(c.form)) evidence+=7;
   if(matchup!=null||venue!=null) evidence+=5;
   if(c.h2h?.sample>=3) evidence+=4;
   if(c.standingNote) evidence+=3;
   if(absence!=null) evidence+=2;
-  if(Number.isFinite(Number(c.odds))) evidence+=5;
+  // Odds are not evidence for P_model; they are market input for edge/value.
   const analysisSupport=clamp(evidence,0,100);
 
   const liq=liquidityScore(c);
@@ -931,7 +928,8 @@ function applyEnrichedScore(c, av, pred) {
   ];
   return {
     ...c,
-    prob:round(modelProb), edge:round(edge), score:round(score),
+    prob:round(modelProb), pModelRaw:round(modelProb), pModelFinal:round(modelProb),
+    pMarket:marketProb==null?null:round(marketProb), edge:round(edge), score:round(score),
     topSelectionScore:round(score), analysisSupport:round(analysisSupport),
     analysisLimited:analysisSupport<40, modelAgreement:round(agreement),
     liquidity: c.liquidity!=null?Number(c.liquidity):null,
@@ -1462,7 +1460,7 @@ async function loadBetfairSnapshot(supaUrl, serviceKey) {
     // Il bridge salva un catalogo completo per sincronizzazione e uno snapshot
     // book per ogni market. Prendiamo il catalogo piÃ¹ recente e gli ultimi book.
     const catRows=await supaRead(supaUrl,serviceKey,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');
-    const bookRows=await supaRead(supaUrl,serviceKey,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=500');
+    const bookRows=await supaRead(supaUrl,serviceKey,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=1000');
     const latestBook=new Map();
     for(const row of bookRows){ if(row?.market_id && !latestBook.has(String(row.market_id))) latestBook.set(String(row.market_id),row); }
     const fixtures=new Map();
@@ -1751,15 +1749,21 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
     );
     const pFreq = sampleSize >= 5 ? (freq[o.value] ?? null) : null;
     const pFair = fair[o.value] ?? (100 / o.odd);
+    // V6.3: P_model is independent from Betfair. The exchange price is kept
+    // only as the market benchmark used later to calculate edge.
     let prob, confidence;
     if (pStat != null && pFreq != null) {
-      prob = pStat * 0.65 + pFreq * 0.20 + pFair * 0.15; confidence = 1;
+      // Frequency is historical evidence from the same result sample, so it
+      // is deliberately a small shrinkage term rather than a second source.
+      prob = pStat * 0.85 + pFreq * 0.15; confidence = 0.94;
     } else if (pStat != null) {
-      prob = pStat * 0.80 + pFair * 0.20; confidence = 0.88;
+      prob = pStat; confidence = 0.88;
     } else if (pFreq != null) {
-      prob = pFreq * 0.70 + pFair * 0.30; confidence = 0.72;
+      prob = pFreq; confidence = 0.65;
     } else {
-      prob = pFair; confidence = 0.40;
+      // No historical evidence: do not manufacture a model probability from
+      // the market. Keep the scenario low-confidence and neutral.
+      prob = 50; confidence = 0.35;
     }
 
     const edge = prob - (100 / o.odd);
