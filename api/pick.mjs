@@ -289,14 +289,8 @@ async function handler(req, res) {
   }
   const uniqueLive=[...new Map(liveFixtures.map(f=>[normalizePair(f.home,f.away),f])).values()];
 
-  // V6.3 — BETFAIR È LA FONTE PRIMARIA DEL PERIMETRO.
-  // Il feed Odds-API resta solo ausiliario (mappatura campionato / eventuale
-  // arricchimento), ma NON può più decidere quali partite vengono analizzate.
-  // Prima costruivamo il pool partendo dagli eventi Odds-API e poi richiedevamo
-  // che esistesse anche un match corrispondente su Betfair: basta una differenza
-  // di naming per trasformare 131 partite in 8 analizzabili. Ora partiamo dai
-  // market Betfair realmente presenti in Supabase e usiamo football-data, quando
-  // disponibile, per riattaccare gli ID statistici.
+  // De-duplicate fixtures and prefer football-data when it also knows the
+  // same fixture, because it supplies team IDs for local statistics.
   const uniqueMap=new Map();
   for(const f of fixtures){
     const key=`${normalizePair(f.homeTeam?.name||f.homeTeam?.shortName,f.awayTeam?.name||f.awayTeam?.shortName)}|${localDate(f.utcDate)}`;
@@ -305,72 +299,40 @@ async function handler(req, res) {
   const unique=[...uniqueMap.values()];
   const livePairs=new Set(uniqueLive.map(x=>normalizePair(x.home,x.away)));
 
-  const fdByPair=new Map();
-  for(const f of unique){
-    if(f?._source!=="football-data") continue;
-    const h=f.homeTeam?.name||f.homeTeam?.shortName;
-    const a=f.awayTeam?.name||f.awayTeam?.shortName;
-    if(h&&a) fdByPair.set(normalizePair(h,a),f);
-  }
-
-  const betfairBase=[];
-  for(const markets of betfairSnapshot.fixtures.values()){
-    const first=Array.isArray(markets)?markets[0]:null;
-    const event=first?.event||null;
-    const eventName=String(event?.name||"");
-    const parts=eventName.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
-    if(parts.length<2) continue;
-    const home=parts[0].trim();
-    const away=parts.slice(1).join(" ").trim();
-    if(!home||!away) continue;
-    const key=normalizePair(home,away);
-    const fd=fdByPair.get(key)||fdByPair.get(normalizePair(away,home))||null;
-    const oddsEvent=oddsByPair.get(key)||oddsByPair.get(normalizePair(away,home))||null;
-    const utcDate=first?.marketStartTime||event?.openDate||oddsEvent?.date||fd?.utcDate||null;
-    if(!utcDate || localDate(utcDate)!==date) continue;
-    betfairBase.push({
-      f:fd||{
-        id:`betfair-${event?.id||key}`,
-        homeTeam:{name:home},
-        awayTeam:{name:away},
-        utcDate,
-        competition:{name:first?.competition?.name||event?.competition?.name||"Betfair Exchange"},
-        _source:"betfair"
-      },
-      home:fd?.homeTeam?.name||home,
-      away:fd?.awayTeam?.name||away,
-      event:oddsEvent||{id:event?.id||null,date:utcDate,home,away,league:first?.competition||null},
-      betfair:markets
-    });
-  }
-
-  // Se un match è presente sia nel feed Odds-API sia su Betfair, preferiamo
-  // l'evento Odds-API solo come metadato; la presenza/assenza del match è decisa
-  // esclusivamente da Betfair.
-  const betfairUnique=new Map();
-  for(const x of betfairBase){
-    const key=`${normalizePair(x.home,x.away)}|${localDate(x.f.utcDate||x.event?.date)}`;
-    if(!betfairUnique.has(key)) betfairUnique.set(key,x);
-  }
-
   const candidates=[];
   const analyzedFixtureIds=new Set();
-  const eligiblePool=[...betfairUnique.values()]
-    .filter(x=>x.home&&x.away&&x.betfair&&!livePairs.has(normalizePair(x.home,x.away)));
+  const eligiblePool = unique.map(f=>{
+    const home=f.homeTeam?.name||f.homeTeam?.shortName;
+    const away=f.awayTeam?.name||f.awayTeam?.shortName;
+    const event=home&&away ? oddsByPair.get(normalizePair(home,away)) : null;
+    const betfair=findBestBetfairFixture(home,away,betfairSnapshot.fixtures);
+    return {f,home,away,event,betfair};
+  }).filter(x=>x.home&&x.away&&x.event&&x.betfair&&!livePairs.has(normalizePair(x.home,x.away)));
 
-  diagnostics.push({
-    provider:"analysis-pool",
-    oddsApiFixtures:unique.length,
-    betfairFixtures:betfairUnique.size,
-    eligible:eligiblePool.length,
-    rule:"Betfair primario; Odds-API non filtra piu' il perimetro"
-  });
-
-  // Nessun cap artificiale. La priorità del campionato è solo un tie-break.
-  let eligible=eligiblePool;
-  eligible=eligible
-    .map(x=>({...x,_priority:leaguePriority(x.event?.league||x.f?.competition)}))
-    .sort((a,b)=>b._priority-a._priority || new Date(a.f.utcDate||a.event?.date)-new Date(b.f.utcDate||b.event?.date));
+  // In modalita' "Tutti i campionati selezionati" non prendiamo piu'
+  // semplicemente i primi 30 eventi restituiti dal provider: l'ordine del feed
+  // puo' favorire tornei secondari. Prima ordiniamo per priorita' editoriale
+  // e poi garantiamo una minima diversificazione (max 2 partite per lega nella
+  // prima passata), cosi' Serie A/Premier/Liga/Bundesliga/Ligue 1 e coppe UEFA
+  // hanno precedenza senza monopolizzare tutte le chiamate odds.
+  let eligible = eligiblePool;
+  if (!codes) {
+    // V16: con "Tutti" analizziamo tutto il perimetro disponibile. La
+    // domenica può contenere centinaia di eventi: nessun cap artificiale a 30.
+    // La priorità di campionato resta un tie-break, non un filtro.
+    eligible = eligiblePool
+      .map(x => ({...x, _priority: leaguePriority(x.event?.league)}))
+      .sort((a,b) => b._priority - a._priority || new Date(a.f.utcDate||a.event?.date) - new Date(b.f.utcDate||b.event?.date));
+    diagnostics.push({
+      provider:"editorial-league-priority",
+      pool:eligiblePool.length,
+      selected:eligible.length,
+      rule:"tutte le partite disponibili; nessun cap a 30; priorita campionato solo come tie-break",
+      topLeagues:eligible.slice(0,12).map(x=>x.event?.league?.name||x.event?.league?.slug).filter(Boolean)
+    });
+  } else {
+    eligible = eligiblePool;
+  }
 
   for(const {f,home,away,event,betfair} of eligible){
     const homeStats=f.homeTeam?.id?{teamId:f.homeTeam.id,teamName:home,matches:recentByTeam.get(f.homeTeam.id)||[]}:null;
@@ -388,7 +350,7 @@ async function handler(req, res) {
       // con centinaia di eventi il browser deve ricevere soprattutto i risultati.
       // Conserviamo invece gli errori e i casi senza mercati analizzabili.
       if(!markets.length) diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:0,bookmaker:"Betfair Exchange",marketIds:betfair.map(x=>x.marketId),error:"Nessun mercato BACK nel perimetro richiesto"});
-      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||betfair?.[0]?.event?.id||null,kickoff:f.utcDate||event.date,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId});
+      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event.id,kickoff:f.utcDate||event.date,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId});
     } catch (e) {
       diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:`Errore interno analisi Betfair: ${e?.message||String(e)}`});
     }
@@ -873,42 +835,59 @@ function marketType(c) {
   return 'other';
 }
 
+function calibrateIndependentProbability(rawProb, sampleSize, source) {
+  if (!Number.isFinite(rawProb)) {
+    return { value: 50, reliability: 0, ready: false };
+  }
+  const n = Math.max(0, Number(sampleSize) || 0);
+  // Shrinkage verso il prior neutro: con pochi dati il modello conserva
+  // il segnale, ma evita probabilità estreme. La forza cresce gradualmente
+  // con il campione, senza usare la quota Betfair per costruire P_model.
+  const baseReliability = source === "stat" ? 0.35 : 0.25;
+  const slope = source === "stat" ? 0.65 : 0.50;
+  const reliability = clamp(baseReliability + slope * Math.min(n / 20, 1), 0, 1);
+  let value = 50 + (clamp(rawProb, 2, 98) - 50) * reliability;
+
+  // Un valore estremo richiede un campione consistente.
+  if (n < 10) value = clamp(value, 8, 92);
+  if (n < 5) value = clamp(value, 12, 88);
+  if (n < 3) value = clamp(value, 18, 82);
+
+  return {
+    value: clamp(value, 2, 98),
+    reliability,
+    ready: source === "stat" && n >= 3
+  };
+}
+
 function applyEnrichedScore(c, av, pred) {
   const statProb=Number.isFinite(c.pStat)?clamp(c.pStat,0,100):null;
   const freqProb=Number.isFinite(c.pFreq)?clamp(c.pFreq,0,100):null;
   const predScore=predictionComponent(c.market,pred,c.home,c.away);
   const predictionProb=predScore!=null?clamp(predScore,0,100):null;
   const mc=c.monteCarlo||null;
-  const mcProb=mc?.prob?.[c.market]!=null && Number(mc.historicalSample||0)>=3
-    ? clamp(Number(mc.prob[c.market]),0,100)
-    : null;
+  const mcProb=mc?.prob?.[c.market]!=null && Number(mc.historicalSample||0)>=3 ? clamp(Number(mc.prob[c.market]),0,100):null;
 
-  /*
-   * V6.3 CALIBRATION
-   * La quota Betfair NON entra nella probabilità del modello.
-   * API-Football prediction è trattata come fonte secondaria (non indipendente
-   * dal resto del mercato/modelli esterni), quindi ha peso ridotto.
-   *
-   * La probabilità grezza viene poi "ristretta" verso il 50% in funzione di:
-   * - ampiezza dello storico realmente disponibile
-   * - quantità di evidenza
-   * - concordanza tra fonti
-   *
-   * Questo NON è un backtest/calibration curve: è una shrinkage conservativa
-   * usata per impedire che dati scarsi producano automaticamente 95%.
-   */
-  const sources=[];
-  if(mcProb!=null) sources.push([45,mcProb]);
-  if(statProb!=null) sources.push([35,statProb]);
-  if(freqProb!=null) sources.push([10,freqProb]);
-  if(predictionProb!=null) sources.push([10,predictionProb]);
+  const homeN=Array.isArray(c._homeMatches)?c._homeMatches.length:0;
+  const awayN=Array.isArray(c._awayMatches)?c._awayMatches.length:0;
+  const sampleSize=Math.max(homeN,awayN,Number(mc?.historicalSample||0));
 
-  const rawModelProb=sources.length
-    ? sources.reduce((a,x)=>a+x[0]*x[1],0)/sources.reduce((a,x)=>a+x[0],0)
-    : (Number.isFinite(c.prob)?c.prob:50);
+  // P_model è indipendente dal mercato: usiamo il modello statistico locale
+  // come fonte primaria. Frequenze e prediction API sono validazione/context,
+  // non entrano direttamente nella probabilità finale.
+  let rawProb=null;
+  let probabilitySource="none";
+  if(statProb!=null){ rawProb=statProb; probabilitySource="stat"; }
+  else if(mcProb!=null){ rawProb=mcProb; probabilitySource="monte-carlo"; }
+  else if(freqProb!=null){ rawProb=freqProb; probabilitySource="frequency"; }
 
-  // Concordanza: usiamo solo fonti modello, senza quota Betfair.
-  const vals=[mcProb,statProb,freqProb,predictionProb].filter(v=>v!=null);
+  const calibrated=calibrateIndependentProbability(rawProb,sampleSize,probabilitySource);
+  let modelProb=calibrated.value;
+  const modelReady=calibrated.ready || (probabilitySource==="monte-carlo" && sampleSize>=3);
+  if(!modelReady && probabilitySource==="none") modelProb=50;
+
+  // Concordanza: serve come controllo, non come generatore della probabilità.
+  const vals=[mcProb,statProb,predictionProb,freqProb].filter(v=>v!=null);
   let agreement=72;
   if(vals.length>=2){
     const mean=vals.reduce((a,v)=>a+v,0)/vals.length;
@@ -916,53 +895,11 @@ function applyEnrichedScore(c, av, pred) {
     agreement=clamp(100-mad*2.2,35,100);
   }
 
-  let evidence=0;
-  if(mcProb!=null) evidence+=28;
-  if(statProb!=null) evidence+=25;
-  if(predictionProb!=null) evidence+=10;
-  if(freqProb!=null) evidence+=8;
-  if(Number.isFinite(c.form)) evidence+=7;
-  if(oneXTwoFieldComponent(c)!=null || venueComponent(c.market,c.homeForm,c.awayForm)!=null) evidence+=5;
-  if(c.h2h?.sample>=3) evidence+=4;
-  if(c.standingNote) evidence+=3;
-  if(Number.isFinite(Number(c.odds))) evidence+=5;
-  const analysisSupport=clamp(evidence,0,100);
-
-  const historicalSample=Math.max(
-    Number(mc?.historicalSample||0),
-    Array.isArray(c?._homeMatches)?c._homeMatches.length:0,
-    Array.isArray(c?._awayMatches)?c._awayMatches.length:0
-  );
-
-  // Più storico e più evidenza => minore shrinkage. Con dati scarsi una
-  // probabilità estrema viene riportata verso il 50%, invece di essere
-  // presentata come certezza.
-  const sampleFactor=clamp(historicalSample/12,0,1);
-  const evidenceFactor=clamp(analysisSupport/100,0,1);
-  const agreementFactor=clamp(agreement/100,0,1);
-  const calibrationFactor=clamp(
-    0.28 + 0.42*sampleFactor + 0.20*evidenceFactor + 0.10*agreementFactor,
-    0.32, 1
-  );
-
-  const rawClamped=clamp(rawModelProb,8,92);
-  let modelProb=50+(rawClamped-50)*calibrationFactor;
-
-  // Limiti conservativi: senza almeno 8 gare di storico non mostriamo
-  // probabilità estreme; il 90%+ richiede un campione sostanziale.
-  if(historicalSample<5) modelProb=clamp(modelProb,18,82);
-  else if(historicalSample<8) modelProb=clamp(modelProb,12,88);
-  else if(historicalSample<12) modelProb=clamp(modelProb,8,91);
-  else modelProb=clamp(modelProb,5,92);
-
   const implied=Number.isFinite(Number(c.odds))?100/Number(c.odds):null;
-  const edge=implied!=null?modelProb-implied:(Number.isFinite(c.edge)?c.edge:0);
+  const edge=(modelReady && implied!=null)?modelProb-implied:0;
 
-  // Edge molto alto viene considerato un possibile segnale di errore di
-  // calibrazione. Non lo azzeriamo, ma ne riduciamo l'influenza sul ranking.
   let valueScore=clamp(50+50*Math.tanh(edge/18),0,100);
-  if(edge>18) valueScore-=Math.min(22,(edge-18)*0.72);
-  if(edge>30) valueScore-=Math.min(12,(edge-30)*0.50);
+  if(edge>18) valueScore-=Math.min(18,(edge-18)*0.65);
   if(edge<0) valueScore*=0.70;
   valueScore=clamp(valueScore,0,100);
 
@@ -979,6 +916,19 @@ function applyEnrichedScore(c, av, pred) {
   ].filter(v=>v!=null);
   const contextScore=contextScores.length?contextScores.reduce((a,v)=>a+v,0)/contextScores.length:50;
 
+  let evidence=0;
+  if(statProb!=null) evidence+=28;
+  if(mcProb!=null) evidence+=18;
+  if(predictionProb!=null) evidence+=12;
+  if(freqProb!=null) evidence+=6;
+  if(Number.isFinite(c.form)) evidence+=7;
+  if(matchup!=null||venue!=null) evidence+=5;
+  if(c.h2h?.sample>=3) evidence+=4;
+  if(c.standingNote) evidence+=3;
+  if(absence!=null) evidence+=2;
+  if(Number.isFinite(Number(c.odds))) evidence+=5;
+  const analysisSupport=clamp(evidence,0,100);
+
   const liq=liquidityScore(c);
   const type=marketType(c);
   let score =
@@ -989,21 +939,18 @@ function applyEnrichedScore(c, av, pred) {
     contextScore*0.10 +
     liq*0.05;
 
-  // Sicurezza ranking: qualità scarsa o edge eccezionalmente alto non devono
-  // trasformare un dato debole in un TOP.
   if(type==='1x2' && modelProb<48) score-=Math.min(12,(48-modelProb)*0.55);
   if(type==='totals' && modelProb<55) score-=Math.min(10,(55-modelProb)*0.35);
   if(edge<0) score-=Math.min(12,Math.abs(edge)*0.35);
-  if(edge>25) score-=Math.min(10,(edge-25)*0.35);
   if(agreement<55) score-=Math.min(10,(55-agreement)*0.35);
+  if(!modelReady) score=Math.min(score,42);
+  if(sampleSize<3) score=Math.min(score,38);
+  else if(sampleSize<5) score=Math.min(score,48);
+  else if(sampleSize<8) score-=Math.min(5,(8-sampleSize)*0.55);
   if(analysisSupport<15) score=Math.min(score,38);
   else if(analysisSupport<25) score=Math.min(score,48);
   else if(analysisSupport<40) score-=Math.min(6,(40-analysisSupport)*0.18);
-  if(historicalSample<3) score=Math.min(score,50);
-  else if(historicalSample<5) score=Math.min(score,60);
-  else if(historicalSample<8) score=Math.min(score,72);
-  if(av && (av.home?.length||av.away?.length))
-    score-=Math.min(4,Math.abs((av.home?.length||0)-(av.away?.length||0))*0.5);
+  if(av && (av.home?.length||av.away?.length)) score-=Math.min(4,Math.abs((av.home?.length||0)-(av.away?.length||0))*0.5);
   score=clamp(score,0,100);
 
   const components=[
@@ -1014,32 +961,22 @@ function applyEnrichedScore(c, av, pred) {
     {name:'contesto e stabilità',weight:10,value:contextScore},
     {name:'liquidità Betfair',weight:5,value:liq}
   ];
-
   return {
     ...c,
-    prob:round(modelProb),
-    rawModelProb:round(rawModelProb),
-    calibrationFactor:round(calibrationFactor*100),
-    historicalSample,
-    edge:round(edge),
-    score:round(score),
-    topSelectionScore:round(score),
-    analysisSupport:round(analysisSupport),
-    analysisLimited:analysisSupport<40,
-    modelAgreement:round(agreement),
-    liquidity:c.liquidity!=null?Number(c.liquidity):null,
+    prob:round(modelProb), edge:round(edge), score:round(score),
+    topSelectionScore:round(score), analysisSupport:round(analysisSupport),
+    analysisLimited:analysisSupport<40, modelAgreement:round(agreement),
+    probabilitySource, modelSample:sampleSize,
+    calibrationReliability:round(calibrated.reliability*100),
+    modelReady, probabilityCalibrated:true,
+    liquidity: c.liquidity!=null?Number(c.liquidity):null,
     scoreComponents:components.map(x=>({...x,value:round(x.value)})),
-    absence:absence==null?0:round(absence),
-    pred:predictionProb==null?0:round(predictionProb),
-    monteCarlo:mc||null,
-    eloHome:mc?.eloHome??null,
-    eloAway:mc?.eloAway??null,
-    marketType:type,
-    valueScore:round(valueScore),
-    contextScore:round(contextScore),
-    calibrationStatus: historicalSample<5 ? 'conservativa' : historicalSample<8 ? 'parzialmente calibrata' : 'calibrata'
+    absence:absence==null?0:round(absence), pred:predictionProb==null?0:round(predictionProb),
+    monteCarlo:mc||null, eloHome:mc?.eloHome??null, eloAway:mc?.eloAway??null,
+    marketType:type, valueScore:round(valueScore), contextScore:round(contextScore)
   };
 }
+
 
 function oneXTwoFieldComponent(c) {
   const m=String(c?.market||"");
@@ -1571,7 +1508,6 @@ async function loadBetfairSnapshot(supaUrl, serviceKey) {
       const isMatch=/match odds|1x2|esito finale/i.test(name);
       const lineMatch=name.match(/(?:under\s*\/\s*over|over\s*\/\s*under|under.*over|over.*under)[^0-9]*(0\.5|1\.5|2\.5|3\.5|4\.5)/i);
       if(!isMatch && !lineMatch) continue;
-      if(lineMatch && !/(?:1\.5|2\.5|3\.5|4\.5)/.test(String(name))) continue;
       const book=latestBook.get(String(m.marketId));
       if(!book) continue;
       const runners=(Array.isArray(book.payload?.runners)?book.payload.runners:[]).map(r=>({
@@ -1849,15 +1785,15 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
     );
     const pFreq = sampleSize >= 5 ? (freq[o.value] ?? null) : null;
     const pFair = fair[o.value] ?? (100 / o.odd);
-    let prob, confidence;
-    if (pStat != null && pFreq != null) {
-      prob = pStat * 0.78 + pFreq * 0.22; confidence = 1;
-    } else if (pStat != null) {
-      prob = pStat; confidence = 0.88;
+    let prob, confidence, probabilitySource;
+    if (pStat != null) {
+      prob = pStat; confidence = 0.88; probabilitySource = "stat";
     } else if (pFreq != null) {
-      prob = pFreq; confidence = 0.72;
+      // La frequenza storica è solo un fallback descrittivo: non la
+      // promuoviamo a previsione forte quando manca il modello di gol.
+      prob = pFreq; confidence = 0.35; probabilitySource = "frequency";
     } else {
-      prob = 50; confidence = 0.40;
+      prob = 50; confidence = 0.15; probabilitySource = "none";
     }
 
     const edge = prob - (100 / o.odd);
@@ -1905,7 +1841,7 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
       form: round(formBonus), absence: 0, pred: 0, confidence: round(confidence * 100),
       homeForm: h.form==null?null:round(h.form), awayForm: a.form==null?null:round(a.form),
       pStat: pStat == null ? null : round(pStat), pFreq: pFreq == null ? null : round(pFreq),
-      pFair: round(pFair), liquidity: o.liquidity ?? null, score: round(score),
+      probabilitySource, modelSample: sampleSize, pFair: round(pFair), liquidity: o.liquidity ?? null, score: round(score),
       reason: buildSimpleReason(o.value, prob, edge, pStat, pFreq, o.odd, {...o, homeName: homeStats?.teamName, awayName: awayStats?.teamName}, homeStats, awayStats, h2h, standingNote),
       h2h: h2h ? { sample:h2h.sample, homeWins:h2h.homeWins, draws:h2h.draws, awayWins:h2h.awayWins, overRate:h2h.overRate, bttsRate:h2h.bttsRate } : null,
       standingNote: standingNote
