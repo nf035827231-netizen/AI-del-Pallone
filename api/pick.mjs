@@ -879,21 +879,36 @@ function applyEnrichedScore(c, av, pred) {
   const predScore=predictionComponent(c.market,pred,c.home,c.away);
   const predictionProb=predScore!=null?clamp(predScore,0,100):null;
   const mc=c.monteCarlo||null;
-  const mcProb=mc?.prob?.[c.market]!=null && Number(mc.historicalSample||0)>=3 ? clamp(Number(mc.prob[c.market]),0,100):null;
+  const mcProb=mc?.prob?.[c.market]!=null && Number(mc.historicalSample||0)>=3
+    ? clamp(Number(mc.prob[c.market]),0,100)
+    : null;
 
-  // ProbabilitÃ  del modello: piÃ¹ peso alle fonti indipendenti, Betfair resta
-  // il riferimento di mercato ma non puÃ² da sola creare un TOP.
+  /*
+   * V6.3 CALIBRATION
+   * La quota Betfair NON entra nella probabilità del modello.
+   * API-Football prediction è trattata come fonte secondaria (non indipendente
+   * dal resto del mercato/modelli esterni), quindi ha peso ridotto.
+   *
+   * La probabilità grezza viene poi "ristretta" verso il 50% in funzione di:
+   * - ampiezza dello storico realmente disponibile
+   * - quantità di evidenza
+   * - concordanza tra fonti
+   *
+   * Questo NON è un backtest/calibration curve: è una shrinkage conservativa
+   * usata per impedire che dati scarsi producano automaticamente 95%.
+   */
   const sources=[];
-  if(mcProb!=null) sources.push([40,mcProb]);
-  if(statProb!=null) sources.push([25,statProb]);
-  if(predictionProb!=null) sources.push([15,predictionProb]);
+  if(mcProb!=null) sources.push([45,mcProb]);
+  if(statProb!=null) sources.push([35,statProb]);
   if(freqProb!=null) sources.push([10,freqProb]);
-    let modelProb=sources.length ? sources.reduce((a,x)=>a+x[0]*x[1],0)/sources.reduce((a,x)=>a+x[0],0) : (Number.isFinite(c.prob)?c.prob:50);
-  modelProb=clamp(modelProb,5,95);
+  if(predictionProb!=null) sources.push([10,predictionProb]);
 
-  // Concordanza: premia scenari dove le fonti indipendenti convergono e
-  // penalizza gli outlier. Non trasformiamo una singola previsione estrema in certezza.
-  const vals=[mcProb,statProb,predictionProb,freqProb].filter(v=>v!=null);
+  const rawModelProb=sources.length
+    ? sources.reduce((a,x)=>a+x[0]*x[1],0)/sources.reduce((a,x)=>a+x[0],0)
+    : (Number.isFinite(c.prob)?c.prob:50);
+
+  // Concordanza: usiamo solo fonti modello, senza quota Betfair.
+  const vals=[mcProb,statProb,freqProb,predictionProb].filter(v=>v!=null);
   let agreement=72;
   if(vals.length>=2){
     const mean=vals.reduce((a,v)=>a+v,0)/vals.length;
@@ -901,12 +916,53 @@ function applyEnrichedScore(c, av, pred) {
     agreement=clamp(100-mad*2.2,35,100);
   }
 
+  let evidence=0;
+  if(mcProb!=null) evidence+=28;
+  if(statProb!=null) evidence+=25;
+  if(predictionProb!=null) evidence+=10;
+  if(freqProb!=null) evidence+=8;
+  if(Number.isFinite(c.form)) evidence+=7;
+  if(oneXTwoFieldComponent(c)!=null || venueComponent(c.market,c.homeForm,c.awayForm)!=null) evidence+=5;
+  if(c.h2h?.sample>=3) evidence+=4;
+  if(c.standingNote) evidence+=3;
+  if(Number.isFinite(Number(c.odds))) evidence+=5;
+  const analysisSupport=clamp(evidence,0,100);
+
+  const historicalSample=Math.max(
+    Number(mc?.historicalSample||0),
+    Array.isArray(c?._homeMatches)?c._homeMatches.length:0,
+    Array.isArray(c?._awayMatches)?c._awayMatches.length:0
+  );
+
+  // Più storico e più evidenza => minore shrinkage. Con dati scarsi una
+  // probabilità estrema viene riportata verso il 50%, invece di essere
+  // presentata come certezza.
+  const sampleFactor=clamp(historicalSample/12,0,1);
+  const evidenceFactor=clamp(analysisSupport/100,0,1);
+  const agreementFactor=clamp(agreement/100,0,1);
+  const calibrationFactor=clamp(
+    0.28 + 0.42*sampleFactor + 0.20*evidenceFactor + 0.10*agreementFactor,
+    0.32, 1
+  );
+
+  const rawClamped=clamp(rawModelProb,8,92);
+  let modelProb=50+(rawClamped-50)*calibrationFactor;
+
+  // Limiti conservativi: senza almeno 8 gare di storico non mostriamo
+  // probabilità estreme; il 90%+ richiede un campione sostanziale.
+  if(historicalSample<5) modelProb=clamp(modelProb,18,82);
+  else if(historicalSample<8) modelProb=clamp(modelProb,12,88);
+  else if(historicalSample<12) modelProb=clamp(modelProb,8,91);
+  else modelProb=clamp(modelProb,5,92);
+
   const implied=Number.isFinite(Number(c.odds))?100/Number(c.odds):null;
   const edge=implied!=null?modelProb-implied:(Number.isFinite(c.edge)?c.edge:0);
-  // Edge molto alto Ã¨ utile, ma oltre una certa soglia Ã¨ spesso sintomo di
-  // modello poco calibrato: lo facciamo rendere meno nel ranking.
+
+  // Edge molto alto viene considerato un possibile segnale di errore di
+  // calibrazione. Non lo azzeriamo, ma ne riduciamo l'influenza sul ranking.
   let valueScore=clamp(50+50*Math.tanh(edge/18),0,100);
-  if(edge>18) valueScore-=Math.min(18,(edge-18)*0.65);
+  if(edge>18) valueScore-=Math.min(22,(edge-18)*0.72);
+  if(edge>30) valueScore-=Math.min(12,(edge-30)*0.50);
   if(edge<0) valueScore*=0.70;
   valueScore=clamp(valueScore,0,100);
 
@@ -923,19 +979,6 @@ function applyEnrichedScore(c, av, pred) {
   ].filter(v=>v!=null);
   const contextScore=contextScores.length?contextScores.reduce((a,v)=>a+v,0)/contextScores.length:50;
 
-  let evidence=0;
-  if(mcProb!=null) evidence+=28;
-  if(statProb!=null) evidence+=25;
-  if(predictionProb!=null) evidence+=18;
-  if(freqProb!=null) evidence+=8;
-  if(Number.isFinite(c.form)) evidence+=7;
-  if(matchup!=null||venue!=null) evidence+=5;
-  if(c.h2h?.sample>=3) evidence+=4;
-  if(c.standingNote) evidence+=3;
-  if(absence!=null) evidence+=2;
-  if(Number.isFinite(Number(c.odds))) evidence+=5;
-  const analysisSupport=clamp(evidence,0,100);
-
   const liq=liquidityScore(c);
   const type=marketType(c);
   let score =
@@ -946,36 +989,55 @@ function applyEnrichedScore(c, av, pred) {
     contextScore*0.10 +
     liq*0.05;
 
-  // Regole di sicurezza del ranking: uno scenario poco probabile o con dati
-  // incoerenti non deve scalare il TOP solo perchÃ© offre una quota alta.
+  // Sicurezza ranking: qualità scarsa o edge eccezionalmente alto non devono
+  // trasformare un dato debole in un TOP.
   if(type==='1x2' && modelProb<48) score-=Math.min(12,(48-modelProb)*0.55);
   if(type==='totals' && modelProb<55) score-=Math.min(10,(55-modelProb)*0.35);
   if(edge<0) score-=Math.min(12,Math.abs(edge)*0.35);
+  if(edge>25) score-=Math.min(10,(edge-25)*0.35);
   if(agreement<55) score-=Math.min(10,(55-agreement)*0.35);
   if(analysisSupport<15) score=Math.min(score,38);
   else if(analysisSupport<25) score=Math.min(score,48);
   else if(analysisSupport<40) score-=Math.min(6,(40-analysisSupport)*0.18);
-  if(av && (av.home?.length||av.away?.length)) score-=Math.min(4,Math.abs((av.home?.length||0)-(av.away?.length||0))*0.5);
+  if(historicalSample<3) score=Math.min(score,50);
+  else if(historicalSample<5) score=Math.min(score,60);
+  else if(historicalSample<8) score=Math.min(score,72);
+  if(av && (av.home?.length||av.away?.length))
+    score-=Math.min(4,Math.abs((av.home?.length||0)-(av.away?.length||0))*0.5);
   score=clamp(score,0,100);
 
   const components=[
-    {name:'probabilità modello',weight:30,value:modelProb},
+    {name:'probabilità modello calibrata',weight:30,value:modelProb},
     {name:'qualità dati',weight:25,value:analysisSupport},
     {name:'valore quota Betfair',weight:20,value:valueScore},
     {name:'concordanza fonti',weight:10,value:agreement},
     {name:'contesto e stabilità',weight:10,value:contextScore},
     {name:'liquidità Betfair',weight:5,value:liq}
   ];
+
   return {
     ...c,
-    prob:round(modelProb), edge:round(edge), score:round(score),
-    topSelectionScore:round(score), analysisSupport:round(analysisSupport),
-    analysisLimited:analysisSupport<40, modelAgreement:round(agreement),
-    liquidity: c.liquidity!=null?Number(c.liquidity):null,
+    prob:round(modelProb),
+    rawModelProb:round(rawModelProb),
+    calibrationFactor:round(calibrationFactor*100),
+    historicalSample,
+    edge:round(edge),
+    score:round(score),
+    topSelectionScore:round(score),
+    analysisSupport:round(analysisSupport),
+    analysisLimited:analysisSupport<40,
+    modelAgreement:round(agreement),
+    liquidity:c.liquidity!=null?Number(c.liquidity):null,
     scoreComponents:components.map(x=>({...x,value:round(x.value)})),
-    absence:absence==null?0:round(absence), pred:predictionProb==null?0:round(predictionProb),
-    monteCarlo:mc||null, eloHome:mc?.eloHome??null, eloAway:mc?.eloAway??null,
-    marketType:type, valueScore:round(valueScore), contextScore:round(contextScore)
+    absence:absence==null?0:round(absence),
+    pred:predictionProb==null?0:round(predictionProb),
+    monteCarlo:mc||null,
+    eloHome:mc?.eloHome??null,
+    eloAway:mc?.eloAway??null,
+    marketType:type,
+    valueScore:round(valueScore),
+    contextScore:round(contextScore),
+    calibrationStatus: historicalSample<5 ? 'conservativa' : historicalSample<8 ? 'parzialmente calibrata' : 'calibrata'
   };
 }
 
