@@ -383,14 +383,26 @@ async function handler(req, res) {
     const away=f.awayTeam?.name||f.awayTeam?.shortName;
     const event=home&&away ? (oddsByPair.get(normalizePair(home,away)) || null) : null;
     const betfair=findBestBetfairFixture(home,away,betfairSnapshot.fixtures);
-    const kickoff=f.utcDate||f.event?.date||event?.date||null;
+    // V152: quando esiste una gara Betfair corrispondente, il suo orario
+    // openDate/marketStartTime è la fonte più affidabile per decidere se la
+    // partita è ancora pre-match. Il vecchio V151 usava prima f.utcDate di
+    // Football-Data: se quel dato era vecchio/disallineato, eliminava anche
+    // gare future e restavano zero candidati.
+    const bfEvent=Array.isArray(betfair) ? betfair[0]?.event : null;
+    const bfKickoff=bfEvent?.openDate || bfEvent?.marketStartTime || betfair?.[0]?.marketStartTime || null;
+    const kickoff=bfKickoff || event?.date || f.utcDate || f.event?.date || null;
     const kickoffMs=kickoff ? new Date(kickoff).getTime() : NaN;
-    const started=Number.isFinite(kickoffMs) ? kickoffMs <= nowMs : true;
-    return {f,home,away,event,betfair,kickoff,started};
+    const started=Number.isFinite(kickoffMs) ? kickoffMs <= nowMs : false;
+    const fdStatus=String(f.status||'').toUpperCase();
+    const hardFinished=['FINISHED','CANCELLED','CANCELED','POSTPONED','SUSPENDED','AWARDED','ABANDONED'].includes(fdStatus);
+    const providerLive=['LIVE','IN_PLAY','PAUSED','SUSPENDED','INTERRUPTED'].includes(fdStatus);
+    return {f,home,away,event,betfair,kickoff,started,hardFinished,providerLive};
   }).filter(x=>
     x.home &&
     x.away &&
     !x.started &&
+    !x.hardFinished &&
+    !x.providerLive &&
     !liveMatchKeysFinal.has(normalizePair(x.home,x.away))
   );
   diagnostics.push({
@@ -459,7 +471,12 @@ async function handler(req, res) {
   }
 
   const withRecent3 = candidates.filter(c => Number(c?.recentForm?.homeMatches||0) >= 3 && Number(c?.recentForm?.awayMatches||0) >= 3).length;
-  diagnostics.push({provider:'model-quality-gate',rule:'classifica + ultime 3 per entrambe obbligatorie; Betfair Exchange unica fonte quote BACK; massimo 4.00',candidatesBeforeEnrichment:candidates.length,withRecent3,minimumSample:3});
+  diagnostics.push({provider:'model-quality-gate',rule:'classifica + ultime 3 informative; Betfair Exchange unica fonte quote BACK; massimo 3.70',candidatesBeforeEnrichment:candidates.length,withRecent3,minimumSample:3});
+  if (!candidates.length) {
+    const matchedBetfair = eligiblePool.filter(x=>Array.isArray(x.betfair)&&x.betfair.length).length;
+    const withinCap = eligiblePool.reduce((n,x)=>n + extractBetfairOdds(x.betfair,market,x.home,x.away).filter(o=>Number(o?.odd)>1&&Number(o?.odd)<=3.7).length,0);
+    diagnostics.push({provider:'no-candidates-debug',eligiblePrematch:eligiblePool.length,matchedBetfair,betfairOddsWithin3_70:withinCap,rule:'non viene applicato alcun filtro di Edge; se non ci sono candidati la causa è il perimetro pre-match o la disponibilità di quote Betfair <=3.70'});
+  }
 
   // STEP 4: modello volutamente semplice. Nessuna API-Football, nessun ELO,
   // nessun Monte Carlo, nessun H2H e nessun infortunio entra nel punteggio.
