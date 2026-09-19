@@ -1079,7 +1079,11 @@ function render(cs){
    $("pick").innerHTML='<div class="empty">🟡 Nessun candidato disponibile.</div>';
    $("candidates").innerHTML='<div class="empty">Nessun candidato.</div>';return;
  }
- // TOP 1/2/3: ranking a più livelli con una sola scelta per partita.
+ // TOP 1/2/3: ranking unico su tutti gli scenari realmente disponibili.
+ // Non usiamo più soglie rigide a blocchi (55/40 + edge >=0): quelle soglie
+ // potevano far sembrare vuoto un insieme di mercati dove esistevano comunque
+ // scenari migliori tra loro. La qualità resta visibile nel punteggio e nel badge,
+ // ma il ranking confronta davvero tutti i mercati della finestra selezionata.
  const picks=[]; const usedMatch=new Set(); const exact=new Set();
  const usable=[...cs].filter(v=>{
    const key=`${v.fixtureId||''}|${v.market||''}`;
@@ -1095,18 +1099,13 @@ function render(cs){
    return (Number(b.edge)||0)-(Number(a.edge)||0);
  });
  const matchKey=v=>String(`${v.home||''}|${v.away||''}`).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'');
- // Prima fase: scenari con dati solidi e edge non negativo.
- const strong=usable.filter(v=>(Number(v.analysisSupport)||0)>=55 && (Number(v.edge)||0)>=0);
- const normal=usable.filter(v=>!strong.includes(v) && (Number(v.analysisSupport)||0)>=40 && (Number(v.edge)||0)>=-2);
- const fallback=usable.filter(v=>!strong.includes(v)&&!normal.includes(v));
- for(const pool of [strong,normal,fallback]){
-   for(const v of pool){
-     if(picks.length>=3)break;
-     const mk=matchKey(v);
-     if(usedMatch.has(mk))continue;
-     picks.push(v);usedMatch.add(mk);
-   }
+ // Una sola scelta per partita, ma senza privilegiare artificialmente una
+ // fascia di qualità: se l'analisi è più debole viene mostrata come tale.
+ for(const v of usable){
    if(picks.length>=3)break;
+   const mk=matchKey(v);
+   if(usedMatch.has(mk))continue;
+   picks.push(v);usedMatch.add(mk);
  }
  const absenceHtml=x=>{
    if(!x.availability){
@@ -1142,9 +1141,9 @@ function render(cs){
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
  const minAnalysis=picks.length?Math.min(...picks.map(x=>Number(x.analysisSupport)||0)):0;
  const notice=picks.length<3
-   ?`<div class="top3-notice empty">🟡 ${picks.length} scenario/i disponibili. Il modello privilegia analisi ≥45/100 e amplia il perimetro solo se non bastano.</div>`
+   ?`<div class="top3-notice empty">🟡 ${picks.length} scenario/i disponibili. Il modello confronta tutti gli scenari disponibili e mostra i migliori; la qualità dell’analisi resta indicata nel badge.</div>`
    :minAnalysis<45
-     ?`<div class="top3-notice empty">⚠️ TOP 3 disponibile, ma alcuni scenari hanno dati analitici limitati. Quelli con analisi ≥45/100 hanno sempre priorità.</div>`
+     ?`<div class="top3-notice empty">⚠️ TOP 3 disponibile, ma alcuni scenari hanno dati analitici limitati. Il punteggio finale tiene conto anche della qualità dei dati.</div>`
      :`<div class="top3-notice small">ℹ️ TOP 3 calcolato su tutto il perimetro disponibile: probabilità, qualità dei dati, valore della quota Betfair, concordanza, contesto, stabilità e liquidità.</div>`;
  $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
  /* Loghi TOP: nessun recupero automatico durante il render. Usa solo quelli già presenti nei dati. */
