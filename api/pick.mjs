@@ -18,9 +18,10 @@ async function handler(req, res) {
     : []);
   const codes = requestedCodes.length ? requestedCodes : null;
   const market = u.searchParams.get("market") || "all";
+  const timeWindow = u.searchParams.get("timeWindow") || "all";
   if (!date) return res.status(400).json({ error: "Data mancante" });
 
-  const cacheKey = `${date}|${requestedCodes.join(",")}|${market}|source:betfair`;
+  const cacheKey = `${date}|${requestedCodes.join(",")}|${timeWindow}|${market}|source:simple-v148`;
   const cached = RESPONSE_CACHE.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return res.status(200).json({ ...cached.data, cached: true });
@@ -49,6 +50,10 @@ async function handler(req, res) {
     const slug = String(event?.league?.slug || '').toLowerCase().replace(/_/g,'-');
     const name = String(event?.league?.name || '').toLowerCase();
     const text = `${slug} ${name}`;
+    // Serie B italiana è una competizione esplicitamente supportata.
+    // Deve bypassare i filtri generici sulle seconde divisioni.
+    const isItalySerieB = /italy.*serie-b|serie-b.*italy|italian-serie-b|serie b/i.test(text);
+    if (isItalySerieB) return true;
     const excluded = /(women|woman|femmin|femen|femin|ladies|u17|u18|u19|u20|u21|u23|youth|reserve|reserves|junior|academy|amateur|regional|division-?2|division-?3|league-?two|league-?one|segunda|tercera|segunda-div|segunda-division|segunda-liga|primera-nacional|primera-b|primera-c|primera-nacional-b|national-league|championship|2\.\s*liga|3\.\s*liga|cup|copa|coppa|super-cup|supercup|friendly|friendlies|playoffs?)/i;
     if (excluded.test(text)) return false;
 
@@ -183,15 +188,16 @@ async function handler(req, res) {
   // actually have a pending fixture on the selected date. This is the key
   // reduction: no historical/form request for empty competitions.
   const recentByTeam = new Map();
-  const h2hByPair = new Map();
+  const recentByTeamName = new Map();
   const teamCrests = new Map();
   const standingsByTeam = new Map();
-  // Budget server-side: con "Tutti" il feed globale puo' contenere molte
-  // competizioni. Interrogare football-data.org per ogni codice fa esplodere
-  // il numero di chiamate e puo' portare Vercel a terminare la Function.
-  // Limitiamo quindi lo storico alle competizioni piu' rilevanti presenti
-  // davvero nel giorno richiesto. Con un campionato selezionato usiamo invece
-  // il codice richiesto senza questo limite editoriale.
+  const standingsByTeamName = new Map();
+  // Storico: per mantenere l'algoritmo semplice ma avere davvero le ultime 3
+  // e la classifica, usiamo una sola richiesta matches per competizione.
+  // La classifica viene ricostruita dai risultati FINISHED, quindi non serve
+  // una seconda chiamata /standings. Nel piano gratuito football-data.org il
+  // limite è 10 richieste/minuto: teniamo quindi al massimo 10 competizioni
+  // storiche nella modalità "Tutti".
   let fdCodes = [];
   if (footballToken) {
     if (codes) {
@@ -209,33 +215,15 @@ async function handler(req, res) {
       fdCodes = [...activeCodes]
         .filter(code => normalizeLeague(code))
         .sort((a,b) => (fdPriority.get(b) ?? 0) - (fdPriority.get(a) ?? 0))
-        .slice(0, 6);
-      diagnostics.push({provider:"football-data-budget",requestedCodes:activeCodes.size,usedCodes:fdCodes.length,maxCodes:6,reason:"limite storico per evitare timeout della Function con il feed globale"});
+        .slice(0, 10);
+      diagnostics.push({provider:"football-data-budget",requestedCodes:activeCodes.size,usedCodes:fdCodes.length,maxCodes:10,reason:"una sola chiamata storico per competizione; classifica ricostruita dai risultati; compatibile con il limite di 10 richieste/minuto"});
     }
   }
   if (!footballToken) diagnostics.push({provider:"football-data", results:0, error:"FOOTBALL_DATA_TOKEN non configurato: si continua comunque con Odds-API.io + API-Football."});
   const fdResults = await Promise.all(fdCodes.map(async code => {
-    const from = daysAgo(date, 120);
-    const [d, teamsData, standingsData] = await Promise.all([
-      fd(`/v4/competitions/${encodeURIComponent(code)}/matches?dateFrom=${from}&dateTo=${date}&limit=500`, footballToken),
-      fd(`/v4/competitions/${encodeURIComponent(code)}/teams`, footballToken),
-      fd(`/v4/competitions/${encodeURIComponent(code)}/standings`, footballToken)
-    ]);
-    requests += 3; requestBreakdown.footballFixturesAndForm += 3;
-    if (Array.isArray(teamsData?.teams)) {
-      for (const t of teamsData.teams) { if (t?.id && t?.crest) teamCrests.set(t.id, t.crest); }
-    }
-    // La classifica esiste in forma di tabella semplice solo per i campionati
-    // a girone unico (non per Champions/Coppe a gironi multipli o fasi a
-    // eliminazione): se non troviamo una tabella "TOTAL", salto senza errori.
-    const table = standingsData?.standings?.find(s => s.type === "TOTAL")?.table;
-    if (Array.isArray(table)) {
-      const totalTeams = table.length;
-      for (const row of table) {
-        if (!row?.team?.id) continue;
-        standingsByTeam.set(row.team.id, { position: row.position, totalTeams, playedGames: row.playedGames, points: row.points });
-      }
-    }
+    const from = daysAgo(date, 90);
+    const d = await fd(`/v4/competitions/${encodeURIComponent(code)}/matches?dateFrom=${from}&dateTo=${date}&limit=500`, footballToken);
+    requests += 1; requestBreakdown.footballFixturesAndForm += 1;
     return { code, d };
   }));
 
@@ -246,30 +234,57 @@ async function handler(req, res) {
     for (const m of todayRows) {
       // Keep football-data IDs and names where possible so recent form can be
       // attached to the same fixture without another team-specific request.
+      if (m?.homeTeam?.id && m?.homeTeam?.crest) teamCrests.set(m.homeTeam.id, m.homeTeam.crest);
+      if (m?.awayTeam?.id && m?.awayTeam?.crest) teamCrests.set(m.awayTeam.id, m.awayTeam.crest);
       fixtures.push({ ...m, _code:code, _source:"football-data" });
     }
+    // Ultime partite: conserviamo tutte le FINISHED della finestra e poi
+    // teniamo solo le ultime 3 per squadra.
     for (const m of rows) {
       if (m.status !== "FINISHED") continue;
       for (const team of [m.homeTeam,m.awayTeam]) {
         if (!team?.id) continue;
         if (!recentByTeam.has(team.id)) recentByTeam.set(team.id, []);
         recentByTeam.get(team.id).push(m);
-      }
-      const hId=m.homeTeam?.id, aId=m.awayTeam?.id;
-      if (hId && aId) {
-        const key=h2hKey(hId,aId);
-        if (!h2hByPair.has(key)) h2hByPair.set(key, []);
-        h2hByPair.get(key).push(m);
+        const teamKey = normalize(team.name);
+        if (teamKey) {
+          if (!recentByTeamName.has(teamKey)) recentByTeamName.set(teamKey, []);
+          recentByTeamName.get(teamKey).push(m);
+        }
       }
     }
+
+    // Classifica ricostruita dai risultati della stagione/finestra corrente.
+    // Non la applichiamo alle coppe UEFA: lì non esiste una classifica unica
+    // confrontabile tra tutte le squadre.
+    const leagueCodes = new Set(["SA","SB","PL","PD","BL1","FL1","PPL","DED","ELC","BRA1"]);
+    if (leagueCodes.has(code)) {
+      const tableMap = new Map();
+      for (const m of rows) {
+        if (m.status !== "FINISHED" || !m.homeTeam?.id || !m.awayTeam?.id) continue;
+        for (const team of [m.homeTeam,m.awayTeam]) {
+          if (!tableMap.has(team.id)) tableMap.set(team.id,{id:team.id,playedGames:0,points:0,gf:0,ga:0,name:team.name});
+        }
+        const h=tableMap.get(m.homeTeam.id), a=tableMap.get(m.awayTeam.id);
+        const hg=Number(m.score?.fullTime?.home), ag=Number(m.score?.fullTime?.away);
+        if (!Number.isFinite(hg) || !Number.isFinite(ag)) continue;
+        h.playedGames++; a.playedGames++; h.gf+=hg; h.ga+=ag; a.gf+=ag; a.ga+=hg;
+        if (hg>ag) h.points+=3; else if (hg<ag) a.points+=3; else {h.points++;a.points++;}
+      }
+      const table=[...tableMap.values()].sort((a,b)=>b.points-a.points || ((b.gf-b.ga)-(a.gf-a.ga)) || b.gf-a.gf || a.name.localeCompare(b.name));
+      const totalTeams=table.length;
+      table.forEach((row,i)=>{
+        const standing = {position:i+1,totalTeams,playedGames:row.playedGames,points:row.points};
+        standingsByTeam.set(row.id, standing);
+        const teamKey = normalize(row.name);
+        if (teamKey) standingsByTeamName.set(teamKey, standing);
+      });
+    }
   }
+
   for (const [id, rows] of recentByTeam) {
     rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate));
-    recentByTeam.set(id, rows.slice(-10));
-  }
-  for (const [key, rows] of h2hByPair) {
-    rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate));
-    h2hByPair.set(key, rows.slice(-5)); // ultimi 5 scontri diretti bastano
+    recentByTeam.set(id, rows.slice(-3));
   }
 
   // STEP 3: use football-data status to identify live games. This removes
@@ -288,6 +303,7 @@ async function handler(req, res) {
     }
   }
   const uniqueLive=[...new Map(liveFixtures.map(f=>[normalizePair(f.home,f.away),f])).values()];
+  const liveMatchKeys=new Set(uniqueLive.map(x=>normalizePair(x.home,x.away)));
 
   // De-duplicate fixtures and prefer football-data when it also knows the
   // same fixture, because it supplies team IDs for local statistics.
@@ -296,37 +312,62 @@ async function handler(req, res) {
     const key=`${normalizePair(f.homeTeam?.name||f.homeTeam?.shortName,f.awayTeam?.name||f.awayTeam?.shortName)}|${localDate(f.utcDate)}`;
     if(!uniqueMap.has(key)||f._source==="football-data") uniqueMap.set(key,f);
   }
-  // V128: Betfair è la sorgente primaria per il perimetro dei match.
-  // Prima usavamo oddsByPair come filtro obbligatorio: se Odds-API non
-  // riconosceva una partita, quella partita spariva anche se era presente
-  // nel Bridge Betfair. Ora costruiamo anche fixture sintetiche dai market
-  // Betfair e usiamo Odds-API solo come arricchimento quando disponibile.
-  for (const [pairKey, markets] of betfairSnapshot.fixtures) {
-    const sample = markets?.[0];
-    const eventName = String(sample?.event?.name || '');
-    const parts = eventName.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
-    if (parts.length < 2) continue;
-    const home = parts[0].trim();
-    const away = parts.slice(1).join(' ').trim();
-    const key = normalizePair(home, away);
-    if (livePairs.has(key)) continue;
-    if (!uniqueMap.has(key)) {
-      uniqueMap.set(key, {
-        id: `betfair-${sample?.event?.id || key}`,
-        _source: 'betfair',
-        _code: sample?.competition?.id || sample?.competition?.name || 'BETFAIR',
-        homeTeam: { name: home },
-        awayTeam: { name: away },
-        utcDate: sample?.event?.openDate || sample?.event?.marketStartTime || sample?.marketStartTime || null,
-        competition: { name: sample?.competition?.name || 'Betfair' },
-        _betfairOnly: true
-      });
+  // V140: Betfair amplia il perimetro solo con "Tutti". Con un campionato
+  // specifico non introduciamo mai fixture Betfair-only.
+  if (!codes) {
+    for (const [pairKey, markets] of betfairSnapshot.fixtures) {
+      const sample = markets?.[0];
+      const eventName = String(sample?.event?.name || '');
+      const parts = eventName.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
+      if (parts.length < 2) continue;
+      const home = parts[0].trim();
+      const away = parts.slice(1).join(' ').trim();
+      const key = normalizePair(home, away);
+      if (liveMatchKeys.has(key)) continue;
+      if (!uniqueMap.has(key)) {
+        uniqueMap.set(key, {
+          id: `betfair-${sample?.event?.id || key}`, _source: 'betfair',
+          _code: sample?.competition?.id || sample?.competition?.name || 'BETFAIR',
+          homeTeam: { name: home }, awayTeam: { name: away },
+          utcDate: sample?.event?.openDate || sample?.event?.marketStartTime || sample?.marketStartTime || null,
+          competition: { name: sample?.competition?.name || 'Betfair' }, _betfairOnly: true
+        });
+      }
     }
   }
 
-  const unique=[...uniqueMap.values()];
-  const livePairsFinal=new Set(uniqueLive.map(x=>normalizePair(x.home,x.away)));
+  const uniqueAll=[...uniqueMap.values()].filter(f=>timeWindowAllows(f.utcDate||f.event?.date, timeWindow));
 
+  // V140: filtro campionato autorevole. Con un campionato specifico
+  // accettiamo solo fixture provenienti dall'endpoint di quel campionato
+  // (Odds-API) o dal relativo codice Football-Data. Betfair-only non entra.
+  const unique = codes
+    ? uniqueAll.filter(f => {
+        const code = String(f?._code || '').toUpperCase();
+        if (f?._source === 'odds-api') return codes.includes(code);
+        if (f?._source === 'football-data') return codes.includes(code);
+        return false;
+      })
+    : uniqueAll;
+
+
+
+  if (codes) {
+    diagnostics.push({
+      provider: "selected-league-filter",
+      requested: codes,
+      before: uniqueAll.length,
+      after: unique.length,
+      removed: Math.max(0, uniqueAll.length - unique.length),
+      rule: 'specific-league = Odds-API/Football-Data only; Betfair-only excluded'
+    });
+  }
+
+  const liveMatchKeysFinal=liveMatchKeys;
+
+  // V143: Betfair NON è più un filtro di ingresso. Una partita va analizzata
+  // anche se l'Exchange non la conosce; la quota serve solo per decidere se
+  // lo scenario ha valore. Se Betfair manca, proviamo le quote Odds-API.io.
   const candidates=[];
   const analyzedFixtureIds=new Set();
   const eligiblePool = unique.map(f=>{
@@ -335,7 +376,12 @@ async function handler(req, res) {
     const event=home&&away ? (oddsByPair.get(normalizePair(home,away)) || null) : null;
     const betfair=findBestBetfairFixture(home,away,betfairSnapshot.fixtures);
     return {f,home,away,event,betfair};
-  }).filter(x=>x.home&&x.away&&x.betfair&&!livePairsFinal.has(normalizePair(x.home,x.away)));
+  }).filter(x=>x.home&&x.away&&!liveMatchKeysFinal.has(normalizePair(x.home,x.away)));
+
+  // V148: BETFAIR EXCHANGE E' L'UNICA FONTE DELLE QUOTE.
+  // Odds-API.io serve solo a scoprire le partite, non fornisce quote al modello.
+  const fallbackOddsById = new Map();
+  diagnostics.push({provider:'odds-api-fallback',requestedEvents:0,batches:0,matchedEvents:0,rule:'disattivato: Betfair Exchange unica fonte quote'});
 
   // In modalita' "Tutti i campionati selezionati" non prendiamo piu'
   // semplicemente i primi 30 eventi restituiti dal provider: l'ordine del feed
@@ -352,10 +398,10 @@ async function handler(req, res) {
       .map(x => ({...x, _priority: leaguePriority(x.event?.league)}))
       .sort((a,b) => b._priority - a._priority || new Date(a.f.utcDate||a.event?.date) - new Date(b.f.utcDate||b.event?.date));
     diagnostics.push({
-      provider:"betfair-primary-analysis-pool",
+      provider:"simple-analysis-pool",
       pool:eligiblePool.length,
       selected:eligible.length,
-      rule:"tutte le partite presenti su Betfair; Odds-API solo arricchimento, non filtro",
+      rule:"tutte le partite del perimetro; Betfair non è filtro, Odds-API scopre le gare e fornisce fallback quote",
       topLeagues:eligible.slice(0,12).map(x=>x.event?.league?.name||x.event?.league?.slug).filter(Boolean)
     });
   } else {
@@ -363,32 +409,38 @@ async function handler(req, res) {
   }
 
   for(const {f,home,away,event,betfair} of eligible){
-    const homeStats=f.homeTeam?.id?{teamId:f.homeTeam.id,teamName:home,matches:recentByTeam.get(f.homeTeam.id)||[]}:null;
-    const awayStats=f.awayTeam?.id?{teamId:f.awayTeam.id,teamName:away,matches:recentByTeam.get(f.awayTeam.id)||[]}:null;
-    const h2hMatches=(f.homeTeam?.id&&f.awayTeam?.id)?(h2hByPair.get(h2hKey(f.homeTeam.id,f.awayTeam.id))||[]):[];
-    const homeStanding=f.homeTeam?.id?standingsByTeam.get(f.homeTeam.id)||null:null;
-    const awayStanding=f.awayTeam?.id?standingsByTeam.get(f.awayTeam.id)||null:null;
-    // try/catch difensivo: un errore sull'analisi di UNA partita non deve
-    // far fallire l'intera risposta API (le altre partite restano valide).
+    const homeNameKey = normalize(home);
+    const awayNameKey = normalize(away);
+    const homeMatches = (f.homeTeam?.id ? recentByTeam.get(f.homeTeam.id) : null) || recentByTeamName.get(homeNameKey) || [];
+    const awayMatches = (f.awayTeam?.id ? recentByTeam.get(f.awayTeam.id) : null) || recentByTeamName.get(awayNameKey) || [];
+    const homeStats={teamId:f.homeTeam?.id||null,teamName:home,matches:homeMatches};
+    const awayStats={teamId:f.awayTeam?.id||null,teamName:away,matches:awayMatches};
+    const homeStanding=(f.homeTeam?.id ? standingsByTeam.get(f.homeTeam.id) : null) || standingsByTeamName.get(homeNameKey) || null;
+    const awayStanding=(f.awayTeam?.id ? standingsByTeam.get(f.awayTeam.id) : null) || standingsByTeamName.get(awayNameKey) || null;
     try {
-      const extracted=extractBetfairOdds(betfair,market,home,away);
-      const markets=buildMarkets(extracted,homeStats,awayStats,h2hMatches,f.homeTeam?.id,f.awayTeam?.id,homeStanding,awayStanding);
-      if(markets.length) analyzedFixtureIds.add(f.id);
-      // Non gonfiamo la risposta con una riga diagnostica per ogni partita:
-      // con centinaia di eventi il browser deve ricevere soprattutto i risultati.
-      // Conserviamo invece gli errori e i casi senza mercati analizzabili.
-      if(!markets.length) diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:0,bookmaker:"Betfair Exchange",marketIds:betfair.map(x=>x.marketId),error:"Nessun mercato BACK nel perimetro richiesto"});
-      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId});
+      // La partita è considerata ANALIZZATA anche senza quota: classifica +
+      // ultime 3 vengono comunque valutate. Senza quota non può però entrare
+      // nel TOP, perché manca il controllo del valore.
+      analyzedFixtureIds.add(f.id);
+      const extractedBetfair = extractBetfairOdds(betfair,market,home,away);
+      const extracted = extractedBetfair.filter(o => Number(o?.odd) > 1 && Number(o?.odd) <= 4);
+      const oddsSource = extracted.length ? "Betfair Exchange" : null;
+      const markets=buildMarkets(extracted,homeStats,awayStats,homeStanding,awayStanding);
+      if(!markets.length && !extracted.length) diagnostics.push({provider:"simple-analysis",league:f._code,fixture:`${home} - ${away}`,analyzedMarkets:0,error:"Partita analizzata ma nessuna quota disponibile: esclusa solo dal TOP"});
+      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:oddsSource||"—",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"dati non disponibili",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId,homeStanding,awayStanding});
     } catch (e) {
-      diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:`Errore interno analisi Betfair: ${e?.message||String(e)}`});
+      diagnostics.push({provider:"simple-analysis",league:f._code,fixture:`${home} - ${away}`,analyzedMarkets:0,error:`Errore interno analisi: ${e?.message||String(e)}`});
     }
   }
 
-  // STEP 4: enrich ONLY the strongest candidate fixtures with API-Football
-  // availability data. One date lookup + one injuries call per unique top
-  // fixture keeps the free 100 requests/day quota under control.
-  const enriched = await enrichTopCandidates(candidates, date, apiFootballKey, requestBreakdown, diagnostics);
-  requests += enriched.requests;
+  const withRecent3 = candidates.filter(c => Number(c?.recentForm?.homeMatches||0) >= 3 && Number(c?.recentForm?.awayMatches||0) >= 3).length;
+  diagnostics.push({provider:'model-quality-gate',rule:'minimum 3 finished matches for BOTH teams for TOP; lookup by Football-Data ID OR normalized team name; simple model only; latest available odds accepted',candidatesBeforeEnrichment:candidates.length,withRecent3,minimumSample:3});
+
+  // STEP 4: modello volutamente semplice. Nessuna API-Football, nessun ELO,
+  // nessun Monte Carlo, nessun H2H e nessun infortunio entra nel punteggio.
+  // Per ogni scenario contiamo solo: classifica + ultime 3 gare + quota.
+  const enriched = finalizeSimpleCandidates(candidates);
+  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"edge >= 2 punti percentuali e score >= 55; usa l'ultima quota disponibile anche se non recente; Betfair Exchange unica fonte quote, massimo 4.00"});
   const data={date,fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?30_000:90_000),data});
   res.setHeader("Cache-Control","no-store");
@@ -411,11 +463,54 @@ function h2hKey(idA, idB) {
   return [idA, idB].sort((x,y)=>String(x).localeCompare(String(y))).join("-");
 }
 
+function requestedLeagueMatchesFixture(fixture, oddsEvent, requestedCodes) {
+  const requested = Array.isArray(requestedCodes) ? requestedCodes.map(x=>String(x).toUpperCase()) : [];
+  if (!requested.length) return true;
+  const code = String(fixture?._code || '').toUpperCase();
+  return (fixture?._source === 'odds-api' || fixture?._source === 'football-data') && requested.includes(code);
+}
+
+function competitionTextMatchesCode(text, code) {
+  const t = String(text || '').toLowerCase();
+  switch (String(code || '').toUpperCase()) {
+    case 'SA': return /italy|italia/.test(t) && /serie[\s_-]*a/.test(t) && !/serie[\s_-]*b|women|primavera/.test(t);
+    case 'SB': return /italy|italia/.test(t) && /serie[\s_-]*b/.test(t) && !/women|primavera|serie[\s_-]*c/.test(t);
+    case 'PL': return /premier[\s_-]*league/.test(t) && /england|england's|inglese|uk/.test(t);
+    case 'PD': return /la[\s_-]*liga/.test(t) && /spain|españa|spagna/.test(t);
+    case 'BL1': return /bundesliga/.test(t) && /germany|deutschland|german/.test(t) && !/2\.?\s*bundesliga/.test(t);
+    case 'FL1': return /ligue[\s_-]*1/.test(t) && /france|francia|french/.test(t);
+    case 'PPL': return /primeira[\s_-]*liga|liga[\s_-]*portugal/.test(t) && /portugal/.test(t);
+    case 'DED': return /eredivisie/.test(t) && /netherlands|nederland|olanda/.test(t);
+    case 'BEL1': return /pro[\s_-]*league|first[\s_-]*division/.test(t) && /belgium|belgio/.test(t);
+    case 'SCO1': return /premiership/.test(t) && /scotland|scozia/.test(t);
+    case 'AUT1': return /bundesliga/.test(t) && /austria|österreich/.test(t);
+    case 'SUI1': return /super[\s_-]*league/.test(t) && /switzerland|svizzera/.test(t);
+    case 'TUR1': return /super[\s_-]*lig/.test(t) && /turkey|turchia/.test(t);
+    case 'GRE1': return /super[\s_-]*league/.test(t) && /greece|grecia/.test(t);
+    case 'DEN1': return /superliga/.test(t) && /denmark|danimarca/.test(t);
+    case 'SWE1': return /allsvenskan/.test(t);
+    case 'NOR1': return /eliteserien/.test(t);
+    case 'POL1': return /ekstraklasa/.test(t);
+    case 'CZE1': return /first[\s_-]*league/.test(t) && /czech|cechia/.test(t);
+    case 'CRO1': return /hnl/.test(t) && /croatia|croazia/.test(t);
+    case 'SRB1': return /super[\s_-]*liga/.test(t) && /serbia|serbia/.test(t);
+    case 'ROU1': return /liga[\s_-]*1/.test(t) && /romania|românia/.test(t);
+    case 'UKR1': return /premier[\s_-]*league/.test(t) && /ukraine|ucraina/.test(t);
+    case 'HUN1': return /nb[\s_-]*i|nemzeti/.test(t) && /hungary|ungheria/.test(t);
+    case 'SVK1': return /super[\s_-]*liga/.test(t) && /slovakia|slovacchia/.test(t);
+    case 'CL': return /champions[\s_-]*league/.test(t) && !/women|youth/.test(t);
+    case 'EL': return /europa[\s_-]*league/.test(t) && !/women|youth/.test(t);
+    case 'ECL': return /conference[\s_-]*league/.test(t) && !/women|youth/.test(t);
+    default: return false;
+  }
+}
+
 function inferFootballDataCode(event) {
   const slug = String(event?.league?.slug || "").toLowerCase();
   const name = String(event?.league?.name || "").toLowerCase();
   const s = `${slug} ${name}`;
-  if (/italy.*serie-a|serie a/.test(s)) return "SA";
+  if (/italy.*serie-a|serie a/.test(s) && !/serie b/.test(s)) return "SA";
+  if (/italy.*serie-b|serie b/.test(s)) return "SB";
   if (/england.*premier|premier league/.test(s)) return "PL";
   if (/spain.*la-liga|la liga/.test(s)) return "PD";
   if (/germany.*bundesliga/.test(s) && !/2\.?\s*bundesliga/.test(s)) return "BL1";
@@ -429,12 +524,26 @@ function inferFootballDataCode(event) {
 
 function normalizeLeague(x) {
   const s = String(x || "").trim().toUpperCase();
-  const map = { "135":"SA", "39":"PL", "140":"PD", "78":"BL1", "61":"FL1", "2":"CL", "88":"DED", "94":"PPL" };
+  const map = { "135":"SA", "136":"SB", "39":"PL", "140":"PD", "78":"BL1", "61":"FL1", "2":"CL", "88":"DED", "94":"PPL" };
   const allowed = [
-    "SA","PL","PD","BL1","FL1","PPL","DED","BEL1","SCO1","AUT1","SUI1","TUR1","GRE1","DEN1","SWE1","NOR1","POL1","CZE1","CRO1","SRB1","ROU1","UKR1","HUN1","SVK1",
+    "SA","SB","PL","PD","BL1","FL1","PPL","DED","BEL1","SCO1","AUT1","SUI1","TUR1","GRE1","DEN1","SWE1","NOR1","POL1","CZE1","CRO1","SRB1","ROU1","UKR1","HUN1","SVK1",
     "CL","EL","ECL","BRA1","ARG1","COL1","CHI1","URU1","ECU1","PER1","MLS1","JPN1"
   ];
   return map[s] || (allowed.includes(s) ? s : null);
+}
+
+function timeWindowAllows(iso, window) {
+  if (!iso) return false;
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", { timeZone:"Europe/Rome", hour:"2-digit", minute:"2-digit", hour12:false }).formatToParts(new Date(iso));
+    const h=Number(parts.find(x=>x.type==='hour')?.value);
+    const m=Number(parts.find(x=>x.type==='minute')?.value);
+    const minutes=h*60+m;
+    if (window==='afternoon1') return minutes>=13*60 && minutes<=16*60;
+    if (window==='afternoon2') return minutes>=16*60+1 && minutes<=19*60;
+    if (window==='evening') return minutes>=19*60+1 && minutes<=22*60;
+    return minutes>=11*60 && minutes<=22*60;
+  } catch { return false; }
 }
 
 function localDate(iso) {
@@ -455,7 +564,8 @@ function leaguePriority(league) {
   if (/champions-league|uefa-champions/.test(text)) return 1000;
   if (/europa-league|uefa-europa/.test(text)) return 980;
   if (/conference-league|uefa-conference/.test(text)) return 960;
-  if (/italy.*serie-a|serie-a.*italy|serie a/.test(text)) return 950;
+  if (/italy.*serie-a|serie-a.*italy|serie a/.test(text) && !/serie b/.test(text)) return 950;
+  if (/italy.*serie-b|serie-b.*italy|italian-serie-b|serie b/.test(text)) return 900;
   if (/england.*premier-league|premier-league.*england|premier league/.test(text)) return 940;
   if (/spain.*la-liga|la-liga.*spain|la liga/.test(text)) return 930;
   if (/germany.*bundesliga|bundesliga.*germany|bundesliga/.test(text) && !/2\.?\s*bundesliga/.test(text)) return 920;
@@ -577,7 +687,7 @@ function preEnrichmentScore(c) {
   return support*0.50 + liq*0.18 + valuePotential*0.17 + league*0.10 + marketBonus;
 }
 
-async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnostics) {
+async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnostics, globalElo) {
   if (!candidates.length) return { candidates, requests: 0 };
   let requests = 0;
   const fixtureMap = new Map();
@@ -594,10 +704,10 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
   for (const c of [...candidates].sort((a,b)=>preEnrichmentScore(b)-preEnrichmentScore(a))) {
     const key = normalizePair(c.home, c.away);
     if (!seen.has(key)) { seen.add(key); uniqueFixtures.push(c); }
-    if (uniqueFixtures.length >= 18) break;
+    if (uniqueFixtures.length >= 30) break;
   }
   enrichedFixtureCount = uniqueFixtures.length;
-  // Le 18 partite vengono arricchite, ma il ranking finale resta libero su tutti gli scenari.
+  // Le 30 partite vengono arricchite, ma il ranking finale resta libero su tutti gli scenari.
   try {
     const fx = await apiFootball(`/fixtures?date=${encodeURIComponent(date)}&timezone=Europe%2FRome`, apiKey);
     requests++; breakdown.apiFootballFixtures++; 
@@ -663,10 +773,10 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     const key=normalizePair(c.home,c.away);
     if(seenMc.has(key)) continue;
     seenMc.add(key); uniqueForMc.push(c);
-    if(uniqueForMc.length>=20) break;
+    if(uniqueForMc.length>=40) break;
   }
   for (const c of uniqueForMc) {
-    try { mcByPair.set(normalizePair(c.home,c.away), monteCarloFixture(c, availability.get(normalizePair(c.home,c.away)), predictions.get(normalizePair(c.home,c.away)), 10000)); }
+    try { mcByPair.set(normalizePair(c.home,c.away), monteCarloFixture(c, availability.get(normalizePair(c.home,c.away)), predictions.get(normalizePair(c.home,c.away)), 10000, globalElo)); }
     catch(e) { diagnostics.push({provider:"local-monte-carlo",fixture:`${c.home} - ${c.away}`,results:0,error:e?.message||String(e)}); }
   }
 
@@ -766,7 +876,7 @@ function availabilityStatus(type, reason) {
   const t=String(type||"").toLowerCase();
   const r=String(reason||"").toLowerCase();
   if (t.includes("susp")) return "squalificato";
-  if (t.includes("injur") || /injury|lesion|strain|fracture|muscle|ankle|knee|hamstring|thigh|back|illness|ill/.test(r)) return "infortunato";
+  if (t.includes("injur") || /injury|lesion|strain|fracture|muscle|ankle|knee|hamstring|thigh|back|illness|ill\b/.test(r)) return "infortunato";
   if (t.includes("question") || t.includes("doubt")) return "in dubbio";
   if (t.includes("missing") || t.includes("absent")) return "indisponibile";
   return reason ? String(reason).toLowerCase() : "indisponibile";
@@ -824,36 +934,88 @@ function buildEloContext(c) {
   const awayElo=awayId&&byId.has(awayId)?byId.get(awayId):1500;
   return {homeElo,awayElo,diff:homeElo-awayElo+55};
 }
-function monteCarloFixture(c,av,pred,iterations=10000) {
+function monteCarloFixture(c,av,pred,iterations=10000,globalElo=null){
   const h=summarize(c?._homeMatches,c?._homeTeamId), a=summarize(c?._awayMatches,c?._awayTeamId);
-  const historicalSample=Math.max(Number(h.sample||0),Number(a.sample||0));
-  const baseH=avg(h.gfHome!=null?h.gfHome:h.gf,a.gaAway!=null?a.gaAway:a.ga);
-  const baseA=avg(a.gfAway!=null?a.gfAway:a.gf,h.gaHome!=null?h.gaHome:h.ga);
-  const elo=buildEloContext(c);
-  let lambdaH=Number.isFinite(baseH)?baseH:1.35, lambdaA=Number.isFinite(baseA)?baseA:1.15;
-  const eloShift=clamp(elo.diff/400,-0.35,0.35);
-  lambdaH*=Math.exp(eloShift*0.22); lambdaA*=Math.exp(-eloShift*0.18);
-  if(av?.home?.length) lambdaH*=Math.max(0.78,1-0.035*av.home.length);
-  if(av?.away?.length) lambdaA*=Math.max(0.78,1-0.035*av.away.length);
+  const historicalSample=Math.min(Number(h.sample||0),Number(a.sample||0));
+  const model=expectedGoalsModel(h,a,c,globalElo,c?._leagueBaseline||null);
+  let lambdaH=model?.lambdaH ?? null, lambdaA=model?.lambdaA ?? null;
+  if(!(lambdaH>0&&lambdaA>0)) return null;
   lambdaH=clamp(lambdaH,0.25,3.8); lambdaA=clamp(lambdaA,0.20,3.5);
+  const dist=dixonColesDistribution(lambdaH,lambdaA);
   const seedBase=Math.abs(hashString(`${c.home}|${c.away}`))>>>0, rngState={value:seedBase||123456789};
-  let hWin=0,draw=0,aWin=0,over25=0,over35=0,btts=0, total=0;
+  let hWin=0,draw=0,aWin=0,over15=0,over25=0,over35=0,over45=0,btts=0,total=0;
   for(let i=0;i<iterations;i++){
-    const hg=poissonSample(lambdaH,()=>seededRandom(rngState));
-    const ag=poissonSample(lambdaA,()=>seededRandom(rngState));
-    const t=hg+ag; total+=t;
+    const u=seededRandom(rngState); let acc=0,cell=dist[dist.length-1];
+    for(const x of dist){acc+=x.p;if(u<=acc){cell=x;break;}}
+    const hg=cell.hg,ag=cell.ag,t=hg+ag; total+=t;
     if(hg>ag)hWin++; else if(hg===ag)draw++; else aWin++;
-    if(t>=3)over25++; if(t>=4)over35++; if(hg>0&&ag>0)btts++;
+    if(t>=2)over15++; if(t>=3)over25++; if(t>=4)over35++; if(t>=5)over45++; if(hg>0&&ag>0)btts++;
   }
-  return {iterations,historicalSample,quality:historicalSample>=8?"alta":historicalSample>=3?"media":"baseline",lambdaH,lambdaA,eloHome:round(elo.homeElo),eloAway:round(elo.awayElo),prob:{"1":hWin/iterations*100,"X":draw/iterations*100,"2":aWin/iterations*100,"Over 2.5":over25/iterations*100,"Under 2.5":(1-over25/iterations)*100,"Over 3.5":over35/iterations*100,"Under 3.5":(1-over35/iterations)*100,"Goal":btts/iterations*100,"No Goal":(1-btts/iterations)*100},expectedGoals:total/iterations};
+  return {iterations,historicalSample,quality:historicalSample>=8?'alta':historicalSample>=5?'media':'insufficiente',lambdaH,lambdaA,eloHome:model?.eloHome??null,eloAway:model?.eloAway??null,prob:{
+    '1':hWin/iterations*100,'X':draw/iterations*100,'2':aWin/iterations*100,
+    'Over 1.5':over15/iterations*100,'Under 1.5':100-over15/iterations*100,
+    'Over 2.5':over25/iterations*100,'Under 2.5':100-over25/iterations*100,
+    'Over 3.5':over35/iterations*100,'Under 3.5':100-over35/iterations*100,
+    'Over 4.5':over45/iterations*100,'Under 4.5':100-over45/iterations*100,
+    'Goal':btts/iterations*100,'No Goal':100-btts/iterations*100
+  },expectedGoals:total/iterations};
 }
+
+function expectedGoalsModel(h,a,c,globalElo=null,leagueBaseline=null){
+  const hasH=Number.isFinite(h?.gfHome)||Number.isFinite(h?.gf), hasA=Number.isFinite(a?.gfAway)||Number.isFinite(a?.gf);
+  const bothSamples=Math.min(Number(h?.sample||0),Number(a?.sample||0));
+  if(!hasH||!hasA||bothSamples<5) return null;
+  const leagueHome=Number(leagueBaseline?.homeGoals)>0?Number(leagueBaseline.homeGoals):1.45;
+  const leagueAway=Number(leagueBaseline?.awayGoals)>0?Number(leagueBaseline.awayGoals):1.18;
+  const rel=clamp(Math.min(Number(h?.homeSample||0),Number(a?.awaySample||0))/6,0,1);
+  const hAttack=1+(((Number.isFinite(h.gfHome)?h.gfHome:h.gf)/leagueHome)-1)*rel;
+  const hDefense=1+(((Number.isFinite(h.gaHome)?h.gaHome:h.ga)/leagueAway)-1)*rel;
+  const aAttack=1+(((Number.isFinite(a.gfAway)?a.gfAway:a.gf)/leagueAway)-1)*rel;
+  const aDefense=1+(((Number.isFinite(a.gaAway)?a.gaAway:a.ga)/leagueHome)-1)*rel;
+  let lambdaH=leagueHome*(0.62*hAttack+0.38*aDefense);
+  let lambdaA=leagueAway*(0.62*aAttack+0.38*hDefense);
+  const formDiff=(Number.isFinite(h.form)?h.form:1.5)-(Number.isFinite(a.form)?a.form:1.5);
+  const formShift=clamp(formDiff/30,-0.10,0.10); lambdaH*=Math.exp(formShift); lambdaA*=Math.exp(-formShift*0.85);
+  const elo=globalElo?globalEloDiff(c,globalElo):buildEloContext(c); const eloShift=clamp((elo.diff||55)/400,-0.25,0.25);
+  lambdaH*=Math.exp(eloShift*0.16); lambdaA*=Math.exp(-eloShift*0.12);
+  return {lambdaH:clamp(lambdaH,0.25,3.6),lambdaA:clamp(lambdaA,0.20,3.3),eloHome:elo.homeElo,eloAway:elo.awayElo};
+}
+
+function dixonColesDistribution(lambdaH,lambdaA,rho=-0.08){
+  const cells=[]; let total=0;
+  for(let hg=0;hg<=7;hg++) for(let ag=0;ag<=7;ag++){
+    let p=Math.exp(-lambdaH)*Math.pow(lambdaH,hg)/factorial(hg)*Math.exp(-lambdaA)*Math.pow(lambdaA,ag)/factorial(ag);
+    if(hg===0&&ag===0)p*=1-lambdaH*lambdaA*rho; else if(hg===0&&ag===1)p*=1+lambdaH*rho; else if(hg===1&&ag===0)p*=1+lambdaA*rho; else if(hg===1&&ag===1)p*=1-rho;
+    if(p>0){cells.push({hg,ag,p});total+=p;}
+  }
+  return cells.map(x=>({...x,p:x.p/total}));
+}
+function buildLeagueBaselines(fdResults){
+  const out=new Map();
+  for(const {code,d} of fdResults){
+    const rows=Array.isArray(d?.matches)?d.matches:[]; let hg=0,ag=0,n=0;
+    for(const m of rows){const h=Number(m?.score?.fullTime?.home),a=Number(m?.score?.fullTime?.away);if(m?.status!=='FINISHED'||!Number.isFinite(h)||!Number.isFinite(a))continue;hg+=h;ag+=a;n++;}
+    if(n>=8) out.set(String(code).toUpperCase(),{homeGoals:hg/n,awayGoals:ag/n,sample:n});
+  }
+  return out;
+}
+
+function buildGlobalElo(fdResults){
+  const rows=[]; for(const {d} of fdResults){ for(const m of (Array.isArray(d?.matches)?d.matches:[])){ if(Number.isFinite(m?.score?.fullTime?.home)&&Number.isFinite(m?.score?.fullTime?.away)&&m?.homeTeam?.id&&m?.awayTeam?.id) rows.push(m); } }
+  rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate)); const elo=new Map();
+  for(const m of rows){ const h=m.homeTeam.id,a=m.awayTeam.id; if(!elo.has(h))elo.set(h,1500); if(!elo.has(a))elo.set(a,1500); const rh=elo.get(h),ra=elo.get(a),expected=1/(1+Math.pow(10,(ra-rh-55)/400)); const hg=m.score.fullTime.home,ag=m.score.fullTime.away; const actual=hg>ag?1:ag>hg?0:0.5; const margin=1+Math.min(2,Math.log1p(Math.abs(hg-ag))); const k=20*margin; elo.set(h,rh+k*(actual-expected)); elo.set(a,ra+k*((1-actual)-(1-expected))); }
+  return elo;
+}
+function globalEloDiff(c,elo){ const h=Number(c?._homeTeamId),a=Number(c?._awayTeamId); const homeElo=elo.get(h)||1500,awayElo=elo.get(a)||1500; return {homeElo,awayElo,diff:homeElo-awayElo+55}; }
 function hashString(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
 
+function quoteFreshnessScore(ageMin){const n=Number(ageMin);if(!Number.isFinite(n)||n<0)return 0;if(n<=5)return 100;if(n<=15)return 90;if(n<=30)return 75;if(n<=60)return 45;return 10;}
+
 function liquidityScore(c) {
-  const n=Number(c?.liquidity);
-  if(!Number.isFinite(n) || n<=0) return 45;
-  // Scala logaritmica: evita che un mercato con liquiditÃ  enorme domini il ranking.
-  return clamp(25 + 22*Math.log10(1+n), 25, 100);
+  const n=Number(c?.liquidity); if(!Number.isFinite(n)||n<=0)return 35;
+  let score=clamp(25+22*Math.log10(1+n),25,100); const spread=Number(c?.quoteSpread);
+  if(Number.isFinite(spread)){if(spread<=0.03)score+=8;else if(spread<=0.08)score+=3;else if(spread>=0.20)score-=10;}
+  return clamp(score,0,100);
 }
 
 function marketType(c) {
@@ -884,7 +1046,7 @@ function calibrateIndependentProbability(rawProb, sampleSize, source) {
   return {
     value: clamp(value, 2, 98),
     reliability,
-    ready: source === "stat" && n >= 3
+    ready: source === "stat" && n >= 5
   };
 }
 
@@ -898,7 +1060,7 @@ function applyEnrichedScore(c, av, pred) {
 
   const homeN=Array.isArray(c._homeMatches)?c._homeMatches.length:0;
   const awayN=Array.isArray(c._awayMatches)?c._awayMatches.length:0;
-  const sampleSize=Math.max(homeN,awayN,Number(mc?.historicalSample||0));
+  const sampleSize=Math.min(homeN,awayN,Number(mc?.historicalSample||Infinity));
 
   // P_model è indipendente dal mercato: usiamo il modello statistico locale
   // come fonte primaria. Frequenze e prediction API sono validazione/context,
@@ -915,7 +1077,7 @@ function applyEnrichedScore(c, av, pred) {
   if(!modelReady && probabilitySource==="none") modelProb=50;
 
   // Concordanza: serve come controllo, non come generatore della probabilità.
-  const vals=[mcProb,statProb,predictionProb,freqProb].filter(v=>v!=null);
+  const vals=[statProb,freqProb].filter(v=>v!=null);
   let agreement=72;
   if(vals.length>=2){
     const mean=vals.reduce((a,v)=>a+v,0)/vals.length;
@@ -923,7 +1085,9 @@ function applyEnrichedScore(c, av, pred) {
     agreement=clamp(100-mad*2.2,35,100);
   }
 
-  const implied=Number.isFinite(Number(c.odds))?100/Number(c.odds):null;
+  const commission=Number.isFinite(Number(process.env.BETFAIR_COMMISSION_RATE))?Number(process.env.BETFAIR_COMMISSION_RATE):4.5;
+  const o=Number(c.odds);
+  const implied=Number.isFinite(o)&&o>1 ? (1/(1+(o-1)*(1-commission/100)))*100 : null;
   const edge=(modelReady && implied!=null)?modelProb-implied:0;
 
   let valueScore=clamp(50+50*Math.tanh(edge/18),0,100);
@@ -947,23 +1111,20 @@ function applyEnrichedScore(c, av, pred) {
   let evidence=0;
   if(statProb!=null) evidence+=28;
   if(mcProb!=null) evidence+=18;
-  if(predictionProb!=null) evidence+=12;
   if(freqProb!=null) evidence+=6;
   if(Number.isFinite(c.form)) evidence+=7;
   if(matchup!=null||venue!=null) evidence+=5;
   if(c.h2h?.sample>=3) evidence+=4;
   if(c.standingNote) evidence+=3;
-  if(absence!=null) evidence+=2;
   if(Number.isFinite(Number(c.odds))) evidence+=5;
   const analysisSupport=clamp(evidence,0,100);
 
   const liq=liquidityScore(c);
   const type=marketType(c);
   let score =
-    modelProb*0.30 +
-    analysisSupport*0.25 +
+    modelProb*0.35 +
+    analysisSupport*0.30 +
     valueScore*0.20 +
-    agreement*0.10 +
     contextScore*0.10 +
     liq*0.05;
 
@@ -972,20 +1133,19 @@ function applyEnrichedScore(c, av, pred) {
   if(edge<0) score-=Math.min(12,Math.abs(edge)*0.35);
   if(agreement<55) score-=Math.min(10,(55-agreement)*0.35);
   if(!modelReady) score=Math.min(score,42);
+  if(sampleSize<5) score=Math.min(score,35);
   if(sampleSize<3) score=Math.min(score,38);
   else if(sampleSize<5) score=Math.min(score,48);
   else if(sampleSize<8) score-=Math.min(5,(8-sampleSize)*0.55);
   if(analysisSupport<15) score=Math.min(score,38);
   else if(analysisSupport<25) score=Math.min(score,48);
   else if(analysisSupport<40) score-=Math.min(6,(40-analysisSupport)*0.18);
-  if(av && (av.home?.length||av.away?.length)) score-=Math.min(4,Math.abs((av.home?.length||0)-(av.away?.length||0))*0.5);
   score=clamp(score,0,100);
 
   const components=[
-    {name:'probabilità modello calibrata',weight:30,value:modelProb},
-    {name:'qualità dati',weight:25,value:analysisSupport},
+    {name:'probabilità modello',weight:35,value:modelProb},
+    {name:'qualità dati',weight:30,value:analysisSupport},
     {name:'valore quota Betfair',weight:20,value:valueScore},
-    {name:'concordanza fonti',weight:10,value:agreement},
     {name:'contesto e stabilità',weight:10,value:contextScore},
     {name:'liquidità Betfair',weight:5,value:liq}
   ];
@@ -994,14 +1154,14 @@ function applyEnrichedScore(c, av, pred) {
     prob:round(modelProb), edge:round(edge), score:round(score),
     topSelectionScore:round(score), analysisSupport:round(analysisSupport),
     analysisLimited:analysisSupport<40, modelAgreement:round(agreement),
-    probabilitySource, modelSample:sampleSize,
+    probabilitySource, modelSample:sampleSize, modelVersion:"V140-LeagueBaseline-DixonColes-Elo-MC",
     calibrationReliability:round(calibrated.reliability*100),
     modelReady, probabilityCalibrated:true,
     liquidity: c.liquidity!=null?Number(c.liquidity):null,
     scoreComponents:components.map(x=>({...x,value:round(x.value)})),
     absence:absence==null?0:round(absence), pred:predictionProb==null?0:round(predictionProb),
     monteCarlo:mc||null, eloHome:mc?.eloHome??null, eloAway:mc?.eloAway??null,
-    marketType:type, valueScore:round(valueScore), contextScore:round(contextScore)
+    marketType:type, valueScore:round(valueScore), contextScore:round(contextScore), topEligible:Boolean(modelReady && sampleSize>=5 && analysisSupport>=55 && Number(c.quoteFreshnessScore||0)>=45)
   };
 }
 
@@ -1441,7 +1601,7 @@ async function getOddsLeaguesCatalog(apiKey) {
 }
 
 const LEAGUE_SEARCH_HINTS = {
-  SA:{includes:["serie a"],excludes:["women","u19","u20","u21","primavera","serie a2","serie b"]}, PL:{includes:["premier league"],excludes:["women","u18","u21","u23"]}, PD:{includes:["la liga"],excludes:["women","segunda","liga 2","u19"]}, BL1:{includes:["bundesliga"],excludes:["women","2. bundesliga","bundesliga 2","u19"]}, FL1:{includes:["ligue 1"],excludes:["women","ligue 2"]}, PPL:{includes:["primeira liga","liga portugal"],excludes:["women","2"]}, DED:{includes:["eredivisie"],excludes:["women","keuken","2"]},
+  SA:{includes:["serie a"],excludes:["women","u19","u20","u21","primavera","serie a2","serie b"]}, SB:{includes:["serie b"],excludes:["women","primavera","serie a","serie c","serie d"]}, PL:{includes:["premier league"],excludes:["women","u18","u21","u23"]}, PD:{includes:["la liga"],excludes:["women","segunda","liga 2","u19"]}, BL1:{includes:["bundesliga"],excludes:["women","2. bundesliga","bundesliga 2","u19"]}, FL1:{includes:["ligue 1"],excludes:["women","ligue 2"]}, PPL:{includes:["primeira liga","liga portugal"],excludes:["women","2"]}, DED:{includes:["eredivisie"],excludes:["women","keuken","2"]},
   BEL1:{includes:["pro league"],excludes:["women","challenger","second","2"]}, SCO1:{includes:["premiership"],excludes:["women","championship","league one"]}, AUT1:{includes:["bundesliga"],excludes:["women","2."]}, SUI1:{includes:["super league"],excludes:["women","challenge"]}, TUR1:{includes:["super lig"],excludes:["women","1. lig","2. lig"]}, GRE1:{includes:["super league"],excludes:["women","2"]}, DEN1:{includes:["superliga"],excludes:["women","1st division"]}, SWE1:{includes:["allsvenskan"],excludes:["women"]}, NOR1:{includes:["eliteserien"],excludes:["women","1. divisjon"]}, POL1:{includes:["ekstraklasa"],excludes:["women","1 liga"]}, CZE1:{includes:["first league"],excludes:["women","second"]}, CRO1:{includes:["hnl"],excludes:["women","2"]}, SRB1:{includes:["super liga"],excludes:["women","prva liga"]}, ROU1:{includes:["liga 1"],excludes:["women","liga 2"]}, UKR1:{includes:["premier league"],excludes:["women","first league"]}, HUN1:{includes:["nemzeti bajnoksag i","nb i"],excludes:["women","nb ii"]}, SVK1:{includes:["super liga"],excludes:["women","2. liga"]}, SVN1:{includes:["prva liga"],excludes:["women","2."]}, BUL1:{includes:["first league"],excludes:["women","second"]}, CYP1:{includes:["first division"],excludes:["women","second"]}, ISR1:{includes:["premier league"],excludes:["women","national league"]}, IRL1:{includes:["premier division"],excludes:["women","first division"]}, ISL1:{includes:["besta-deild"],excludes:["women"]}, FIN1:{includes:["veikkausliiga"],excludes:["women"]}, BIH1:{includes:["premier league"],excludes:["women","first league"]}, ALB1:{includes:["kategoria superiore"],excludes:["women","first division"]}, MKD1:{includes:["first league"],excludes:["women","second"]}, GEO1:{includes:["erovnuli liga"],excludes:["women"]}, ARM1:{includes:["premier league"],excludes:["women","first league"]}, AZE1:{includes:["premier league"],excludes:["women","first division"]}, MDA1:{includes:["super liga"],excludes:["women","division a"]}, MLT1:{includes:["premier league"],excludes:["women","challenge league"]}, WAL1:{includes:["cymru premier"],excludes:["women"]}, NIR1:{includes:["premiership"],excludes:["women","championship"]}, EST1:{includes:["meistriliiga"],excludes:["women","esiliiga"]}, LAT1:{includes:["virsliga"],excludes:["women"]}, LTU1:{includes:["a lyga"],excludes:["women","i lyga"]}, LUX1:{includes:["national division"],excludes:["women"]},
   CL:{includes:["champions league"],excludes:["women","qualif","u19","youth"]}, EL:{includes:["europa league"],excludes:["women","qualif","youth"]}, ECL:{includes:["conference league"],excludes:["women","qualif","youth"]},
   BRA1:{includes:["serie a"],excludes:["women","serie b","serie c","serie d"]}, ARG1:{includes:["liga profesional","primera division"],excludes:["women","primera nacional","primera b"]}, COL1:{includes:["primera a","categoria primera a"],excludes:["women","primera b"]}, CHI1:{includes:["primera division"],excludes:["women","primera b"]}, URU1:{includes:["primera division"],excludes:["women","segunda"]}, ECU1:{includes:["liga pro"],excludes:["women","serie b"]}, PER1:{includes:["liga 1"],excludes:["women","liga 2"]}, PAR1:{includes:["primera division"],excludes:["women","intermedia"]}, BOL1:{includes:["division profesional"],excludes:["women","segunda"]}, VEN1:{includes:["primera division"],excludes:["women","segunda"]}, MLS1:{includes:["mls"],excludes:["women","next pro"]}, JPN1:{includes:["j1 league"],excludes:["women","j2","j3"]}
@@ -1469,7 +1629,7 @@ function resolveLeagueSlug(code, staticGuess, catalog, diagnostics) {
 
 function oddsLeagueSlug(code) {
   return {
-    SA:"italy-serie-a", PL:"england-premier-league", PD:"spain-la-liga", BL1:"germany-bundesliga", FL1:"france-ligue-1", PPL:"portugal-primeira-liga", DED:"netherlands-eredivisie",
+    SA:"italy-serie-a", SB:"italy-serie-b", PL:"england-premier-league", PD:"spain-la-liga", BL1:"germany-bundesliga", FL1:"france-ligue-1", PPL:"portugal-primeira-liga", DED:"netherlands-eredivisie",
     BEL1:"belgium-first-division-a", SCO1:"scotland-premiership", AUT1:"austria-bundesliga", SUI1:"switzerland-super-league", TUR1:"turkey-super-lig", GRE1:"greece-super-league", DEN1:"denmark-superliga", SWE1:"sweden-allsvenskan", NOR1:"norway-eliteserien", POL1:"poland-ekstraklasa", CZE1:"czech-republic-first-league", CRO1:"croatia-hnl", SRB1:"serbia-super-liga", ROU1:"romania-liga-1", UKR1:"ukraine-premier-league", HUN1:"hungary-nb-i", SVK1:"slovakia-super-liga", SVN1:"slovenia-prva-liga", BUL1:"bulgaria-first-league", CYP1:"cyprus-first-division", ISR1:"israel-premier-league", IRL1:"ireland-premier-division", ISL1:"iceland-urvalsdeild", FIN1:"finland-veikkausliiga", BIH1:"bosnia-premier-league", ALB1:"albania-kategoria-superiore", MKD1:"north-macedonia-first-league", GEO1:"georgia-erovnuli-liga", ARM1:"armenia-premier-league", AZE1:"azerbaijan-premier-league", MDA1:"moldova-super-liga", MLT1:"malta-premier-league", WAL1:"wales-cymru-premier", NIR1:"northern-ireland-premiership", EST1:"estonia-meistriliiga", LAT1:"latvia-virsliga", LTU1:"lithuania-a-lyga", LUX1:"luxembourg-national-division",
     CL:"uefa-champions-league", EL:"uefa-europa-league", ECL:"uefa-europa-conference-league",
     BRA1:"brazil-serie-a", ARG1:"argentina-primera-division", COL1:"colombia-primera-a", CHI1:"chile-primera-division", URU1:"uruguay-primera-division", ECU1:"ecuador-liga-pro", PER1:"peru-liga-1", PAR1:"paraguay-primera-division", BOL1:"bolivia-division-profesional", VEN1:"venezuela-primera-division", MLS1:"usa-mls", JPN1:"japan-j1-league"
@@ -1543,6 +1703,7 @@ async function loadBetfairSnapshot(supaUrl, serviceKey) {
         status:r.status,
         backPrice:bestBackForRunner(r),
         backSize:bestBackSizeForRunner(r),
+        layPrice:(()=>{const xs=Array.isArray(r?.ex?.availableToLay)?r.ex.availableToLay:[];const p=xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x));return p.length?Math.min(...p):null;})(),
         name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r?.selectionId))?.runnerName:null)||String(r.selectionId)
       }));
       const item={marketId:String(m.marketId),marketName:name,event:m.event||null,competition:m.competition||null,receivedAt:book.received_at||m.received_at,runners};
@@ -1613,12 +1774,12 @@ function extractBetfairOdds(markets, requestedMarket="all", homeTeamName="", awa
         if(/\bover\b/i.test(r.name)) value=`Over ${line.toFixed(1)}`;
         else if(/\bunder\b/i.test(r.name)) value=`Under ${line.toFixed(1)}`;
       }
-      if(value) out.push({value,odd,bookmaker:"Betfair Exchange",liquidity:r.backSize??null,marketId:m.marketId});
+      if(value){const ageMin=m.receivedAt?Math.max(0,(Date.now()-new Date(m.receivedAt).getTime())/60000):Infinity;const layPrice=Number(r.layPrice);const spread=Number.isFinite(layPrice)&&layPrice>odd?layPrice-odd:null;out.push({value,odd,bookmaker:"Betfair Exchange",liquidity:r.backSize??null,marketId:m.marketId,receivedAt:m.receivedAt||null,quoteAgeMin:ageMin,quoteFreshnessScore:quoteFreshnessScore(ageMin),quoteSpread:spread});}
     }
   }
   // Una sola quota BACK per esito: prendiamo la migliore disponibile.
   const best=new Map();
-  for(const x of out){ const old=best.get(x.value); if(!old||x.odd>old.odd) best.set(x.value,x); }
+  for(const x of out){const old=best.get(x.value);if(!old||x.quoteAgeMin<old.quoteAgeMin||(x.quoteAgeMin===old.quoteAgeMin&&x.odd>old.odd))best.set(x.value,x);}
   return [...best.values()];
 }
 
@@ -1741,13 +1902,10 @@ export function extractOdds(data, requestedMarket="all", requestedBookmaker="", 
     }
   }
 
-  // Ignore long-shot prices AND overly short prices: the app only considers
-  // odds between 1.50 (incluso) e 3.75. Sotto 1.50 il margine di guadagno
-  // Ã¨ troppo risicato per valere il rischio, anche quando il modello stima
-  // una probabilitÃ  alta.
-  // IMPORTANT: never replace the selected bookmaker with another book's price.
-  // If a bookmaker is selected, every returned quote must come from that book.
-  const filtered = out.filter(x => Number(x.odd) >= 1.5 && Number(x.odd) <= 3.75);
+  // V143: nessun limite artificiale 1.50-3.75. Una quota è valutata
+  // solo dal confronto tra probabilità stimata e probabilità implicita.
+  // IMPORTANT: se un bookmaker è selezionato, non viene sostituito da altri.
+  const filtered = out.filter(x => Number(x.odd) > 1);
   const best = new Map();
   for (const x of filtered) {
     const old=best.get(x.value);
@@ -1769,113 +1927,158 @@ function standingContext(name, standing) {
   return null;
 }
 
-function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTeamId, homeStanding, awayStanding) {
+function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
   const out = [];
-  const h = summarize(homeStats?.matches, homeStats?.teamId);
-  const a = summarize(awayStats?.matches, awayStats?.teamId);
-  const h2h = summarizeH2H(h2hMatches, homeTeamId, awayTeamId);
-  const homeNote = standingContext(homeStats?.teamName, homeStanding);
-  const awayNote = standingContext(awayStats?.teamName, awayStanding);
-  const standingNote = [homeNote, awayNote].filter(Boolean).join("; ") || null;
-
-  const lambdaH = avg(h.gfHome != null ? h.gfHome : h.gf, a.gaAway != null ? a.gaAway : a.ga);
-  const lambdaA = avg(a.gfAway != null ? a.gfAway : a.gf, h.gaHome != null ? h.gaHome : h.ga);
-  const total = lambdaH != null && lambdaA != null ? lambdaH + lambdaA : null;
-  const freq = marketFrequencies(homeStats?.matches, awayStats?.matches, homeStats?.teamId, awayStats?.teamId);
-  const fair = fairProbabilities(odds);
+  const h = summarize(homeStats?.matches, homeStats?.teamId, homeStats?.teamName);
+  const a = summarize(awayStats?.matches, awayStats?.teamId, awayStats?.teamName);
+  const standingNote = simpleStandingNote(homeStats?.teamName, homeStanding, awayStats?.teamName, awayStanding);
+  const last3 = [...(homeStats?.matches || []), ...(awayStats?.matches || [])]
+    .filter(m => Number.isFinite(m?.score?.fullTime?.home) && Number.isFinite(m?.score?.fullTime?.away));
 
   for (const o of odds) {
-    if (!(Number(o.odd) >= 1.5 && Number(o.odd) <= 3.75)) continue;
-    let pStat = null;
-    if (total != null) {
-      if (o.value === "Over 1.5") pStat = poissonAtLeast(total, 2) * 100;
-      else if (o.value === "Under 1.5") pStat = poissonAtMost(total, 1) * 100;
-      else if (o.value === "Over 2.5") pStat = poissonAtLeast(total, 3) * 100;
-      else if (o.value === "Under 2.5") pStat = poissonAtMost(total, 2) * 100;
-      else if (o.value === "Over 3.5") pStat = poissonAtLeast(total, 4) * 100;
-      else if (o.value === "Under 3.5") pStat = poissonAtMost(total, 3) * 100;
-      else if (o.value === "Over 4.5") pStat = poissonAtLeast(total, 5) * 100;
-      else if (o.value === "Under 4.5") pStat = poissonAtMost(total, 4) * 100;
-    }
-    if ((o.value === "Goal" || o.value === "No Goal") && lambdaH != null && lambdaA != null) {
-      const yes = (1 - Math.exp(-lambdaH)) * (1 - Math.exp(-lambdaA));
-      pStat = (o.value === "Goal" ? yes : 1 - yes) * 100;
-    }
-    if ((o.value === "1" || o.value === "X" || o.value === "2") && lambdaH != null && lambdaA != null) {
-      const probs = poisson1x2(lambdaH, lambdaA);
-      pStat = probs[o.value] * 100;
-    }
+    const odd = Number(o.odd);
+    if (!(odd > 1 && odd <= 4)) continue;
 
-    // Do not let a tiny historical sample create fake certainty.
-    const sampleSize = Math.max(
-      Array.isArray(homeStats?.matches) ? homeStats.matches.length : 0,
-      Array.isArray(awayStats?.matches) ? awayStats.matches.length : 0
-    );
-    const pFreq = sampleSize >= 5 ? (freq[o.value] ?? null) : null;
-    const pFair = fair[o.value] ?? (100 / o.odd);
-    let prob, confidence, probabilitySource;
-    if (pStat != null) {
-      prob = pStat; confidence = 0.88; probabilitySource = "stat";
-    } else if (pFreq != null) {
-      // La frequenza storica è solo un fallback descrittivo: non la
-      // promuoviamo a previsione forte quando manca il modello di gol.
-      prob = pFreq; confidence = 0.35; probabilitySource = "frequency";
-    } else {
-      prob = 50; confidence = 0.15; probabilitySource = "none";
-    }
+    const prob = simpleProbability(o.value, h, a, homeStanding, awayStanding);
+    if (!Number.isFinite(prob)) continue;
 
-    const edge = prob - (100 / o.odd);
-    const formBonus = (h.form!=null && a.form!=null) ? clamp((h.form + a.form) * 1.2, -5, 5) : 0;
+    const implied = 100 / odd;
+    const edge = prob - implied;
+    const formScore = simpleFormSupport(o.value, h, a);
+    const standingsScore = simpleStandingsSupport(o.value, homeStanding, awayStanding);
+    const valueScore = clamp(50 + edge * 3, 0, 100);
+    const score = clamp(prob * 0.45 + formScore * 0.25 + standingsScore * 0.10 + valueScore * 0.20, 0, 100);
 
-    // SCORE BASE: prima valutiamo la solidita' dello scenario, poi il valore
-    // della quota. La quota NON puo' trasformare un'analisi debole in un TOP.
-    const analysisParts=[];
-    if (pStat != null) analysisParts.push([55, pStat]);
-    if (pFreq != null) analysisParts.push([20, pFreq]);
-    if (h.form!=null && a.form!=null) {
-      const formSignal = clamp(50 + ((h.form + a.form) * 4.5), 0, 100);
-      analysisParts.push([15, formSignal]);
-    }
-    if (h2h?.sample >= 2) {
-      let h2hSignal = 50;
-      if (o.value === "1") h2hSignal = 50 + (h2h.homeWins / h2h.sample) * 50;
-      else if (o.value === "2") h2hSignal = 50 + (h2h.awayWins / h2h.sample) * 50;
-      else if (o.value === "X") h2hSignal = 50 + (h2h.draws / h2h.sample) * 50;
-      else if (o.value === "Goal") h2hSignal = h2h.bttsRate ?? 50;
-      else if (o.value === "No Goal") h2hSignal = 100 - (h2h.bttsRate ?? 50);
-      else if (String(o.value).startsWith("Over")) h2hSignal = h2h.overRate ?? 50;
-      else if (String(o.value).startsWith("Under")) h2hSignal = 100 - (h2h.overRate ?? 50);
-      analysisParts.push([10, clamp(h2hSignal,0,100)]);
-    }
-    const analysisWeight=analysisParts.reduce((a,x)=>a+x[0],0);
-    const analysisScore=analysisWeight ? analysisParts.reduce((a,x)=>a+x[0]*x[1],0)/analysisWeight : 35;
-
-    // La PROBABILITÃ Ã¨ il segnale principale per il ranking.
-    // La quota serve per misurare il valore (edge), non per far salire
-    // artificialmente una previsione meno probabile.
-    const valueScore = clamp(50 + 50 * Math.tanh(edge / 20), 0, 100);
-    const probabilityScore = clamp(prob, 0, 100);
-    // Ranking: probabilitÃ  60%, supporto analitico 25%, valore quota 15%.
-    // In questo modo un esito molto probabile e ben supportato precede
-    // normalmente una quota alta ma meno probabile.
-    let score = probabilityScore * 0.60 + analysisScore * 0.25 + valueScore * 0.15;
-    // Se non abbiamo dati analitici reali, non consentiamo comunque una
-    // promozione automatica dovuta alla sola quota.
-    if (analysisWeight < 35) score = Math.min(score, Math.max(52, probabilityScore * 0.75));
-    score = clamp(score, 0, 100);
+    const sample = Math.min(h.sample || 0, a.sample || 0);
+    const quoteFreshness = Number.isFinite(Number(o.quoteFreshnessScore)) ? Number(o.quoteFreshnessScore) : 100;
+    const topEligible = sample >= 3 && edge >= 2 && score >= 55;
+    const reason = simpleReason(o.value, odd, prob, edge, h, a, homeStanding, awayStanding, standingNote);
 
     out.push({
-      market: marketLabel(o.value), odds: o.odd, bookmaker: o.bookmaker || null, prob: round(prob), edge: round(edge),
-      form: round(formBonus), absence: 0, pred: 0, confidence: round(confidence * 100),
-      homeForm: h.form==null?null:round(h.form), awayForm: a.form==null?null:round(a.form),
-      pStat: pStat == null ? null : round(pStat), pFreq: pFreq == null ? null : round(pFreq),
-      probabilitySource, modelSample: sampleSize, pFair: round(pFair), liquidity: o.liquidity ?? null, score: round(score),
-      reason: buildSimpleReason(o.value, prob, edge, pStat, pFreq, o.odd, {...o, homeName: homeStats?.teamName, awayName: awayStats?.teamName}, homeStats, awayStats, h2h, standingNote),
-      h2h: h2h ? { sample:h2h.sample, homeWins:h2h.homeWins, draws:h2h.draws, awayWins:h2h.awayWins, overRate:h2h.overRate, bttsRate:h2h.bttsRate } : null,
-      standingNote: standingNote
+      market: marketLabel(o.value), odds: odd, bookmaker: o.bookmaker || "Betfair Exchange",
+      quoteAgeMin:o.quoteAgeMin ?? null, quoteFreshnessScore:quoteFreshness,
+      quoteSpread:o.quoteSpread ?? null, liquidity:o.liquidity ?? null,
+      prob: round(prob), edge: round(edge), pStat: round(prob), pFreq: null,
+      pFair: round(implied), probabilitySource:"simple", modelSample:sample,
+      form: round((h.form ?? 0) - (a.form ?? 0)), homeForm: h.form == null ? null : round(h.form), awayForm: a.form == null ? null : round(a.form),
+      confidence: round(score), score: round(score), topSelectionScore: round(score),
+      analysisSupport: round((formScore + standingsScore) / 2), valueScore: round(valueScore),
+      modelReady: sample >= 3, topEligible,
+      modelVersion:"V148-Semplice-Classifica-3Partite-Betfair-Max4",
+      standingNote, homeStanding, awayStanding,
+      recentForm: {home:h.form, away:a.form, homeMatches:h.sample, awayMatches:a.sample},
+      reason,
+      fieldAnalysis:{reason, confidence:round(score), confidenceLabel:score>=75?"Alta":score>=60?"Media":"Bassa", warnings:topEligible?[]:["Quota o dati recenti non abbastanza favorevoli per il TOP"]}
     });
   }
   return out;
+}
+
+function simpleTeamStrength(standing, form) {
+  const pos = Number(standing?.position), total = Number(standing?.totalTeams);
+  const standingScore = Number.isFinite(pos) && Number.isFinite(total) && total > 1 ? clamp((total - pos) / (total - 1), 0, 1) : 0.5;
+  const formScore = Number.isFinite(form) ? clamp(form / 3, 0, 1) : 0.5;
+  return standingScore * 0.55 + formScore * 0.45;
+}
+
+function simpleProbability(value, h, a, hs, as) {
+  const homeStrength = simpleTeamStrength(hs, h.form);
+  const awayStrength = simpleTeamStrength(as, a.form);
+  const diff = homeStrength - awayStrength;
+  const m = String(value || "");
+
+  if (m === "1" || m === "X" || m === "2") {
+    const draw = clamp(30 - Math.abs(diff) * 10, 23, 31);
+    const homeShare = clamp(0.50 + diff * 0.65 + 0.08, 0.12, 0.88);
+    const remaining = 100 - draw;
+    const home = remaining * homeShare;
+    const away = remaining - home;
+    return m === "1" ? home : m === "2" ? away : draw;
+  }
+
+  const rows = [...(h._recentRows || []), ...(a._recentRows || [])];
+  if (!rows.length) return null;
+  const valid = rows.filter(r => Number.isFinite(r.total));
+  if (!valid.length) return null;
+  if (m === "Goal" || m === "No Goal") {
+    const rate = valid.filter(r => r.btts).length / valid.length;
+    const p = clamp(50 + (rate - 0.5) * 70, 15, 85);
+    return m === "Goal" ? p : 100 - p;
+  }
+  if (m === "Over 2.5" || m === "Under 2.5") {
+    const rate = valid.filter(r => r.total >= 3).length / valid.length;
+    const p = clamp(50 + (rate - 0.5) * 70, 15, 85);
+    return m.startsWith("Over") ? p : 100 - p;
+  }
+  if (m === "Over 3.5" || m === "Under 3.5") {
+    const rate = valid.filter(r => r.total >= 4).length / valid.length;
+    const p = clamp(50 + (rate - 0.5) * 70, 12, 88);
+    return m.startsWith("Over") ? p : 100 - p;
+  }
+  return null;
+}
+
+function simpleFormSupport(value, h, a) {
+  const m = String(value || "");
+  const diff = (h.form ?? 1.5) - (a.form ?? 1.5);
+  if (m === "1 (Casa)" || m === "1") return clamp(50 + diff * 18, 0, 100);
+  if (m === "2 (Trasferta)" || m === "2") return clamp(50 - diff * 18, 0, 100);
+  if (m === "X (Pareggio)" || m === "X") return clamp(65 - Math.abs(diff) * 20, 0, 100);
+  const rows=[...(h._recentRows||[]),...(a._recentRows||[])];
+  if (!rows.length) return 50;
+  if (m === "Goal") return pct(rows.filter(r=>r.btts).length, rows.length);
+  if (m === "No Goal") return 100-pct(rows.filter(r=>r.btts).length, rows.length);
+  if (m === "Over 2.5") return pct(rows.filter(r=>r.total>=3).length, rows.length);
+  if (m === "Under 2.5") return pct(rows.filter(r=>r.total<=2).length, rows.length);
+  if (m === "Over 3.5") return pct(rows.filter(r=>r.total>=4).length, rows.length);
+  if (m === "Under 3.5") return pct(rows.filter(r=>r.total<=3).length, rows.length);
+  return 50;
+}
+
+function simpleStandingsSupport(value, hs, as) {
+  const hp=simpleStandingPct(hs), ap=simpleStandingPct(as), diff=hp-ap;
+  const m=String(value||"");
+  if (m === "1 (Casa)" || m === "1") return clamp(50 + diff*45,0,100);
+  if (m === "2 (Trasferta)" || m === "2") return clamp(50 - diff*45,0,100);
+  if (m === "X (Pareggio)" || m === "X") return clamp(70 - Math.abs(diff)*35,0,100);
+  return 50;
+}
+
+function simpleStandingPct(s) {
+  const p=Number(s?.position), n=Number(s?.totalTeams);
+  return Number.isFinite(p)&&Number.isFinite(n)&&n>1 ? clamp((n-p)/(n-1),0,1) : 0.5;
+}
+
+function simpleStandingNote(homeName, hs, awayName, as) {
+  const bits=[];
+  if (hs?.position && hs?.totalTeams) bits.push(`${homeName} è ${hs.position}ª su ${hs.totalTeams}`);
+  if (as?.position && as?.totalTeams) bits.push(`${awayName} è ${as.position}º su ${as.totalTeams}`);
+  return bits.length ? bits.join("; ") : null;
+}
+
+function simpleReason(value, odd, prob, edge, h, a, hs, as, standingNote) {
+  const home=h.teamName || "La squadra di casa", away=a.teamName || "la squadra ospite";
+  const last=(team)=>`${team.form==null?"":`forma ultime 3: ${team.form.toFixed(1)} punti di media`}`;
+  const parts=[];
+  if (standingNote) parts.push(standingNote);
+  if (value === "1" || value === "1 (Casa)") parts.push(`${home} ha una situazione recente migliore rispetto a ${away}: ${last(h)}`);
+  else if (value === "2" || value === "2 (Trasferta)") parts.push(`${away} ha una situazione recente migliore rispetto a ${home}: ${last(a)}`);
+  else if (value === "X" || value === "X (Pareggio)") parts.push(`Le ultime 3 partite mostrano un equilibrio tra le due squadre`);
+  else parts.push(`Il dato delle ultime 3 partite delle due squadre sostiene questo mercato`);
+  if (edge >= 5) parts.push(`la quota ${odd.toFixed(2)} offre un margine stimato di ${edge.toFixed(1)} punti percentuali rispetto alla probabilità calcolata`);
+  else parts.push(`la quota ${odd.toFixed(2)} non offre un margine abbastanza ampio`);
+  return parts.slice(0,3).join(". ") + ".";
+}
+
+function finalizeSimpleCandidates(candidates) {
+  const out = candidates.map(c => ({
+    ...c,
+    topEligible: Boolean(c.topEligible),
+    analysisLimited: !c.topEligible,
+    modelAgreement: null
+  }));
+  out.sort((a,b)=>Number(b.score||0)-Number(a.score||0) || Number(b.edge||0)-Number(a.edge||0));
+  return {candidates:out.slice(0,120), requests:0};
 }
 
 function h2hSentence(value, home, away, h2h) {
@@ -2020,35 +2223,30 @@ function summarizeH2H(matches, homeTeamId, awayTeamId) {
   };
 }
 
-function summarize(ms, teamId) {
+function summarize(ms, teamId, teamName) {
   const rows = Array.isArray(ms) ? ms.filter(m => Number.isFinite(m?.score?.fullTime?.home) && Number.isFinite(m?.score?.fullTime?.away)) : [];
-  if (!rows.length) return { gf:null,ga:null,gfHome:null,gaHome:null,gfAway:null,gaAway:null,form:null,sample:0,homeSample:0,awaySample:0 };
-  const ordered = [...rows].sort((a,b)=>new Date(a?.utcDate||0)-new Date(b?.utcDate||0));
-  let gf=0,ga=0,weightSum=0,homeGF=0,homeGA=0,homeW=0,awayGF=0,awayGA=0,awayW=0,points=0,pointsW=0;
-  const recent = ordered.slice(-8);
-  recent.forEach((m,idx)=>{
-    const hg=m.score.fullTime.home, ag=m.score.fullTime.away;
-    // Peso crescente: le ultime partite contano di piÃ¹, ma non cancelliamo lo storico.
-    const w=1 + (idx/(Math.max(1,recent.length-1))) * 0.75;
-    const isHome = m.homeTeam?.id === teamId;
-    const isAway = m.awayTeam?.id === teamId;
-    if(!isHome && !isAway) return;
-    const gfor=isHome?hg:ag, gagain=isHome?ag:hg;
-    gf += gfor*w; ga += gagain*w; weightSum += w;
-    if(isHome){homeGF += hg*w; homeGA += ag*w; homeW += w;}
-    if(isAway){awayGF += ag*w; awayGA += hg*w; awayW += w;}
-    if(teamId){
-      const p=m.score.winner==='DRAW'?1:((m.score.winner==='HOME'&&isHome)||(m.score.winner==='AWAY'&&isAway)?3:0);
-      points += p*w; pointsW += w;
-    }
-  });
-  return {
-    gf:weightSum?gf/weightSum:null, ga:weightSum?ga/weightSum:null,
-    gfHome:homeW?homeGF/homeW:null, gaHome:homeW?homeGA/homeW:null,
-    gfAway:awayW?awayGF/awayW:null, gaAway:awayW?awayGA/awayW:null,
-    form:pointsW?points/pointsW:null,
-    sample:recent.length, homeSample:ordered.filter(m=>m.homeTeam?.id===teamId).length, awaySample:ordered.filter(m=>m.awayTeam?.id===teamId).length
+  const targetId = teamId != null ? String(teamId) : null;
+  const targetName = normalize(teamName || "");
+  const belongs = (m) => {
+    const hid = m?.homeTeam?.id != null ? String(m.homeTeam.id) : null;
+    const aid = m?.awayTeam?.id != null ? String(m.awayTeam.id) : null;
+    if (targetId && (hid === targetId || aid === targetId)) return true;
+    if (!targetName) return false;
+    return normalize(m?.homeTeam?.name || m?.homeTeam?.shortName || "") === targetName || normalize(m?.awayTeam?.name || m?.awayTeam?.shortName || "") === targetName;
   };
+  const ordered = rows.filter(belongs).sort((a,b)=>new Date(a?.utcDate||0)-new Date(b?.utcDate||0)).slice(-3);
+  if (!ordered.length) return {gf:null,ga:null,gfHome:null,gaHome:null,gfAway:null,gaAway:null,form:null,sample:0,homeSample:0,awaySample:0,_recentRows:[],teamName:teamName||null};
+  let gf=0,ga=0,points=0;
+  for(const m of ordered){
+    const hg=m.score.fullTime.home, ag=m.score.fullTime.away;
+    const isHome=targetId ? String(m.homeTeam?.id)===targetId : normalize(m.homeTeam?.name||m.homeTeam?.shortName||"")===targetName;
+    const isAway=targetId ? String(m.awayTeam?.id)===targetId : normalize(m.awayTeam?.name||m.awayTeam?.shortName||"")===targetName;
+    if(!isHome&&!isAway) continue;
+    const gfor=isHome?hg:ag, gagain=isHome?ag:hg;
+    gf+=gfor; ga+=gagain; points+=gfor>gagain?3:gfor===gagain?1:0;
+  }
+  const validCount=ordered.length;
+  return {gf:validCount?gf/validCount:null,ga:validCount?ga/validCount:null,gfHome:null,gaHome:null,gfAway:null,gaAway:null,form:validCount?points/validCount:null,sample:validCount,homeSample:ordered.filter(m=>targetId?String(m.homeTeam?.id)===targetId:normalize(m.homeTeam?.name||m.homeTeam?.shortName||"")===targetName).length,awaySample:ordered.filter(m=>targetId?String(m.awayTeam?.id)===targetId:normalize(m.awayTeam?.name||m.awayTeam?.shortName||"")===targetName).length,_recentRows:ordered.map(m=>({total:m.score.fullTime.home+m.score.fullTime.away,btts:m.score.fullTime.home>0&&m.score.fullTime.away>0})),teamName:teamName||ordered[0]?.homeTeam?.name||ordered[0]?.awayTeam?.name||null};
 }
 function avg(a,b){return a!=null&&b!=null?(a+b)/2:null}
 function round(x){return Math.round(x*10)/10}
