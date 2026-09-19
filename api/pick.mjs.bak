@@ -296,46 +296,18 @@ async function handler(req, res) {
     const key=`${normalizePair(f.homeTeam?.name||f.homeTeam?.shortName,f.awayTeam?.name||f.awayTeam?.shortName)}|${localDate(f.utcDate)}`;
     if(!uniqueMap.has(key)||f._source==="football-data") uniqueMap.set(key,f);
   }
-  // V128: Betfair è la sorgente primaria per il perimetro dei match.
-  // Prima usavamo oddsByPair come filtro obbligatorio: se Odds-API non
-  // riconosceva una partita, quella partita spariva anche se era presente
-  // nel Bridge Betfair. Ora costruiamo anche fixture sintetiche dai market
-  // Betfair e usiamo Odds-API solo come arricchimento quando disponibile.
-  for (const [pairKey, markets] of betfairSnapshot.fixtures) {
-    const sample = markets?.[0];
-    const eventName = String(sample?.event?.name || '');
-    const parts = eventName.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
-    if (parts.length < 2) continue;
-    const home = parts[0].trim();
-    const away = parts.slice(1).join(' ').trim();
-    const key = normalizePair(home, away);
-    if (livePairs.has(key)) continue;
-    if (!uniqueMap.has(key)) {
-      uniqueMap.set(key, {
-        id: `betfair-${sample?.event?.id || key}`,
-        _source: 'betfair',
-        _code: sample?.competition?.id || sample?.competition?.name || 'BETFAIR',
-        homeTeam: { name: home },
-        awayTeam: { name: away },
-        utcDate: sample?.event?.openDate || sample?.event?.marketStartTime || sample?.marketStartTime || null,
-        competition: { name: sample?.competition?.name || 'Betfair' },
-        _betfairOnly: true
-      });
-    }
-  }
-
   const unique=[...uniqueMap.values()];
-  const livePairsFinal=new Set(uniqueLive.map(x=>normalizePair(x.home,x.away)));
+  const livePairs=new Set(uniqueLive.map(x=>normalizePair(x.home,x.away)));
 
   const candidates=[];
   const analyzedFixtureIds=new Set();
   const eligiblePool = unique.map(f=>{
     const home=f.homeTeam?.name||f.homeTeam?.shortName;
     const away=f.awayTeam?.name||f.awayTeam?.shortName;
-    const event=home&&away ? (oddsByPair.get(normalizePair(home,away)) || null) : null;
+    const event=home&&away ? oddsByPair.get(normalizePair(home,away)) : null;
     const betfair=findBestBetfairFixture(home,away,betfairSnapshot.fixtures);
     return {f,home,away,event,betfair};
-  }).filter(x=>x.home&&x.away&&x.betfair&&!livePairsFinal.has(normalizePair(x.home,x.away)));
+  }).filter(x=>x.home&&x.away&&x.event&&x.betfair&&!livePairs.has(normalizePair(x.home,x.away)));
 
   // In modalita' "Tutti i campionati selezionati" non prendiamo piu'
   // semplicemente i primi 30 eventi restituiti dal provider: l'ordine del feed
@@ -352,10 +324,10 @@ async function handler(req, res) {
       .map(x => ({...x, _priority: leaguePriority(x.event?.league)}))
       .sort((a,b) => b._priority - a._priority || new Date(a.f.utcDate||a.event?.date) - new Date(b.f.utcDate||b.event?.date));
     diagnostics.push({
-      provider:"betfair-primary-analysis-pool",
+      provider:"editorial-league-priority",
       pool:eligiblePool.length,
       selected:eligible.length,
-      rule:"tutte le partite presenti su Betfair; Odds-API solo arricchimento, non filtro",
+      rule:"tutte le partite disponibili; nessun cap a 30; priorita campionato solo come tie-break",
       topLeagues:eligible.slice(0,12).map(x=>x.event?.league?.name||x.event?.league?.slug).filter(Boolean)
     });
   } else {
@@ -378,7 +350,7 @@ async function handler(req, res) {
       // con centinaia di eventi il browser deve ricevere soprattutto i risultati.
       // Conserviamo invece gli errori e i casi senza mercati analizzabili.
       if(!markets.length) diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:0,bookmaker:"Betfair Exchange",marketIds:betfair.map(x=>x.marketId),error:"Nessun mercato BACK nel perimetro richiesto"});
-      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId});
+      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event.id,kickoff:f.utcDate||event.date,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId});
     } catch (e) {
       diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:`Errore interno analisi Betfair: ${e?.message||String(e)}`});
     }
