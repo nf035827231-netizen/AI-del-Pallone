@@ -21,7 +21,7 @@ async function handler(req, res) {
   const timeWindow = u.searchParams.get("timeWindow") || "all";
   if (!date) return res.status(400).json({ error: "Data mancante" });
 
-  const cacheKey = `${date}|${requestedCodes.join(",")}|${timeWindow}|${market}|source:simple-v148`;
+  const cacheKey = `${date}|${requestedCodes.join(",")}|${timeWindow}|${market}|source:simple-v149`;
   const cached = RESPONSE_CACHE.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return res.status(200).json({ ...cached.data, cached: true });
@@ -418,29 +418,35 @@ async function handler(req, res) {
     const homeStanding=(f.homeTeam?.id ? standingsByTeam.get(f.homeTeam.id) : null) || standingsByTeamName.get(homeNameKey) || null;
     const awayStanding=(f.awayTeam?.id ? standingsByTeam.get(f.awayTeam.id) : null) || standingsByTeamName.get(awayNameKey) || null;
     try {
-      // La partita è considerata ANALIZZATA anche senza quota: classifica +
-      // ultime 3 vengono comunque valutate. Senza quota non può però entrare
-      // nel TOP, perché manca il controllo del valore.
       analyzedFixtureIds.add(f.id);
       const extractedBetfair = extractBetfairOdds(betfair,market,home,away);
+      // V149: Betfair è usata esclusivamente per le quote BACK. Massimo 4.00.
+      // Per il modello servono davvero classifica + ultime 3 per entrambe:
+      // se uno dei due blocchi manca, la partita non viene candidata.
       const extracted = extractedBetfair.filter(o => Number(o?.odd) > 1 && Number(o?.odd) <= 4);
+      const hasLast3 = homeMatches.length >= 3 && awayMatches.length >= 3;
+      const hasStandings = Boolean(homeStanding && awayStanding);
+      if (!hasLast3 || !hasStandings) {
+        diagnostics.push({provider:"simple-analysis",league:f._code,fixture:`${home} - ${away}`,analyzedMarkets:0,error:"Dati insufficienti per il modello: servono classifica e ultime 3 partite di entrambe le squadre",homeRecent:homeMatches.length,awayRecent:awayMatches.length,homeStanding:Boolean(homeStanding),awayStanding:Boolean(awayStanding)});
+        continue;
+      }
       const oddsSource = extracted.length ? "Betfair Exchange" : null;
       const markets=buildMarkets(extracted,homeStats,awayStats,homeStanding,awayStanding);
-      if(!markets.length && !extracted.length) diagnostics.push({provider:"simple-analysis",league:f._code,fixture:`${home} - ${away}`,analyzedMarkets:0,error:"Partita analizzata ma nessuna quota disponibile: esclusa solo dal TOP"});
-      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:oddsSource||"—",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"dati non disponibili",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId,homeStanding,awayStanding});
+      if(!markets.length && !extracted.length) diagnostics.push({provider:"simple-analysis",league:f._code,fixture:`${home} - ${away}`,analyzedMarkets:0,error:"Nessuna quota BACK Betfair <= 4.00 disponibile"});
+      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:oddsSource||"—",statsSource:"football-data.org",_homeMatches:homeStats.matches,_awayMatches:awayStats.matches,_homeTeamId:homeStats.teamId,_awayTeamId:awayStats.teamId,homeStanding,awayStanding});
     } catch (e) {
       diagnostics.push({provider:"simple-analysis",league:f._code,fixture:`${home} - ${away}`,analyzedMarkets:0,error:`Errore interno analisi: ${e?.message||String(e)}`});
     }
   }
 
   const withRecent3 = candidates.filter(c => Number(c?.recentForm?.homeMatches||0) >= 3 && Number(c?.recentForm?.awayMatches||0) >= 3).length;
-  diagnostics.push({provider:'model-quality-gate',rule:'minimum 3 finished matches for BOTH teams for TOP; lookup by Football-Data ID OR normalized team name; simple model only; latest available odds accepted',candidatesBeforeEnrichment:candidates.length,withRecent3,minimumSample:3});
+  diagnostics.push({provider:'model-quality-gate',rule:'classifica + ultime 3 per entrambe obbligatorie; Betfair Exchange unica fonte quote BACK; massimo 4.00',candidatesBeforeEnrichment:candidates.length,withRecent3,minimumSample:3});
 
   // STEP 4: modello volutamente semplice. Nessuna API-Football, nessun ELO,
   // nessun Monte Carlo, nessun H2H e nessun infortunio entra nel punteggio.
   // Per ogni scenario contiamo solo: classifica + ultime 3 gare + quota.
   const enriched = finalizeSimpleCandidates(candidates);
-  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"edge >= 2 punti percentuali e score >= 55; usa l'ultima quota disponibile anche se non recente; Betfair Exchange unica fonte quote, massimo 4.00"});
+  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"TOP = migliori 3 scenari con classifica + ultime 3 + quota Betfair BACK <= 4.00; edge positivo preferito; ultima quota disponibile accettata"});
   const data={date,fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?30_000:90_000),data});
   res.setHeader("Cache-Control","no-store");
@@ -1905,7 +1911,7 @@ export function extractOdds(data, requestedMarket="all", requestedBookmaker="", 
   // V143: nessun limite artificiale 1.50-3.75. Una quota è valutata
   // solo dal confronto tra probabilità stimata e probabilità implicita.
   // IMPORTANT: se un bookmaker è selezionato, non viene sostituito da altri.
-  const filtered = out.filter(x => Number(x.odd) > 1);
+  const filtered = out.filter(x => Number(x.odd) > 1 && Number(x.odd) <= 4);
   const best = new Map();
   for (const x of filtered) {
     const old=best.get(x.value);
@@ -1951,7 +1957,7 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
 
     const sample = Math.min(h.sample || 0, a.sample || 0);
     const quoteFreshness = Number.isFinite(Number(o.quoteFreshnessScore)) ? Number(o.quoteFreshnessScore) : 100;
-    const topEligible = sample >= 3 && edge >= 2 && score >= 55;
+    const topEligible = sample >= 3 && edge > 0;
     const reason = simpleReason(o.value, odd, prob, edge, h, a, homeStanding, awayStanding, standingNote);
 
     out.push({
@@ -1964,11 +1970,11 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
       confidence: round(score), score: round(score), topSelectionScore: round(score),
       analysisSupport: round((formScore + standingsScore) / 2), valueScore: round(valueScore),
       modelReady: sample >= 3, topEligible,
-      modelVersion:"V148-Semplice-Classifica-3Partite-Betfair-Max4",
+      modelVersion:"V149-Classifica-3Partite-Betfair-Max4",
       standingNote, homeStanding, awayStanding,
       recentForm: {home:h.form, away:a.form, homeMatches:h.sample, awayMatches:a.sample},
       reason,
-      fieldAnalysis:{reason, confidence:round(score), confidenceLabel:score>=75?"Alta":score>=60?"Media":"Bassa", warnings:topEligible?[]:["Quota o dati recenti non abbastanza favorevoli per il TOP"]}
+      fieldAnalysis:{reason, confidence:round(score), confidenceLabel:score>=75?"Alta":score>=60?"Media":"Bassa", warnings:topEligible?[]:["Nessun valore positivo sufficiente rispetto alla quota"]}
     });
   }
   return out;
