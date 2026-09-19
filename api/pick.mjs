@@ -327,7 +327,29 @@ async function handler(req, res) {
     }
   }
 
-  const unique=[...uniqueMap.values()].filter(f=>timeWindowAllows(f.utcDate||f.event?.date, timeWindow));
+  const uniqueAll=[...uniqueMap.values()].filter(f=>timeWindowAllows(f.utcDate||f.event?.date, timeWindow));
+
+  // Filtro campionato: quando l'utente sceglie un torneo specifico, il filtro
+  // deve essere applicato al POOL che alimenta l'analisi, non solo alla UI.
+  // Le fixture sintetiche provenienti da Betfair possono non avere il codice
+  // interno SA/PL/etc., quindi confrontiamo anche il nome della competizione.
+  const unique = codes
+    ? uniqueAll.filter(f => {
+        const pairEvent = oddsByPair.get(normalizePair(f.homeTeam?.name||f.homeTeam?.shortName, f.awayTeam?.name||f.awayTeam?.shortName));
+        return requestedLeagueMatchesFixture(f, pairEvent, codes);
+      })
+    : uniqueAll;
+
+  if (codes) {
+    diagnostics.push({
+      provider: "selected-league-filter",
+      requested: codes,
+      before: uniqueAll.length,
+      after: unique.length,
+      removed: Math.max(0, uniqueAll.length - unique.length)
+    });
+  }
+
   const livePairsFinal=livePairs;
 
   const candidates=[];
@@ -412,6 +434,60 @@ function localTodayRome() {
 
 function h2hKey(idA, idB) {
   return [idA, idB].sort((x,y)=>String(x).localeCompare(String(y))).join("-");
+}
+
+function requestedLeagueMatchesFixture(fixture, oddsEvent, requestedCodes) {
+  const requested = new Set(requestedCodes || []);
+  if (!requested.size) return true;
+
+  // 1) Se la fixture arriva dall'endpoint specifico del campionato, il codice
+  //    interno è già la fonte più affidabile.
+  if (fixture?._code && requested.has(String(fixture._code).toUpperCase())) return true;
+
+  // 2) Se Odds-API conosce la stessa gara, usiamo la sua competizione.
+  const sources = [
+    fixture?.competition?.name, fixture?.competition?.slug,
+    oddsEvent?.league?.name, oddsEvent?.league?.slug,
+    fixture?._code
+  ].filter(Boolean).map(v => String(v).toLowerCase().replace(/_/g,'-'));
+  if (!sources.length) return false;
+
+  const text = sources.join(' | ');
+  return requested.some(code => competitionTextMatchesCode(text, code));
+}
+
+function competitionTextMatchesCode(text, code) {
+  const t = String(text || '').toLowerCase();
+  switch (String(code || '').toUpperCase()) {
+    case 'SA': return /italy|italia/.test(t) && /serie[\s_-]*a/.test(t) && !/serie[\s_-]*b|women|primavera/.test(t);
+    case 'PL': return /premier[\s_-]*league/.test(t) && /england|england's|inglese|uk/.test(t);
+    case 'PD': return /la[\s_-]*liga/.test(t) && /spain|españa|spagna/.test(t);
+    case 'BL1': return /bundesliga/.test(t) && /germany|deutschland|german/.test(t) && !/2\.?\s*bundesliga/.test(t);
+    case 'FL1': return /ligue[\s_-]*1/.test(t) && /france|francia|french/.test(t);
+    case 'PPL': return /primeira[\s_-]*liga|liga[\s_-]*portugal/.test(t) && /portugal/.test(t);
+    case 'DED': return /eredivisie/.test(t) && /netherlands|nederland|olanda/.test(t);
+    case 'BEL1': return /pro[\s_-]*league|first[\s_-]*division/.test(t) && /belgium|belgio/.test(t);
+    case 'SCO1': return /premiership/.test(t) && /scotland|scozia/.test(t);
+    case 'AUT1': return /bundesliga/.test(t) && /austria|österreich/.test(t);
+    case 'SUI1': return /super[\s_-]*league/.test(t) && /switzerland|svizzera/.test(t);
+    case 'TUR1': return /super[\s_-]*lig/.test(t) && /turkey|turchia/.test(t);
+    case 'GRE1': return /super[\s_-]*league/.test(t) && /greece|grecia/.test(t);
+    case 'DEN1': return /superliga/.test(t) && /denmark|danimarca/.test(t);
+    case 'SWE1': return /allsvenskan/.test(t);
+    case 'NOR1': return /eliteserien/.test(t);
+    case 'POL1': return /ekstraklasa/.test(t);
+    case 'CZE1': return /first[\s_-]*league/.test(t) && /czech|cechia/.test(t);
+    case 'CRO1': return /hnl/.test(t) && /croatia|croazia/.test(t);
+    case 'SRB1': return /super[\s_-]*liga/.test(t) && /serbia|serbia/.test(t);
+    case 'ROU1': return /liga[\s_-]*1/.test(t) && /romania|românia/.test(t);
+    case 'UKR1': return /premier[\s_-]*league/.test(t) && /ukraine|ucraina/.test(t);
+    case 'HUN1': return /nb[\s_-]*i|nemzeti/.test(t) && /hungary|ungheria/.test(t);
+    case 'SVK1': return /super[\s_-]*liga/.test(t) && /slovakia|slovacchia/.test(t);
+    case 'CL': return /champions[\s_-]*league/.test(t) && !/women|youth/.test(t);
+    case 'EL': return /europa[\s_-]*league/.test(t) && !/women|youth/.test(t);
+    case 'ECL': return /conference[\s_-]*league/.test(t) && !/women|youth/.test(t);
+    default: return false;
+  }
 }
 
 function inferFootballDataCode(event) {
