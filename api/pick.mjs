@@ -50,6 +50,10 @@ async function handler(req, res) {
     const slug = String(event?.league?.slug || '').toLowerCase().replace(/_/g,'-');
     const name = String(event?.league?.name || '').toLowerCase();
     const text = `${slug} ${name}`;
+    // Serie B italiana è una competizione esplicitamente supportata.
+    // Deve bypassare i filtri generici sulle seconde divisioni.
+    const isItalySerieB = /italy.*serie-b|serie-b.*italy|italian-serie-b|serie b/i.test(text);
+    if (isItalySerieB) return true;
     const excluded = /(women|woman|femmin|femen|femin|ladies|u17|u18|u19|u20|u21|u23|youth|reserve|reserves|junior|academy|amateur|regional|division-?2|division-?3|league-?two|league-?one|segunda|tercera|segunda-div|segunda-division|segunda-liga|primera-nacional|primera-b|primera-c|primera-nacional-b|national-league|championship|2\.\s*liga|3\.\s*liga|cup|copa|coppa|super-cup|supercup|friendly|friendlies|playoffs?)/i;
     if (excluded.test(text)) return false;
 
@@ -499,9 +503,9 @@ function inferFootballDataCode(event) {
 
 function normalizeLeague(x) {
   const s = String(x || "").trim().toUpperCase();
-  const map = { "135":"SA", "39":"PL", "140":"PD", "78":"BL1", "61":"FL1", "2":"CL", "88":"DED", "94":"PPL" };
+  const map = { "135":"SA", "136":"SB", "39":"PL", "140":"PD", "78":"BL1", "61":"FL1", "2":"CL", "88":"DED", "94":"PPL" };
   const allowed = [
-    "SA","PL","PD","BL1","FL1","PPL","DED","BEL1","SCO1","AUT1","SUI1","TUR1","GRE1","DEN1","SWE1","NOR1","POL1","CZE1","CRO1","SRB1","ROU1","UKR1","HUN1","SVK1",
+    "SA","SB","PL","PD","BL1","FL1","PPL","DED","BEL1","SCO1","AUT1","SUI1","TUR1","GRE1","DEN1","SWE1","NOR1","POL1","CZE1","CRO1","SRB1","ROU1","UKR1","HUN1","SVK1",
     "CL","EL","ECL","BRA1","ARG1","COL1","CHI1","URU1","ECU1","PER1","MLS1","JPN1"
   ];
   return map[s] || (allowed.includes(s) ? s : null);
@@ -539,7 +543,8 @@ function leaguePriority(league) {
   if (/champions-league|uefa-champions/.test(text)) return 1000;
   if (/europa-league|uefa-europa/.test(text)) return 980;
   if (/conference-league|uefa-conference/.test(text)) return 960;
-  if (/italy.*serie-a|serie-a.*italy|serie a/.test(text)) return 950;
+  if (/italy.*serie-a|serie-a.*italy|serie a/.test(text) && !/serie b/.test(text)) return 950;
+  if (/italy.*serie-b|serie-b.*italy|italian-serie-b|serie b/.test(text)) return 900;
   if (/england.*premier-league|premier-league.*england|premier league/.test(text)) return 940;
   if (/spain.*la-liga|la-liga.*spain|la liga/.test(text)) return 930;
   if (/germany.*bundesliga|bundesliga.*germany|bundesliga/.test(text) && !/2\.?\s*bundesliga/.test(text)) return 920;
@@ -1575,7 +1580,7 @@ async function getOddsLeaguesCatalog(apiKey) {
 }
 
 const LEAGUE_SEARCH_HINTS = {
-  SA:{includes:["serie a"],excludes:["women","u19","u20","u21","primavera","serie a2","serie b"]}, PL:{includes:["premier league"],excludes:["women","u18","u21","u23"]}, PD:{includes:["la liga"],excludes:["women","segunda","liga 2","u19"]}, BL1:{includes:["bundesliga"],excludes:["women","2. bundesliga","bundesliga 2","u19"]}, FL1:{includes:["ligue 1"],excludes:["women","ligue 2"]}, PPL:{includes:["primeira liga","liga portugal"],excludes:["women","2"]}, DED:{includes:["eredivisie"],excludes:["women","keuken","2"]},
+  SA:{includes:["serie a"],excludes:["women","u19","u20","u21","primavera","serie a2","serie b"]}, SB:{includes:["serie b"],excludes:["women","primavera","serie a","serie c","serie d"]}, PL:{includes:["premier league"],excludes:["women","u18","u21","u23"]}, PD:{includes:["la liga"],excludes:["women","segunda","liga 2","u19"]}, BL1:{includes:["bundesliga"],excludes:["women","2. bundesliga","bundesliga 2","u19"]}, FL1:{includes:["ligue 1"],excludes:["women","ligue 2"]}, PPL:{includes:["primeira liga","liga portugal"],excludes:["women","2"]}, DED:{includes:["eredivisie"],excludes:["women","keuken","2"]},
   BEL1:{includes:["pro league"],excludes:["women","challenger","second","2"]}, SCO1:{includes:["premiership"],excludes:["women","championship","league one"]}, AUT1:{includes:["bundesliga"],excludes:["women","2."]}, SUI1:{includes:["super league"],excludes:["women","challenge"]}, TUR1:{includes:["super lig"],excludes:["women","1. lig","2. lig"]}, GRE1:{includes:["super league"],excludes:["women","2"]}, DEN1:{includes:["superliga"],excludes:["women","1st division"]}, SWE1:{includes:["allsvenskan"],excludes:["women"]}, NOR1:{includes:["eliteserien"],excludes:["women","1. divisjon"]}, POL1:{includes:["ekstraklasa"],excludes:["women","1 liga"]}, CZE1:{includes:["first league"],excludes:["women","second"]}, CRO1:{includes:["hnl"],excludes:["women","2"]}, SRB1:{includes:["super liga"],excludes:["women","prva liga"]}, ROU1:{includes:["liga 1"],excludes:["women","liga 2"]}, UKR1:{includes:["premier league"],excludes:["women","first league"]}, HUN1:{includes:["nemzeti bajnoksag i","nb i"],excludes:["women","nb ii"]}, SVK1:{includes:["super liga"],excludes:["women","2. liga"]}, SVN1:{includes:["prva liga"],excludes:["women","2."]}, BUL1:{includes:["first league"],excludes:["women","second"]}, CYP1:{includes:["first division"],excludes:["women","second"]}, ISR1:{includes:["premier league"],excludes:["women","national league"]}, IRL1:{includes:["premier division"],excludes:["women","first division"]}, ISL1:{includes:["besta-deild"],excludes:["women"]}, FIN1:{includes:["veikkausliiga"],excludes:["women"]}, BIH1:{includes:["premier league"],excludes:["women","first league"]}, ALB1:{includes:["kategoria superiore"],excludes:["women","first division"]}, MKD1:{includes:["first league"],excludes:["women","second"]}, GEO1:{includes:["erovnuli liga"],excludes:["women"]}, ARM1:{includes:["premier league"],excludes:["women","first league"]}, AZE1:{includes:["premier league"],excludes:["women","first division"]}, MDA1:{includes:["super liga"],excludes:["women","division a"]}, MLT1:{includes:["premier league"],excludes:["women","challenge league"]}, WAL1:{includes:["cymru premier"],excludes:["women"]}, NIR1:{includes:["premiership"],excludes:["women","championship"]}, EST1:{includes:["meistriliiga"],excludes:["women","esiliiga"]}, LAT1:{includes:["virsliga"],excludes:["women"]}, LTU1:{includes:["a lyga"],excludes:["women","i lyga"]}, LUX1:{includes:["national division"],excludes:["women"]},
   CL:{includes:["champions league"],excludes:["women","qualif","u19","youth"]}, EL:{includes:["europa league"],excludes:["women","qualif","youth"]}, ECL:{includes:["conference league"],excludes:["women","qualif","youth"]},
   BRA1:{includes:["serie a"],excludes:["women","serie b","serie c","serie d"]}, ARG1:{includes:["liga profesional","primera division"],excludes:["women","primera nacional","primera b"]}, COL1:{includes:["primera a","categoria primera a"],excludes:["women","primera b"]}, CHI1:{includes:["primera division"],excludes:["women","primera b"]}, URU1:{includes:["primera division"],excludes:["women","segunda"]}, ECU1:{includes:["liga pro"],excludes:["women","serie b"]}, PER1:{includes:["liga 1"],excludes:["women","liga 2"]}, PAR1:{includes:["primera division"],excludes:["women","intermedia"]}, BOL1:{includes:["division profesional"],excludes:["women","segunda"]}, VEN1:{includes:["primera division"],excludes:["women","segunda"]}, MLS1:{includes:["mls"],excludes:["women","next pro"]}, JPN1:{includes:["j1 league"],excludes:["women","j2","j3"]}
@@ -1603,7 +1608,7 @@ function resolveLeagueSlug(code, staticGuess, catalog, diagnostics) {
 
 function oddsLeagueSlug(code) {
   return {
-    SA:"italy-serie-a", PL:"england-premier-league", PD:"spain-la-liga", BL1:"germany-bundesliga", FL1:"france-ligue-1", PPL:"portugal-primeira-liga", DED:"netherlands-eredivisie",
+    SA:"italy-serie-a", SB:"italy-serie-b", PL:"england-premier-league", PD:"spain-la-liga", BL1:"germany-bundesliga", FL1:"france-ligue-1", PPL:"portugal-primeira-liga", DED:"netherlands-eredivisie",
     BEL1:"belgium-first-division-a", SCO1:"scotland-premiership", AUT1:"austria-bundesliga", SUI1:"switzerland-super-league", TUR1:"turkey-super-lig", GRE1:"greece-super-league", DEN1:"denmark-superliga", SWE1:"sweden-allsvenskan", NOR1:"norway-eliteserien", POL1:"poland-ekstraklasa", CZE1:"czech-republic-first-league", CRO1:"croatia-hnl", SRB1:"serbia-super-liga", ROU1:"romania-liga-1", UKR1:"ukraine-premier-league", HUN1:"hungary-nb-i", SVK1:"slovakia-super-liga", SVN1:"slovenia-prva-liga", BUL1:"bulgaria-first-league", CYP1:"cyprus-first-division", ISR1:"israel-premier-league", IRL1:"ireland-premier-division", ISL1:"iceland-urvalsdeild", FIN1:"finland-veikkausliiga", BIH1:"bosnia-premier-league", ALB1:"albania-kategoria-superiore", MKD1:"north-macedonia-first-league", GEO1:"georgia-erovnuli-liga", ARM1:"armenia-premier-league", AZE1:"azerbaijan-premier-league", MDA1:"moldova-super-liga", MLT1:"malta-premier-league", WAL1:"wales-cymru-premier", NIR1:"northern-ireland-premiership", EST1:"estonia-meistriliiga", LAT1:"latvia-virsliga", LTU1:"lithuania-a-lyga", LUX1:"luxembourg-national-division",
     CL:"uefa-champions-league", EL:"uefa-europa-league", ECL:"uefa-europa-conference-league",
     BRA1:"brazil-serie-a", ARG1:"argentina-primera-division", COL1:"colombia-primera-a", CHI1:"chile-primera-division", URU1:"uruguay-primera-division", ECU1:"ecuador-liga-pro", PER1:"peru-liga-1", PAR1:"paraguay-primera-division", BOL1:"bolivia-division-profesional", VEN1:"venezuela-primera-division", MLS1:"usa-mls", JPN1:"japan-j1-league"
