@@ -492,9 +492,9 @@ body[data-theme="light"] .pending{background:#fff8e5;color:#775900}
 </section>
 
 <div class="today-layout">
-<section class="card tab-section active" data-section="today"><h2>🌍 Campionato</h2><select id="leagueSelect" class="league-selector" aria-label="Seleziona campionato"></select><p class="small"><b>“Tutti i campionati selezionati”</b> cerca nel perimetro scelto per AI DEL PALLONE: principali campionati europei, coppe UEFA, principali campionati sudamericani, MLS e J1 League. Puoi anche scegliere un singolo campionato dal menu.</p></section>
+<section class="card tab-section active" data-section="today"><h2>🌍 Campionato</h2><select id="leagueSelect" class="league-selector" aria-label="Seleziona campionato"></select><p class="small"><b>“Tutti i campionati selezionati”</b> usa il perimetro europeo di AI DEL PALLONE e le coppe UEFA. Le gare con calcio d’inizio fuori dalla finestra italiana 11:00–22:00 vengono escluse automaticamente. Puoi anche scegliere un singolo campionato dal menu.</p></section>
 
-<section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="market"><option value="all">Tutti i mercati</option><option value="totals">Under / Over 1.5 · 2.5 · 3.5 · 4.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Per ridurre le chiamate API, i risultati utili vengono memorizzati per 15 minuti. Le quote usate dal modello arrivano da Betfair Exchange (BACK); Bet365 non viene usato per Probabilità, Edge o TOP. Una nuova analisi usa la cache finché è valida.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
+<section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="timeWindow" aria-label="Finestra oraria"><option value="all">🕐 Tutto il giorno · 11:00–22:00</option><option value="afternoon1">☀️ Primo pomeriggio · 13:00–16:00</option><option value="afternoon2">🌤️ Tardo pomeriggio · 16:01–19:00</option><option value="evening">🌙 Sera · 19:01–22:00</option></select><select id="market"><option value="all">Tutti i mercati</option><option value="totals">Under / Over 1.5 · 2.5 · 3.5 · 4.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Per ridurre le chiamate API, i risultati utili vengono memorizzati per 15 minuti. Le quote usate dal modello arrivano da Betfair Exchange (BACK); Bet365 non viene usato per Probabilità, Edge o TOP. Una nuova analisi usa la cache finché è valida.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
 <section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le 3 migliori del giorno</h2><p class="small top3-subtitle">Probabilità stimata, qualità dell'analisi e valore della quota vengono combinati per ordinare gli scenari disponibili.</p></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">📊</span><div><b>30%</b><small>Probabilità modello</small></div></div><div class="top3-method-item"><span class="method-icon">🧠</span><div><b>25%</b><small>Qualità dei dati</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>20%</b><small>Valore quota Betfair</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🛡️</span><div><b>1 partita = 1 esito</b><small>Nel TOP 3 non ripetiamo la stessa gara</small></div></div></div></section>
 
@@ -535,8 +535,6 @@ const leagueGroups=[
   {label:"🇪🇺 Europa — principali campionati",items:[
     ["🇮🇹 Serie A","SA"],["🏴 Premier League","PL"],["🇪🇸 LaLiga","PD"],["🇩🇪 Bundesliga","BL1"],["🇫🇷 Ligue 1","FL1"],["🇵🇹 Primeira Liga","PPL"],["🇳🇱 Eredivisie","DED"],["🇧🇪 Jupiler Pro League","BEL1"],["🏴 Scottish Premiership","SCO1"],["🇦🇹 Bundesliga Austria","AUT1"],["🇨🇭 Super League Svizzera","SUI1"],["🇹🇷 Süper Lig","TUR1"],["🇬🇷 Super League Grecia","GRE1"],["🇩🇰 Superliga Danimarca","DEN1"],["🇸🇪 Allsvenskan","SWE1"],["🇳🇴 Eliteserien","NOR1"],["🇵🇱 Ekstraklasa","POL1"],["🇨🇿 Czech First League","CZE1"],["🇭🇷 HNL Croazia","CRO1"],["🇷🇸 Super Liga Serbia","SRB1"],["🇷🇴 Liga 1 Romania","ROU1"],["🇺🇦 Premier League Ucraina","UKR1"],["🇭🇺 NB I Ungheria","HUN1"],["🇸🇰 Super Liga Slovacchia","SVK1"]]},
   {label:"🏆 Coppe UEFA",items:[["🏆 Champions League","CL"],["🟠 Europa League","EL"],["🟢 Conference League","ECL"]]},
-  {label:"🌎 Sudamerica — massime serie",items:[["🇧🇷 Brasileirão Serie A","BRA1"],["🇦🇷 Liga Profesional Argentina","ARG1"],["🇨🇴 Primera A Colombia","COL1"],["🇨🇱 Primera División Cile","CHI1"],["🇺🇾 Primera División Uruguay","URU1"],["🇪🇨 LigaPro Ecuador","ECU1"],["🇵🇪 Liga 1 Perù","PER1"],["🇵🇾 Primera División Paraguay","PAR1"],["🇧🇴 División Profesional Bolivia","BOL1"],["🇻🇪 Primera División Venezuela","VEN1"]]},
-  {label:"🌍 Altri mercati selezionati",items:[["🇺🇸 MLS","MLS1"],["🇯🇵 J1 League","JPN1"]]}
 ];
 const comps=leagueGroups.flatMap(g=>g.items);
 $("date").value=new Date().toISOString().slice(0,10);
@@ -958,7 +956,7 @@ try{
   for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);if(k&&k.startsWith('pickDelGiorno.apiCache.'))localStorage.removeItem(k);}
 }catch{}
 const API_CACHE_TTL=15*60*1000;
-function apiCacheKey(){return API_CACHE_PREFIX+JSON.stringify({date:$("date").value,leagues:$("leagueSelect").value,market:$("market").value||"all"})}
+function apiCacheKey(){return API_CACHE_PREFIX+JSON.stringify({date:$("date").value,leagues:$("leagueSelect").value,timeWindow:$("timeWindow").value||"all",market:$("market").value||"all"})}
 function readApiCache(){try{const x=JSON.parse(localStorage.getItem(apiCacheKey())||'null');if(!x)return null;if(Date.now()-x.savedAt>API_CACHE_TTL){localStorage.removeItem(apiCacheKey());return null;}return x.data}catch{return null}}
 function writeApiCache(d){try{localStorage.setItem(apiCacheKey(),JSON.stringify({savedAt:Date.now(),data:d}));}catch{}}
 function clearCurrentApiCache(){try{localStorage.removeItem(apiCacheKey())}catch{}}
@@ -988,7 +986,7 @@ async function run(){
  if(cached) clearCurrentApiCache();
  status("🔄 Recupero quote e statistiche…");
  try{
-  const q=new URLSearchParams({date:$("date").value,leagues:$("leagueSelect").value,market:$("market").value || "all"});
+  const q=new URLSearchParams({date:$("date").value,leagues:$("leagueSelect").value,timeWindow:$("timeWindow").value || "all",market:$("market").value || "all"});
   const controller=new AbortController();
   const timeoutId=setTimeout(()=>controller.abort(),25000);
   let r;
@@ -1839,6 +1837,14 @@ function bootApp(){
         clearCurrentApiCache();
         const selected=leagueSelect.options[leagueSelect.selectedIndex]?.textContent||'Tutti i campionati selezionati';
         status(`🎯 Campionato: ${selected}`,'');
+      });
+    }
+    const timeWindow=$('timeWindow');
+    if(timeWindow){
+      timeWindow.addEventListener('change',()=>{
+        clearCurrentApiCache();
+        const selected=timeWindow.options[timeWindow.selectedIndex]?.textContent||'Tutto il giorno · 11:00–22:00';
+        status(`🕐 Finestra: ${selected}`,'');
       });
     }
     const runBtn=$('run');
