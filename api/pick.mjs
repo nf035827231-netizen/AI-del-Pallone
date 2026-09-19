@@ -1681,7 +1681,11 @@ function findBestBetfairFixture(home, away, fixtures) {
     const hs=teamSimilarity(home,h), as=teamSimilarity(away,a);
     const revhs=teamSimilarity(home,a), revas=teamSimilarity(away,h);
     const score=Math.max((hs+as)/2,(revhs+revas)/2);
-    if(Math.max(hs,revhs)>=0.68 && Math.max(as,revas)>=0.68 && score>bestScore){best=markets;bestScore=score;}
+    // V151: matching Betfair più tollerante. I provider possono usare
+    // nomi diversi (FC/CF, abbreviazioni, sponsor). La quota resta sempre
+    // esclusivamente Betfair, ma non dobbiamo perdere una gara valida solo
+    // per una piccola differenza nel nome della squadra.
+    if(Math.max(hs,revhs)>=0.55 && Math.max(as,revas)>=0.55 && score>bestScore){best=markets;bestScore=score;}
   }
   return best;
 }
