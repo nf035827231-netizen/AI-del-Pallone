@@ -286,6 +286,10 @@ async function handler(req, res) {
     rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate));
     recentByTeam.set(id, rows.slice(-3));
   }
+  for (const [name, rows] of recentByTeamName) {
+    rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate));
+    recentByTeamName.set(name, rows.slice(-3));
+  }
 
   // STEP 3: use football-data status to identify live games. This removes
   // the old separate live endpoint call in the normal case.
@@ -365,18 +369,36 @@ async function handler(req, res) {
 
   const liveMatchKeysFinal=liveMatchKeys;
 
-  // V143: Betfair NON è più un filtro di ingresso. Una partita va analizzata
-  // anche se l'Exchange non la conosce; la quota serve solo per decidere se
-  // lo scenario ha valore. Se Betfair manca, proviamo le quote Odds-API.io.
+  // V150-PREMATCH: il TOP può contenere SOLO partite non ancora iniziate.
+  // Non ci affidiamo soltanto allo status del provider: se l'orario di calcio
+  // d'inizio è già passato rispetto all'ora corrente di Roma, la gara viene
+  // esclusa comunque. In questo modo una partita FINISHED/LIVE non può finire
+  // accidentalmente nel TOP anche quando il provider restituisce uno status
+  // incompleto o non aggiornato.
   const candidates=[];
   const analyzedFixtureIds=new Set();
+  const nowMs=Date.now();
   const eligiblePool = unique.map(f=>{
     const home=f.homeTeam?.name||f.homeTeam?.shortName;
     const away=f.awayTeam?.name||f.awayTeam?.shortName;
     const event=home&&away ? (oddsByPair.get(normalizePair(home,away)) || null) : null;
     const betfair=findBestBetfairFixture(home,away,betfairSnapshot.fixtures);
-    return {f,home,away,event,betfair};
-  }).filter(x=>x.home&&x.away&&!liveMatchKeysFinal.has(normalizePair(x.home,x.away)));
+    const kickoff=f.utcDate||f.event?.date||event?.date||null;
+    const kickoffMs=kickoff ? new Date(kickoff).getTime() : NaN;
+    const started=Number.isFinite(kickoffMs) ? kickoffMs <= nowMs : true;
+    return {f,home,away,event,betfair,kickoff,started};
+  }).filter(x=>
+    x.home &&
+    x.away &&
+    !x.started &&
+    !liveMatchKeysFinal.has(normalizePair(x.home,x.away))
+  );
+  diagnostics.push({
+    provider:"prematch-gate",
+    removedStartedOrLive:Math.max(0, unique.length-eligiblePool.length),
+    remainingPrematch:eligiblePool.length,
+    rule:"TOP e analisi quote solo su partite con calcio d'inizio futuro; partite LIVE/FINISHED escluse"
+  });
 
   // V148: BETFAIR EXCHANGE E' L'UNICA FONTE DELLE QUOTE.
   // Odds-API.io serve solo a scoprire le partite, non fornisce quote al modello.
@@ -443,7 +465,7 @@ async function handler(req, res) {
   // nessun Monte Carlo, nessun H2H e nessun infortunio entra nel punteggio.
   // Per ogni scenario contiamo solo: classifica + ultime 3 gare + quota.
   const enriched = finalizeSimpleCandidates(candidates);
-  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"TOP = migliori 3 scenari con classifica + ultime 3 + quota Betfair BACK <= 4.00; edge positivo preferito; ultima quota disponibile accettata"});
+  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"TOP = migliori 3 scenari ordinati esclusivamente per probabilità; quota Betfair BACK <= 3.70 usata solo come quota mostrata; ultima quota disponibile accettata"});
   const data={date,fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?30_000:90_000),data});
   res.setHeader("Cache-Control","no-store");
@@ -805,7 +827,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     const missingAfter = out.reduce((n,c)=>n + (!c.homeLogo?1:0) + (!c.awayLogo?1:0),0);
     diagnostics.push({provider:'thesportsdb-logos',requested:Math.min(8,missingBefore),resolved:missingBefore-missingAfter,error:null});
   }
-  out.sort((a,b)=>Number(b.score||0)-Number(a.score||0) || Number(b.prob||0)-Number(a.prob||0) || Number(b.edge||0)-Number(a.edge||0));
+  out.sort((a,b)=>Number(b.prob||0)-Number(a.prob||0));
   const returned=out.slice(0,120);
   diagnostics.push({provider:'final-ranking',totalScenarios:out.length,returned:returned.length,enrichedFixtures:enrichedFixtureCount,rule:'ranking su tutto il perimetro; risposta limitata ai 120 scenari migliori per mantenere cache e browser leggeri'});
   return {candidates:returned, requests};
@@ -1054,121 +1076,39 @@ function calibrateIndependentProbability(rawProb, sampleSize, source) {
 }
 
 function applyEnrichedScore(c, av, pred) {
+  // V150-PROB: il ranking usa esclusivamente la probabilità del modello.
+  // La quota Betfair serve solo come quota disponibile e come limite <= 3.70.
   const statProb=Number.isFinite(c.pStat)?clamp(c.pStat,0,100):null;
   const freqProb=Number.isFinite(c.pFreq)?clamp(c.pFreq,0,100):null;
-  const predScore=predictionComponent(c.market,pred,c.home,c.away);
-  const predictionProb=predScore!=null?clamp(predScore,0,100):null;
-  const mc=c.monteCarlo||null;
-  const mcProb=mc?.prob?.[c.market]!=null && Number(mc.historicalSample||0)>=3 ? clamp(Number(mc.prob[c.market]),0,100):null;
-
   const homeN=Array.isArray(c._homeMatches)?c._homeMatches.length:0;
   const awayN=Array.isArray(c._awayMatches)?c._awayMatches.length:0;
-  const sampleSize=Math.min(homeN,awayN,Number(mc?.historicalSample||Infinity));
-
-  // P_model è indipendente dal mercato: usiamo il modello statistico locale
-  // come fonte primaria. Frequenze e prediction API sono validazione/context,
-  // non entrano direttamente nella probabilità finale.
-  let rawProb=null;
-  let probabilitySource="none";
-  if(statProb!=null){ rawProb=statProb; probabilitySource="stat"; }
-  else if(mcProb!=null){ rawProb=mcProb; probabilitySource="monte-carlo"; }
-  else if(freqProb!=null){ rawProb=freqProb; probabilitySource="frequency"; }
-
+  const sampleSize=Math.min(homeN,awayN);
+  let rawProb=statProb;
+  let probabilitySource=statProb!=null ? "stat" : "none";
+  if(rawProb==null && freqProb!=null){ rawProb=freqProb; probabilitySource="frequency"; }
   const calibrated=calibrateIndependentProbability(rawProb,sampleSize,probabilitySource);
-  let modelProb=calibrated.value;
-  const modelReady=calibrated.ready || (probabilitySource==="monte-carlo" && sampleSize>=3);
-  if(!modelReady && probabilitySource==="none") modelProb=50;
-
-  // Concordanza: serve come controllo, non come generatore della probabilità.
-  const vals=[statProb,freqProb].filter(v=>v!=null);
-  let agreement=72;
-  if(vals.length>=2){
-    const mean=vals.reduce((a,v)=>a+v,0)/vals.length;
-    const mad=vals.reduce((a,v)=>a+Math.abs(v-mean),0)/vals.length;
-    agreement=clamp(100-mad*2.2,35,100);
-  }
-
-  const commission=Number.isFinite(Number(process.env.BETFAIR_COMMISSION_RATE))?Number(process.env.BETFAIR_COMMISSION_RATE):4.5;
-  const o=Number(c.odds);
-  const implied=Number.isFinite(o)&&o>1 ? (1/(1+(o-1)*(1-commission/100)))*100 : null;
-  const edge=(modelReady && implied!=null)?modelProb-implied:0;
-
-  let valueScore=clamp(50+50*Math.tanh(edge/18),0,100);
-  if(edge>18) valueScore-=Math.min(18,(edge-18)*0.65);
-  if(edge<0) valueScore*=0.70;
-  valueScore=clamp(valueScore,0,100);
-
-  const formRaw=Number.isFinite(c.form)?c.form:null;
-  const formScore=formRaw!=null?clamp(50+formRaw*7,0,100):50;
-  const matchup=oneXTwoFieldComponent(c);
-  const venue=venueComponent(c.market,c.homeForm,c.awayForm);
-  const absence=absenceComponent(c.market,c.home,c.away,av);
-  const contextScores=[
-    formScore,
-    matchup!=null?matchup:null,
-    venue!=null?venue:null,
-    absence!=null?absence:null
-  ].filter(v=>v!=null);
-  const contextScore=contextScores.length?contextScores.reduce((a,v)=>a+v,0)/contextScores.length:50;
-
-  let evidence=0;
-  if(statProb!=null) evidence+=28;
-  if(mcProb!=null) evidence+=18;
-  if(freqProb!=null) evidence+=6;
-  if(Number.isFinite(c.form)) evidence+=7;
-  if(matchup!=null||venue!=null) evidence+=5;
-  if(c.h2h?.sample>=3) evidence+=4;
-  if(c.standingNote) evidence+=3;
-  if(Number.isFinite(Number(c.odds))) evidence+=5;
-  const analysisSupport=clamp(evidence,0,100);
-
-  const liq=liquidityScore(c);
-  const type=marketType(c);
-  let score =
-    modelProb*0.35 +
-    analysisSupport*0.30 +
-    valueScore*0.20 +
-    contextScore*0.10 +
-    liq*0.05;
-
-  if(type==='1x2' && modelProb<48) score-=Math.min(12,(48-modelProb)*0.55);
-  if(type==='totals' && modelProb<55) score-=Math.min(10,(55-modelProb)*0.35);
-  if(edge<0) score-=Math.min(12,Math.abs(edge)*0.35);
-  if(agreement<55) score-=Math.min(10,(55-agreement)*0.35);
-  if(!modelReady) score=Math.min(score,42);
-  if(sampleSize<5) score=Math.min(score,35);
-  if(sampleSize<3) score=Math.min(score,38);
-  else if(sampleSize<5) score=Math.min(score,48);
-  else if(sampleSize<8) score-=Math.min(5,(8-sampleSize)*0.55);
-  if(analysisSupport<15) score=Math.min(score,38);
-  else if(analysisSupport<25) score=Math.min(score,48);
-  else if(analysisSupport<40) score-=Math.min(6,(40-analysisSupport)*0.18);
-  score=clamp(score,0,100);
-
-  const components=[
-    {name:'probabilità modello',weight:35,value:modelProb},
-    {name:'qualità dati',weight:30,value:analysisSupport},
-    {name:'valore quota Betfair',weight:20,value:valueScore},
-    {name:'contesto e stabilità',weight:10,value:contextScore},
-    {name:'liquidità Betfair',weight:5,value:liq}
-  ];
-  return {
-    ...c,
-    prob:round(modelProb), edge:round(edge), score:round(score),
-    topSelectionScore:round(score), analysisSupport:round(analysisSupport),
-    analysisLimited:analysisSupport<40, modelAgreement:round(agreement),
-    probabilitySource, modelSample:sampleSize, modelVersion:"V140-LeagueBaseline-DixonColes-Elo-MC",
-    calibrationReliability:round(calibrated.reliability*100),
-    modelReady, probabilityCalibrated:true,
-    liquidity: c.liquidity!=null?Number(c.liquidity):null,
-    scoreComponents:components.map(x=>({...x,value:round(x.value)})),
-    absence:absence==null?0:round(absence), pred:predictionProb==null?0:round(predictionProb),
-    monteCarlo:mc||null, eloHome:mc?.eloHome??null, eloAway:mc?.eloAway??null,
-    marketType:type, valueScore:round(valueScore), contextScore:round(contextScore), topEligible:Boolean(modelReady && sampleSize>=5 && analysisSupport>=55 && Number(c.quoteFreshnessScore||0)>=45)
+  const modelProb=Number.isFinite(calibrated.value)?calibrated.value:50;
+  const analysisSupport=clamp(
+    (homeN>=3?35:homeN/3*35)+(awayN>=3?35:awayN/3*35)+
+    (c.homeStanding?15:0)+(c.awayStanding?15:0),0,100);
+  const score=round(modelProb);
+  const reason=c.reason || simpleReason(c.market,c.odds,modelProb,null,
+    summarize(c._homeMatches||[],c._homeTeamId,c.home),
+    summarize(c._awayMatches||[],c._awayTeamId,c.away),
+    c.homeStanding,c.awayStanding,c.standingNote);
+  return {...c,
+    prob:round(modelProb), edge:null, pStat:round(modelProb), pFreq:null, pFair:null,
+    probabilitySource, modelSample:sampleSize, confidence:score, score,
+    topSelectionScore:score, analysisSupport:round(analysisSupport), valueScore:null,
+    modelReady:true, topEligible:true,
+    modelVersion:"V150-PROB-ONLY-Classifica-Forma3-Betfair-Max3.70",
+    calibrationReliability:round(calibrated.reliability*100), probabilityCalibrated:true,
+    reason,
+    fieldAnalysis:{reason,confidence:score,confidenceLabel:score>=70?"Alta":score>=55?"Media":"Bassa",
+      warnings:[...(homeN<3||awayN<3?["Forma recente incompleta"]:[]),
+        ...(!c.homeStanding||!c.awayStanding?["Classifica non disponibile per una delle due squadre"]:[])]}
   };
 }
-
-
 function oneXTwoFieldComponent(c) {
   const m=String(c?.market||"");
   if (!(m.startsWith("1") || m.startsWith("2") || m.startsWith("X"))) return null;
@@ -1943,39 +1883,12 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
     const prob = simpleProbability(o.value, h, a, homeStanding, awayStanding);
     if (!Number.isFinite(prob)) continue;
 
-    const implied = 100 / odd;
-    const edge = prob - implied;
-
-    const formScore = simpleFormSupport(o.value, h, a);
-    const standingsScore = simpleStandingsSupport(o.value, homeStanding, awayStanding);
-
-    // Qualità dei dati: non è un filtro. Serve solo a preferire, a parità
-    // di valore, le partite per le quali abbiamo più informazioni.
-    const homeFormQuality = Math.min(1, (h.sample || 0) / 3);
-    const awayFormQuality = Math.min(1, (a.sample || 0) / 3);
-    const homeStandingQuality = homeStanding ? 1 : 0;
-    const awayStandingQuality = awayStanding ? 1 : 0;
-    const dataQuality = (
-      homeFormQuality * 0.30 +
-      awayFormQuality * 0.30 +
-      homeStandingQuality * 0.20 +
-      awayStandingQuality * 0.20
-    ) * 100;
-
-    // Valore di mercato: l'edge è importante ma non obbligatorio.
-    // Un edge negativo non elimina la selezione: il sistema deve comunque
-    // restituire i migliori 3 scenari disponibili.
-    const valueScore = clamp(50 + edge * 2.2, 0, 100);
-    const score = clamp(
-      prob * 0.45 +
-      dataQuality * 0.20 +
-      valueScore * 0.35,
-      0, 100
-    );
-
     const sample = Math.min(h.sample || 0, a.sample || 0);
-    const reason = simpleReason(o.value, odd, prob, edge, h, a, homeStanding, awayStanding, standingNote);
-
+    const dataQuality = clamp(
+      ((Math.min(h.sample || 0, 3) / 3) * 40) +
+      ((Math.min(a.sample || 0, 3) / 3) * 40) +
+      (homeStanding ? 10 : 0) + (awayStanding ? 10 : 0), 0, 100);
+    const reason = simpleReason(o.value, odd, prob, null, h, a, homeStanding, awayStanding, standingNote);
     out.push({
       market: marketLabel(o.value),
       odds: odd,
@@ -1986,10 +1899,10 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
       liquidity: o.liquidity ?? null,
 
       prob: round(prob),
-      edge: round(edge),
+      edge: null,
       pStat: round(prob),
       pFreq: null,
-      pFair: round(implied),
+      pFair: null,
       probabilitySource: "V150-classifica-form-3",
       modelSample: sample,
 
@@ -1997,11 +1910,11 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
       homeForm: h.form == null ? null : round(h.form),
       awayForm: a.form == null ? null : round(a.form),
 
-      confidence: round(score),
-      score: round(score),
-      topSelectionScore: round(score),
+      confidence: round(prob),
+      score: round(prob),
+      topSelectionScore: round(prob),
       analysisSupport: round(dataQuality),
-      valueScore: round(valueScore),
+      valueScore: null,
 
       // TOP eligibility non è più legata a edge positivo o a 3/3:
       // se esiste una quota Betfair <= 3.70, lo scenario è candidabile.
@@ -2027,7 +1940,6 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
         warnings: [
           ...(h.sample < 3 || a.sample < 3 ? ["Forma recente incompleta"] : []),
           ...(!homeStanding || !awayStanding ? ["Classifica non disponibile per una delle due squadre"] : []),
-          ...(edge < 0 ? ["Quota non superiore alla probabilità stimata: selezione mantenuta perché il sistema deve ordinare i migliori 3 disponibili"] : [])
         ]
       }
     });
@@ -2131,18 +2043,16 @@ function simpleStandingNote(homeName, hs, awayName, as) {
 
 function simpleReason(value, odd, prob, edge, h, a, hs, as, standingNote) {
   const home=h.teamName || "La squadra di casa", away=a.teamName || "la squadra ospite";
-  const last=(team)=>`${team.form==null?"":`forma ultime 3: ${team.form.toFixed(1)} punti di media`}`;
+  const last=(team)=>team.form==null?"":`forma ultime 3: ${team.form.toFixed(1)} punti di media`;
   const parts=[];
-  if (standingNote) parts.push(standingNote);
-  if (value === "1" || value === "1 (Casa)") parts.push(`${home} ha una situazione recente migliore rispetto a ${away}: ${last(h)}`);
-  else if (value === "2" || value === "2 (Trasferta)") parts.push(`${away} ha una situazione recente migliore rispetto a ${home}: ${last(a)}`);
-  else if (value === "X" || value === "X (Pareggio)") parts.push(`Le ultime 3 partite mostrano un equilibrio tra le due squadre`);
+  if(standingNote) parts.push(standingNote);
+  if(value === "1" || value === "1 (Casa)") parts.push(`${home} ha una situazione recente migliore rispetto a ${away}: ${last(h)}`);
+  else if(value === "2" || value === "2 (Trasferta)") parts.push(`${away} ha una situazione recente migliore rispetto a ${home}: ${last(a)}`);
+  else if(value === "X" || value === "X (Pareggio)") parts.push(`Le ultime 3 partite mostrano un equilibrio tra le due squadre`);
   else parts.push(`Il dato delle ultime 3 partite delle due squadre sostiene questo mercato`);
-  if (edge >= 5) parts.push(`la quota ${odd.toFixed(2)} offre un margine stimato di ${edge.toFixed(1)} punti percentuali rispetto alla probabilità calcolata`);
-  else parts.push(`la quota ${odd.toFixed(2)} non offre un margine abbastanza ampio`);
+  parts.push(`Probabilità stimata: ${Number(prob).toFixed(1)}%`);
   return parts.slice(0,3).join(". ") + ".";
 }
-
 function finalizeSimpleCandidates(candidates) {
   const out = candidates.map(c => ({
     ...c,
