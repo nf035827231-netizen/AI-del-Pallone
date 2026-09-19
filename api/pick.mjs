@@ -21,7 +21,7 @@ async function handler(req, res) {
   const timeWindow = u.searchParams.get("timeWindow") || "all";
   if (!date) return res.status(400).json({ error: "Data mancante" });
 
-  const cacheKey = `${date}|${requestedCodes.join(",")}|${timeWindow}|${market}|source:betfair`;
+  const cacheKey = `${date}|${requestedCodes.join(",")}|${timeWindow}|${market}|source:simple-v143`;
   const cached = RESPONSE_CACHE.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return res.status(200).json({ ...cached.data, cached: true });
@@ -343,6 +343,9 @@ async function handler(req, res) {
 
   const liveMatchKeysFinal=liveMatchKeys;
 
+  // V143: Betfair NON è più un filtro di ingresso. Una partita va analizzata
+  // anche se l'Exchange non la conosce; la quota serve solo per decidere se
+  // lo scenario ha valore. Se Betfair manca, proviamo le quote Odds-API.io.
   const candidates=[];
   const analyzedFixtureIds=new Set();
   const eligiblePool = unique.map(f=>{
@@ -351,7 +354,30 @@ async function handler(req, res) {
     const event=home&&away ? (oddsByPair.get(normalizePair(home,away)) || null) : null;
     const betfair=findBestBetfairFixture(home,away,betfairSnapshot.fixtures);
     return {f,home,away,event,betfair};
-  }).filter(x=>x.home&&x.away&&x.betfair&&!liveMatchKeysFinal.has(normalizePair(x.home,x.away)));
+  }).filter(x=>x.home&&x.away&&!liveMatchKeysFinal.has(normalizePair(x.home,x.away)));
+
+  // Fallback quote: una sola richiesta /odds/multi ogni 10 eventi senza
+  // corrispondenza Betfair. Preferiamo Betfair Exchange quando presente.
+  const fallbackOddsById = new Map();
+  const missingOddsEvents = eligiblePool
+    .filter(x=>!x.betfair && x.event?.id)
+    .map(x=>x.event)
+    .filter((e,i,a)=>e?.id && a.findIndex(z=>String(z.id)===String(e.id))===i);
+  for (let i=0; i<missingOddsEvents.length; i += 10) {
+    const batch = missingOddsEvents.slice(i, i+10);
+    try {
+      const ids = batch.map(e=>e.id).join(',');
+      const bookmakerList = 'Bet365,Betfair Sportsbook,Betano,Unibet';
+      const r = await odds(`/v3/odds/multi?apiKey=${encodeURIComponent(oddsKey)}&eventIds=${encodeURIComponent(ids)}&bookmakers=${encodeURIComponent(bookmakerList)}`);
+      requests++;
+      requestBreakdown.oddsBatches++;
+      const rows = Array.isArray(r) ? r : (Array.isArray(r?.events) ? r.events : []);
+      for (const row of rows) if (row?.id) fallbackOddsById.set(String(row.id), row);
+    } catch (e) {
+      diagnostics.push({provider:'odds-api-fallback',error:e?.message||String(e),batchSize:batch.length});
+    }
+  }
+  diagnostics.push({provider:'odds-api-fallback',requestedEvents:missingOddsEvents.length,batches:Math.ceil(missingOddsEvents.length/10),matchedEvents:fallbackOddsById.size,rule:'Betfair Exchange first; Odds-API.io multi fallback; no quote = no TOP, but match remains analyzed'});
 
   // In modalita' "Tutti i campionati selezionati" non prendiamo piu'
   // semplicemente i primi 30 eventi restituiti dal provider: l'ordine del feed
@@ -368,10 +394,10 @@ async function handler(req, res) {
       .map(x => ({...x, _priority: leaguePriority(x.event?.league)}))
       .sort((a,b) => b._priority - a._priority || new Date(a.f.utcDate||a.event?.date) - new Date(b.f.utcDate||b.event?.date));
     diagnostics.push({
-      provider:"betfair-primary-analysis-pool",
+      provider:"simple-analysis-pool",
       pool:eligiblePool.length,
       selected:eligible.length,
-      rule:"tutte le partite presenti su Betfair; Odds-API solo arricchimento, non filtro",
+      rule:"tutte le partite del perimetro; Betfair non è filtro, Odds-API scopre le gare e fornisce fallback quote",
       topLeagues:eligible.slice(0,12).map(x=>x.event?.league?.name||x.event?.league?.slug).filter(Boolean)
     });
   } else {
@@ -383,29 +409,31 @@ async function handler(req, res) {
     const awayStats=f.awayTeam?.id?{teamId:f.awayTeam.id,teamName:away,matches:recentByTeam.get(f.awayTeam.id)||[]}:null;
     const homeStanding=f.homeTeam?.id?standingsByTeam.get(f.homeTeam.id)||null:null;
     const awayStanding=f.awayTeam?.id?standingsByTeam.get(f.awayTeam.id)||null:null;
-    // try/catch difensivo: un errore sull'analisi di UNA partita non deve
-    // far fallire l'intera risposta API (le altre partite restano valide).
     try {
-      const extracted=extractBetfairOdds(betfair,market,home,away);
+      // La partita è considerata ANALIZZATA anche senza quota: classifica +
+      // ultime 3 vengono comunque valutate. Senza quota non può però entrare
+      // nel TOP, perché manca il controllo del valore.
+      analyzedFixtureIds.add(f.id);
+      const fallback = event?.id ? fallbackOddsById.get(String(event.id)) : null;
+      const extractedBetfair = extractBetfairOdds(betfair,market,home,away);
+      const extractedFallback = extractedBetfair.length ? [] : extractOdds(fallback,market,"",home,away);
+      const extracted = extractedBetfair.length ? extractedBetfair : extractedFallback;
+      const oddsSource = extractedBetfair.length ? "Betfair Exchange" : (extractedFallback.length ? "Odds-API.io" : null);
       const markets=buildMarkets(extracted,homeStats,awayStats,homeStanding,awayStanding);
-      if(markets.length) analyzedFixtureIds.add(f.id);
-      // Non gonfiamo la risposta con una riga diagnostica per ogni partita:
-      // con centinaia di eventi il browser deve ricevere soprattutto i risultati.
-      // Conserviamo invece gli errori e i casi senza mercati analizzabili.
-      if(!markets.length) diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:0,bookmaker:"Betfair Exchange",marketIds:betfair.map(x=>x.marketId),error:"Nessun mercato BACK nel perimetro richiesto"});
-      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId,homeStanding,awayStanding});
+      if(!markets.length && !extracted.length) diagnostics.push({provider:"simple-analysis",league:f._code,fixture:`${home} - ${away}`,analyzedMarkets:0,error:"Partita analizzata ma nessuna quota disponibile: esclusa solo dal TOP"});
+      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:oddsSource||"—",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"dati non disponibili",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId,homeStanding,awayStanding});
     } catch (e) {
-      diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:`Errore interno analisi Betfair: ${e?.message||String(e)}`});
+      diagnostics.push({provider:"simple-analysis",league:f._code,fixture:`${home} - ${away}`,analyzedMarkets:0,error:`Errore interno analisi: ${e?.message||String(e)}`});
     }
   }
 
-  diagnostics.push({provider:'model-quality-gate',rule:'minimum 3 finished matches for BOTH teams; simple model only; Betfair-only excluded when a specific league is selected',candidatesBeforeEnrichment:candidates.length,minimumSample:3});
+  diagnostics.push({provider:'model-quality-gate',rule:'minimum 3 finished matches for BOTH teams for TOP; simple model only; Betfair is preferred for odds, Odds-API fallback is allowed',candidatesBeforeEnrichment:candidates.length,minimumSample:3});
 
   // STEP 4: modello volutamente semplice. Nessuna API-Football, nessun ELO,
   // nessun Monte Carlo, nessun H2H e nessun infortunio entra nel punteggio.
   // Per ogni scenario contiamo solo: classifica + ultime 3 gare + quota.
   const enriched = finalizeSimpleCandidates(candidates);
-  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"edge >= 5 punti percentuali e score >= 60"});
+  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"edge >= 5 punti percentuali e score >= 60; quota Betfair preferita, Odds-API fallback"});
   const data={date,fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?30_000:90_000),data});
   res.setHeader("Cache-Control","no-store");
@@ -1867,13 +1895,10 @@ export function extractOdds(data, requestedMarket="all", requestedBookmaker="", 
     }
   }
 
-  // Ignore long-shot prices AND overly short prices: the app only considers
-  // odds between 1.50 (incluso) e 3.75. Sotto 1.50 il margine di guadagno
-  // Ã¨ troppo risicato per valere il rischio, anche quando il modello stima
-  // una probabilitÃ  alta.
-  // IMPORTANT: never replace the selected bookmaker with another book's price.
-  // If a bookmaker is selected, every returned quote must come from that book.
-  const filtered = out.filter(x => Number(x.odd) >= 1.5 && Number(x.odd) <= 3.75);
+  // V143: nessun limite artificiale 1.50-3.75. Una quota è valutata
+  // solo dal confronto tra probabilità stimata e probabilità implicita.
+  // IMPORTANT: se un bookmaker è selezionato, non viene sostituito da altri.
+  const filtered = out.filter(x => Number(x.odd) > 1);
   const best = new Map();
   for (const x of filtered) {
     const old=best.get(x.value);
@@ -1905,7 +1930,7 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
 
   for (const o of odds) {
     const odd = Number(o.odd);
-    if (!(odd >= 1.50 && odd <= 3.75)) continue;
+    if (!(odd > 1)) continue;
 
     const prob = simpleProbability(o.value, h, a, homeStanding, awayStanding);
     if (!Number.isFinite(prob)) continue;
@@ -1918,12 +1943,13 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
     const score = clamp(prob * 0.45 + formScore * 0.25 + standingsScore * 0.10 + valueScore * 0.20, 0, 100);
 
     const sample = Math.min(h.sample || 0, a.sample || 0);
-    const topEligible = sample >= 3 && edge >= 5 && score >= 60 && Number(o.quoteFreshnessScore || 0) >= 45;
+    const quoteFreshness = Number.isFinite(Number(o.quoteFreshnessScore)) ? Number(o.quoteFreshnessScore) : 100;
+    const topEligible = sample >= 3 && edge >= 5 && score >= 60 && quoteFreshness >= 45;
     const reason = simpleReason(o.value, odd, prob, edge, h, a, homeStanding, awayStanding, standingNote);
 
     out.push({
       market: marketLabel(o.value), odds: odd, bookmaker: o.bookmaker || "Betfair Exchange",
-      quoteAgeMin:o.quoteAgeMin ?? null, quoteFreshnessScore:o.quoteFreshnessScore ?? 0,
+      quoteAgeMin:o.quoteAgeMin ?? null, quoteFreshnessScore:quoteFreshness,
       quoteSpread:o.quoteSpread ?? null, liquidity:o.liquidity ?? null,
       prob: round(prob), edge: round(edge), pStat: round(prob), pFreq: null,
       pFair: round(implied), probabilitySource:"simple", modelSample:sample,
@@ -1931,7 +1957,7 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
       confidence: round(score), score: round(score), topSelectionScore: round(score),
       analysisSupport: round((formScore + standingsScore) / 2), valueScore: round(valueScore),
       modelReady: sample >= 3, topEligible,
-      modelVersion:"V142-Semplice-Classifica-3Partite-Quota",
+      modelVersion:"V143-Semplice-Classifica-3Partite-Quota-Fallback",
       standingNote, homeStanding, awayStanding,
       recentForm: {home:h.form, away:a.form, homeMatches:h.sample, awayMatches:a.sample},
       reason,
