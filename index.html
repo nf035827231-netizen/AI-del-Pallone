@@ -632,7 +632,7 @@ let supabaseClient=null,currentUser=null,syncBusy=false;
 const $=id=>document.getElementById(id);
 const leagueGroups=[
   {label:"🇪🇺 Europa — principali campionati",items:[
-    ["🇮🇹 Serie A","SA"],["🏴 Premier League","PL"],["🇪🇸 LaLiga","PD"],["🇩🇪 Bundesliga","BL1"],["🇫🇷 Ligue 1","FL1"],["🇵🇹 Primeira Liga","PPL"],["🇳🇱 Eredivisie","DED"],["🇧🇪 Jupiler Pro League","BEL1"],["🏴 Scottish Premiership","SCO1"],["🇦🇹 Bundesliga Austria","AUT1"],["🇨🇭 Super League Svizzera","SUI1"],["🇹🇷 Süper Lig","TUR1"],["🇬🇷 Super League Grecia","GRE1"],["🇩🇰 Superliga Danimarca","DEN1"],["🇸🇪 Allsvenskan","SWE1"],["🇳🇴 Eliteserien","NOR1"],["🇵🇱 Ekstraklasa","POL1"],["🇨🇿 Czech First League","CZE1"],["🇭🇷 HNL Croazia","CRO1"],["🇷🇸 Super Liga Serbia","SRB1"],["🇷🇴 Liga 1 Romania","ROU1"],["🇺🇦 Premier League Ucraina","UKR1"],["🇭🇺 NB I Ungheria","HUN1"],["🇸🇰 Super Liga Slovacchia","SVK1"]]},
+    ["🇮🇹 Serie A","SA"],["🇮🇹 Serie B","SB"],["🏴 Premier League","PL"],["🇪🇸 LaLiga","PD"],["🇩🇪 Bundesliga","BL1"],["🇫🇷 Ligue 1","FL1"],["🇵🇹 Primeira Liga","PPL"],["🇳🇱 Eredivisie","DED"],["🇧🇪 Jupiler Pro League","BEL1"],["🏴 Scottish Premiership","SCO1"],["🇦🇹 Bundesliga Austria","AUT1"],["🇨🇭 Super League Svizzera","SUI1"],["🇹🇷 Süper Lig","TUR1"],["🇬🇷 Super League Grecia","GRE1"],["🇩🇰 Superliga Danimarca","DEN1"],["🇸🇪 Allsvenskan","SWE1"],["🇳🇴 Eliteserien","NOR1"],["🇵🇱 Ekstraklasa","POL1"],["🇨🇿 Czech First League","CZE1"],["🇭🇷 HNL Croazia","CRO1"],["🇷🇸 Super Liga Serbia","SRB1"],["🇷🇴 Liga 1 Romania","ROU1"],["🇺🇦 Premier League Ucraina","UKR1"],["🇭🇺 NB I Ungheria","HUN1"],["🇸🇰 Super Liga Slovacchia","SVK1"]]},
   {label:"🏆 Coppe UEFA",items:[["🏆 Champions League","CL"],["🟠 Europa League","EL"],["🟢 Conference League","ECL"]]},
 ];
 const comps=leagueGroups.flatMap(g=>g.items);
@@ -776,7 +776,7 @@ async function shareDailyResultsImage(){
    box(55,235,300,105,'GIOCATE',String(dayItems.length));box(390,235,300,105,'VITTORIE',String(wins),'#43d17b');box(725,235,300,105,'% VITTORIE',`${winRate}%`,'#ff80ab');
    const balColor=totalBalance>=0?'#43d17b':'#ff6b72';box(55,360,465,110,'BILANCIO NETTO',`${totalBalance>=0?'+':''}${totalBalance.toFixed(2).replace('.',',')} €`,balColor);box(555,360,470,110,'CASH OUT',String(cashouts),'#f5c446');
    ctx.fillStyle='#0b1727';ctx.strokeStyle='#2a3b55';roundRect(ctx,55,495,970,570,24);ctx.fill();ctx.stroke();ctx.fillStyle='#ff80ab';ctx.font='900 24px -apple-system,sans-serif';ctx.textAlign='left';ctx.fillText('RISULTATI DELLE GIOCATE',80,535);
-   const leagueMap={SA:'SERIE A',PL:'PREMIER LEAGUE',PD:'LA LIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
+   const leagueMap={SA:'SERIE A',SB:'SERIE B',PL:'PREMIER LEAGUE',PD:'LA LIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
    shown.forEach((b,i)=>{const y=560+i*95;const win=b.status==='win',loss=b.status==='loss',accent=win?'#43d17b':loss?'#ff6b72':'#f5c446';ctx.fillStyle='rgba(255,255,255,.035)';roundRect(ctx,75,y,930,80,15);ctx.fill();ctx.textAlign='left';ctx.fillStyle=accent;ctx.font='900 18px -apple-system,sans-serif';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',92,y+27);ctx.fillStyle='#f7f9fc';ctx.font='800 20px -apple-system,sans-serif';ctx.fillText(`${b.home||'Casa'} – ${b.away||'Trasferta'}`,92,y+57);ctx.textAlign='right';ctx.fillStyle='#aebbd0';ctx.font='600 17px -apple-system,sans-serif';ctx.fillText(`${leagueMap[b.leagueCode]||b.leagueName||b.league||'CALCIO'} · Quota ${Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2)}`,988,y+26);const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?` · ${b.finalScoreHome}-${b.finalScoreAway}`:'';ctx.fillText(String(b.market||'Giocata')+score,988,y+55);});
    if(dayItems.length>5){ctx.textAlign='left';ctx.fillStyle='#7f91a8';ctx.font='600 16px -apple-system,sans-serif';ctx.fillText(`+ ${dayItems.length-5} altri eventi`,80,1038);}
    const m=socialMetrics(dayItems);ctx.textAlign='left';ctx.fillStyle='#d8e2ee';ctx.font='700 19px -apple-system,sans-serif';ctx.fillText(`Serie vincente max: ${m.longWin} · serie perdente max: ${m.longLoss}`,80,1100);ctx.fillText(`CLV medio: ${m.avgCLV==null?'—':(m.avgCLV>=0?'+':'')+m.avgCLV.toFixed(1)+'%'}`,80,1132);
@@ -983,7 +983,7 @@ async function shareCandidateImageData(x){
    ctx.fillStyle='#66758a';ctx.font='500 15px -apple-system,sans-serif';ctx.fillText('Prima della partita',1022,91);
 
    let leagueLabel=x.leagueName||x.league||'CALCIO';
-   const leagueMap={SA:'SERIE A',PL:'PREMIER LEAGUE',PD:'LALIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
+   const leagueMap={SA:'SERIE A',SB:'SERIE B',PL:'PREMIER LEAGUE',PD:'LALIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
    leagueLabel=leagueMap[x.leagueCode]||leagueLabel||'CALCIO';
    let dateLabel='DATA DA ANALIZZARE';
    if(x.kickoff){try{const d=new Date(x.kickoff);dateLabel=d.toLocaleDateString('it-IT',{day:'2-digit',month:'long'}).replace(/^./,c=>c.toUpperCase())+' · '+d.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});}catch{}}
@@ -1122,7 +1122,7 @@ function renderAIPicks(picks){
  if(dateBox){ const d=$('date')?.value; dateBox.textContent=d?new Date(d+'T12:00:00').toLocaleDateString('it-IT',{day:'2-digit',month:'short',year:'numeric'}):''; }
  if(!box)return;
  if(!picks?.length){box.innerHTML='<div class="ai-picks-empty">Oggi il modello non ha trovato scenari sufficientemente supportati dai dati.</div>';return;}
- const compName=code=>({SA:'Serie A',PL:'Premier League',PD:'LaLiga',BL1:'Bundesliga',FL1:'Ligue 1',CL:'Champions League',ELC:'Championship',DED:'Eredivisie',PPL:'Primeira Liga'})[code]||code||'Calcio';
+ const compName=code=>({SA:'Serie A',SB:'Serie B',PL:'Premier League',PD:'LaLiga',BL1:'Bundesliga',FL1:'Ligue 1',CL:'Champions League',ELC:'Championship',DED:'Eredivisie',PPL:'Primeira Liga'})[code]||code||'Calcio';
  box.className='ai-picks';
  box.innerHTML=picks.map((x,i)=>`<article class="ai-pick-card ${i===0?'top':''}"><span class="rank">${i===0?'⭐ TOP AI':i===1?'🥈 SECONDO SCENARIO':'🥉 TERZO SCENARIO'}</span><div class="competition">${esc(compName(x.leagueCode||x.league))}${x.kickoff?` · ${new Date(x.kickoff).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}`:''}</div><div class="ai-match">${esc(x.home)} <span style="color:#718198">–</span> ${esc(x.away)}</div><div class="ai-market"><span>Scenario indicato dall'AI</span><b>${esc(x.market)}</b></div><div class="ai-odds-row"><span>Quota Betfair BACK</span><b>${Number(x.odds||0)>1?Number(x.odds).toFixed(2):'—'}</b></div><div class="ai-metrics"><div class="ai-metric"><span>Probabilità</span><b>${Number(x.prob||0).toFixed(1)}%</b></div><div class="ai-metric"><span>Edge statistico</span><b>${Number(x.edge||0)>=0?'+':''}${Number(x.edge||0).toFixed(1)}%</b></div><div class="ai-metric"><span>Score</span><b>${Number(x.score||0).toFixed(0)}/100</b></div></div><div class="ai-reason"><b>Perché?</b> ${esc(x.reason||'Lo scenario è stato selezionato sulla base dei segnali disponibili.')}</div></article>`).join('');
 }
@@ -1618,7 +1618,7 @@ function normalizeLeague(value){
 }
 function renderLeagueBalance(placedItems){
  const host=document.getElementById('leagueBalance');if(!host)return;
- const names=['Serie A','Premier League','LaLiga','Bundesliga','Ligue 1','Serie B','Eredivisie','Primeira Liga'];
+ const names=['Serie A','Serie B','Premier League','LaLiga','Bundesliga','Ligue 1','Eredivisie','Primeira Liga'];
  const cards=names.map(name=>{
   const bets=placedItems.filter(b=>settled(b)&&normalizeLeague(b.leagueCode||b.leagueName||b.league)===name);
   const wins=bets.filter(b=>b.status==='win').length,losses=bets.filter(b=>b.status==='loss').length,cashouts=bets.filter(b=>b.status==='cashout').length,real=bets.reduce((a,b)=>a+(actualNet(b)||0),0),noCash=bets.map(hypotheticalNet).filter(v=>v!=null).reduce((a,v)=>a+v,0),stake=bets.reduce((a,b)=>a+betStake(b),0),roi=stake?real/stake*100:0,wr=(wins+losses)?wins/(wins+losses)*100:null,diff=real-noCash,cls=real>0?'pos':real<0?'neg':'';
