@@ -21,7 +21,7 @@ async function handler(req, res) {
   const timeWindow = u.searchParams.get("timeWindow") || "all";
   if (!date) return res.status(400).json({ error: "Data mancante" });
 
-  const cacheKey = `${date}|${requestedCodes.join(",")}|${timeWindow}|${market}|source:simple-v143`;
+  const cacheKey = `${date}|${requestedCodes.join(",")}|${timeWindow}|${market}|source:simple-v146`;
   const cached = RESPONSE_CACHE.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return res.status(200).json({ ...cached.data, cached: true });
@@ -190,12 +190,12 @@ async function handler(req, res) {
   const recentByTeam = new Map();
   const teamCrests = new Map();
   const standingsByTeam = new Map();
-  // Budget server-side: con "Tutti" il feed globale puo' contenere molte
-  // competizioni. Interrogare football-data.org per ogni codice fa esplodere
-  // il numero di chiamate e puo' portare Vercel a terminare la Function.
-  // Limitiamo quindi lo storico alle competizioni piu' rilevanti presenti
-  // davvero nel giorno richiesto. Con un campionato selezionato usiamo invece
-  // il codice richiesto senza questo limite editoriale.
+  // Storico: per mantenere l'algoritmo semplice ma avere davvero le ultime 3
+  // e la classifica, usiamo una sola richiesta matches per competizione.
+  // La classifica viene ricostruita dai risultati FINISHED, quindi non serve
+  // una seconda chiamata /standings. Nel piano gratuito football-data.org il
+  // limite è 10 richieste/minuto: teniamo quindi al massimo 10 competizioni
+  // storiche nella modalità "Tutti".
   let fdCodes = [];
   if (footballToken) {
     if (codes) {
@@ -213,29 +213,15 @@ async function handler(req, res) {
       fdCodes = [...activeCodes]
         .filter(code => normalizeLeague(code))
         .sort((a,b) => (fdPriority.get(b) ?? 0) - (fdPriority.get(a) ?? 0))
-        .slice(0, 6);
-      diagnostics.push({provider:"football-data-budget",requestedCodes:activeCodes.size,usedCodes:fdCodes.length,maxCodes:6,reason:"limite storico per evitare timeout della Function con il feed globale"});
+        .slice(0, 10);
+      diagnostics.push({provider:"football-data-budget",requestedCodes:activeCodes.size,usedCodes:fdCodes.length,maxCodes:10,reason:"una sola chiamata storico per competizione; classifica ricostruita dai risultati; compatibile con il limite di 10 richieste/minuto"});
     }
   }
   if (!footballToken) diagnostics.push({provider:"football-data", results:0, error:"FOOTBALL_DATA_TOKEN non configurato: si continua comunque con Odds-API.io + API-Football."});
   const fdResults = await Promise.all(fdCodes.map(async code => {
     const from = daysAgo(date, 90);
-    const [d, standingsData] = await Promise.all([
-      fd(`/v4/competitions/${encodeURIComponent(code)}/matches?dateFrom=${from}&dateTo=${date}&limit=500`, footballToken),
-      fd(`/v4/competitions/${encodeURIComponent(code)}/standings`, footballToken)
-    ]);
-    requests += 2; requestBreakdown.footballFixturesAndForm += 2;
-    // La classifica esiste in forma di tabella semplice solo per i campionati
-    // a girone unico (non per Champions/Coppe a gironi multipli o fasi a
-    // eliminazione): se non troviamo una tabella "TOTAL", salto senza errori.
-    const table = standingsData?.standings?.find(s => s.type === "TOTAL")?.table;
-    if (Array.isArray(table)) {
-      const totalTeams = table.length;
-      for (const row of table) {
-        if (!row?.team?.id) continue;
-        standingsByTeam.set(row.team.id, { position: row.position, totalTeams, playedGames: row.playedGames, points: row.points });
-      }
-    }
+    const d = await fd(`/v4/competitions/${encodeURIComponent(code)}/matches?dateFrom=${from}&dateTo=${date}&limit=500`, footballToken);
+    requests += 1; requestBreakdown.footballFixturesAndForm += 1;
     return { code, d };
   }));
 
@@ -250,6 +236,8 @@ async function handler(req, res) {
       if (m?.awayTeam?.id && m?.awayTeam?.crest) teamCrests.set(m.awayTeam.id, m.awayTeam.crest);
       fixtures.push({ ...m, _code:code, _source:"football-data" });
     }
+    // Ultime partite: conserviamo tutte le FINISHED della finestra e poi
+    // teniamo solo le ultime 3 per squadra.
     for (const m of rows) {
       if (m.status !== "FINISHED") continue;
       for (const team of [m.homeTeam,m.awayTeam]) {
@@ -257,6 +245,28 @@ async function handler(req, res) {
         if (!recentByTeam.has(team.id)) recentByTeam.set(team.id, []);
         recentByTeam.get(team.id).push(m);
       }
+    }
+
+    // Classifica ricostruita dai risultati della stagione/finestra corrente.
+    // Non la applichiamo alle coppe UEFA: lì non esiste una classifica unica
+    // confrontabile tra tutte le squadre.
+    const leagueCodes = new Set(["SA","SB","PL","PD","BL1","FL1","PPL","DED","ELC","BRA1"]);
+    if (leagueCodes.has(code)) {
+      const tableMap = new Map();
+      for (const m of rows) {
+        if (m.status !== "FINISHED" || !m.homeTeam?.id || !m.awayTeam?.id) continue;
+        for (const team of [m.homeTeam,m.awayTeam]) {
+          if (!tableMap.has(team.id)) tableMap.set(team.id,{id:team.id,playedGames:0,points:0,gf:0,ga:0,name:team.name});
+        }
+        const h=tableMap.get(m.homeTeam.id), a=tableMap.get(m.awayTeam.id);
+        const hg=Number(m.score?.fullTime?.home), ag=Number(m.score?.fullTime?.away);
+        if (!Number.isFinite(hg) || !Number.isFinite(ag)) continue;
+        h.playedGames++; a.playedGames++; h.gf+=hg; h.ga+=ag; a.gf+=ag; a.ga+=hg;
+        if (hg>ag) h.points+=3; else if (hg<ag) a.points+=3; else {h.points++;a.points++;}
+      }
+      const table=[...tableMap.values()].sort((a,b)=>b.points-a.points || ((b.gf-b.ga)-(a.gf-a.ga)) || b.gf-a.gf || a.name.localeCompare(b.name));
+      const totalTeams=table.length;
+      table.forEach((row,i)=>standingsByTeam.set(row.id,{position:i+1,totalTeams,playedGames:row.playedGames,points:row.points}));
     }
   }
 
