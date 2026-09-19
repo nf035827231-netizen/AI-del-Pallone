@@ -745,7 +745,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     const key=normalizePair(c.home,c.away);
     if(seenMc.has(key)) continue;
     seenMc.add(key); uniqueForMc.push(c);
-    if(uniqueForMc.length>=20) break;
+    if(uniqueForMc.length>=40) break;
   }
   for (const c of uniqueForMc) {
     try { mcByPair.set(normalizePair(c.home,c.away), monteCarloFixture(c, availability.get(normalizePair(c.home,c.away)), predictions.get(normalizePair(c.home,c.away)), 10000)); }
