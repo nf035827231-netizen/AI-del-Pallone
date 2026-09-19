@@ -273,6 +273,7 @@ async function handler(req, res) {
     h2hByPair.set(key, rows.slice(-5)); // ultimi 5 scontri diretti bastano
   }
   const globalElo = buildGlobalElo(fdResults);
+  const leagueBaselines = buildLeagueBaselines(fdResults);
 
   // STEP 3: use football-data status to identify live games. This removes
   // the old separate live endpoint call in the normal case.
@@ -290,7 +291,7 @@ async function handler(req, res) {
     }
   }
   const uniqueLive=[...new Map(liveFixtures.map(f=>[normalizePair(f.home,f.away),f])).values()];
-  const livePairs=new Set(uniqueLive.map(x=>normalizePair(x.home,x.away)));
+  const liveMatchKeys=new Set(uniqueLive.map(x=>normalizePair(x.home,x.away)));
 
   // De-duplicate fixtures and prefer football-data when it also knows the
   // same fixture, because it supplies team IDs for local statistics.
@@ -299,46 +300,45 @@ async function handler(req, res) {
     const key=`${normalizePair(f.homeTeam?.name||f.homeTeam?.shortName,f.awayTeam?.name||f.awayTeam?.shortName)}|${localDate(f.utcDate)}`;
     if(!uniqueMap.has(key)||f._source==="football-data") uniqueMap.set(key,f);
   }
-  // V128: Betfair è la sorgente primaria per il perimetro dei match.
-  // Prima usavamo oddsByPair come filtro obbligatorio: se Odds-API non
-  // riconosceva una partita, quella partita spariva anche se era presente
-  // nel Bridge Betfair. Ora costruiamo anche fixture sintetiche dai market
-  // Betfair e usiamo Odds-API solo come arricchimento quando disponibile.
-  for (const [pairKey, markets] of betfairSnapshot.fixtures) {
-    const sample = markets?.[0];
-    const eventName = String(sample?.event?.name || '');
-    const parts = eventName.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
-    if (parts.length < 2) continue;
-    const home = parts[0].trim();
-    const away = parts.slice(1).join(' ').trim();
-    const key = normalizePair(home, away);
-    if (livePairs.has(key)) continue;
-    if (!uniqueMap.has(key)) {
-      uniqueMap.set(key, {
-        id: `betfair-${sample?.event?.id || key}`,
-        _source: 'betfair',
-        _code: sample?.competition?.id || sample?.competition?.name || 'BETFAIR',
-        homeTeam: { name: home },
-        awayTeam: { name: away },
-        utcDate: sample?.event?.openDate || sample?.event?.marketStartTime || sample?.marketStartTime || null,
-        competition: { name: sample?.competition?.name || 'Betfair' },
-        _betfairOnly: true
-      });
+  // V140: Betfair amplia il perimetro solo con "Tutti". Con un campionato
+  // specifico non introduciamo mai fixture Betfair-only.
+  if (!codes) {
+    for (const [pairKey, markets] of betfairSnapshot.fixtures) {
+      const sample = markets?.[0];
+      const eventName = String(sample?.event?.name || '');
+      const parts = eventName.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
+      if (parts.length < 2) continue;
+      const home = parts[0].trim();
+      const away = parts.slice(1).join(' ').trim();
+      const key = normalizePair(home, away);
+      if (liveMatchKeys.has(key)) continue;
+      if (!uniqueMap.has(key)) {
+        uniqueMap.set(key, {
+          id: `betfair-${sample?.event?.id || key}`, _source: 'betfair',
+          _code: sample?.competition?.id || sample?.competition?.name || 'BETFAIR',
+          homeTeam: { name: home }, awayTeam: { name: away },
+          utcDate: sample?.event?.openDate || sample?.event?.marketStartTime || sample?.marketStartTime || null,
+          competition: { name: sample?.competition?.name || 'Betfair' }, _betfairOnly: true
+        });
+      }
     }
   }
 
   const uniqueAll=[...uniqueMap.values()].filter(f=>timeWindowAllows(f.utcDate||f.event?.date, timeWindow));
 
-  // Filtro campionato: quando l'utente sceglie un torneo specifico, il filtro
-  // deve essere applicato al POOL che alimenta l'analisi, non solo alla UI.
-  // Le fixture sintetiche provenienti da Betfair possono non avere il codice
-  // interno SA/PL/etc., quindi confrontiamo anche il nome della competizione.
+  // V140: filtro campionato autorevole. Con un campionato specifico
+  // accettiamo solo fixture provenienti dall'endpoint di quel campionato
+  // (Odds-API) o dal relativo codice Football-Data. Betfair-only non entra.
   const unique = codes
     ? uniqueAll.filter(f => {
-        const pairEvent = oddsByPair.get(normalizePair(f.homeTeam?.name||f.homeTeam?.shortName, f.awayTeam?.name||f.awayTeam?.shortName));
-        return requestedLeagueMatchesFixture(f, pairEvent, codes);
+        const code = String(f?._code || '').toUpperCase();
+        if (f?._source === 'odds-api') return codes.includes(code);
+        if (f?._source === 'football-data') return codes.includes(code);
+        return false;
       })
     : uniqueAll;
+
+
 
   if (codes) {
     diagnostics.push({
@@ -346,11 +346,12 @@ async function handler(req, res) {
       requested: codes,
       before: uniqueAll.length,
       after: unique.length,
-      removed: Math.max(0, uniqueAll.length - unique.length)
+      removed: Math.max(0, uniqueAll.length - unique.length),
+      rule: 'specific-league = Odds-API/Football-Data only; Betfair-only excluded'
     });
   }
 
-  const livePairsFinal=livePairs;
+  const liveMatchKeysFinal=liveMatchKeys;
 
   const candidates=[];
   const analyzedFixtureIds=new Set();
@@ -360,7 +361,7 @@ async function handler(req, res) {
     const event=home&&away ? (oddsByPair.get(normalizePair(home,away)) || null) : null;
     const betfair=findBestBetfairFixture(home,away,betfairSnapshot.fixtures);
     return {f,home,away,event,betfair};
-  }).filter(x=>x.home&&x.away&&x.betfair&&!livePairsFinal.has(normalizePair(x.home,x.away)));
+  }).filter(x=>x.home&&x.away&&x.betfair&&!liveMatchKeysFinal.has(normalizePair(x.home,x.away)));
 
   // In modalita' "Tutti i campionati selezionati" non prendiamo piu'
   // semplicemente i primi 30 eventi restituiti dal provider: l'ordine del feed
@@ -397,17 +398,20 @@ async function handler(req, res) {
     // far fallire l'intera risposta API (le altre partite restano valide).
     try {
       const extracted=extractBetfairOdds(betfair,market,home,away);
-      const markets=buildMarkets(extracted,homeStats,awayStats,h2hMatches,f.homeTeam?.id,f.awayTeam?.id,homeStanding,awayStanding,globalElo);
+      const leagueBaseline = leagueBaselines.get(String(f._code || "").toUpperCase()) || null;
+      const markets=buildMarkets(extracted,homeStats,awayStats,h2hMatches,f.homeTeam?.id,f.awayTeam?.id,homeStanding,awayStanding,globalElo,leagueBaseline);
       if(markets.length) analyzedFixtureIds.add(f.id);
       // Non gonfiamo la risposta con una riga diagnostica per ogni partita:
       // con centinaia di eventi il browser deve ricevere soprattutto i risultati.
       // Conserviamo invece gli errori e i casi senza mercati analizzabili.
       if(!markets.length) diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:0,bookmaker:"Betfair Exchange",marketIds:betfair.map(x=>x.marketId),error:"Nessun mercato BACK nel perimetro richiesto"});
-      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId});
+      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId,_leagueBaseline:leagueBaseline});
     } catch (e) {
       diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:`Errore interno analisi Betfair: ${e?.message||String(e)}`});
     }
   }
+
+  diagnostics.push({provider:'model-quality-gate',rule:'minimum 5 finished matches for BOTH teams; no 50% fallback; Betfair-only excluded when a specific league is selected',candidatesBeforeEnrichment:candidates.length,minimumSample:5});
 
   // STEP 4: enrich ONLY the strongest candidate fixtures with API-Football
   // availability data. One date lookup + one injuries call per unique top
@@ -437,23 +441,10 @@ function h2hKey(idA, idB) {
 }
 
 function requestedLeagueMatchesFixture(fixture, oddsEvent, requestedCodes) {
-  const requested = new Set(requestedCodes || []);
-  if (!requested.size) return true;
-
-  // 1) Se la fixture arriva dall'endpoint specifico del campionato, il codice
-  //    interno è già la fonte più affidabile.
-  if (fixture?._code && requested.has(String(fixture._code).toUpperCase())) return true;
-
-  // 2) Se Odds-API conosce la stessa gara, usiamo la sua competizione.
-  const sources = [
-    fixture?.competition?.name, fixture?.competition?.slug,
-    oddsEvent?.league?.name, oddsEvent?.league?.slug,
-    fixture?._code
-  ].filter(Boolean).map(v => String(v).toLowerCase().replace(/_/g,'-'));
-  if (!sources.length) return false;
-
-  const text = sources.join(' | ');
-  return requested.some(code => competitionTextMatchesCode(text, code));
+  const requested = Array.isArray(requestedCodes) ? requestedCodes.map(x=>String(x).toUpperCase()) : [];
+  if (!requested.length) return true;
+  const code = String(fixture?._code || '').toUpperCase();
+  return (fixture?._source === 'odds-api' || fixture?._source === 'football-data') && requested.includes(code);
 }
 
 function competitionTextMatchesCode(text, code) {
@@ -859,7 +850,7 @@ function availabilityStatus(type, reason) {
   const t=String(type||"").toLowerCase();
   const r=String(reason||"").toLowerCase();
   if (t.includes("susp")) return "squalificato";
-  if (t.includes("injur") || /injury|lesion|strain|fracture|muscle|ankle|knee|hamstring|thigh|back|illness|ill/.test(r)) return "infortunato";
+  if (t.includes("injur") || /injury|lesion|strain|fracture|muscle|ankle|knee|hamstring|thigh|back|illness|ill\b/.test(r)) return "infortunato";
   if (t.includes("question") || t.includes("doubt")) return "in dubbio";
   if (t.includes("missing") || t.includes("absent")) return "indisponibile";
   return reason ? String(reason).toLowerCase() : "indisponibile";
@@ -917,42 +908,53 @@ function buildEloContext(c) {
   const awayElo=awayId&&byId.has(awayId)?byId.get(awayId):1500;
   return {homeElo,awayElo,diff:homeElo-awayElo+55};
 }
-function monteCarloFixture(c,av,pred,iterations=10000,globalElo=null) {
+function monteCarloFixture(c,av,pred,iterations=10000,globalElo=null){
   const h=summarize(c?._homeMatches,c?._homeTeamId), a=summarize(c?._awayMatches,c?._awayTeamId);
-  const historicalSample=Math.max(Number(h.sample||0),Number(a.sample||0));
-  const model=expectedGoalsModel(h,a,c,globalElo);
-  let lambdaH=model?.lambdaH ?? 1.35, lambdaA=model?.lambdaA ?? 1.15;
-  if(av?.home?.length) lambdaH*=Math.max(0.80,1-0.025*av.home.length);
-  if(av?.away?.length) lambdaA*=Math.max(0.80,1-0.025*av.away.length);
+  const historicalSample=Math.min(Number(h.sample||0),Number(a.sample||0));
+  const model=expectedGoalsModel(h,a,c,globalElo,c?._leagueBaseline||null);
+  let lambdaH=model?.lambdaH ?? null, lambdaA=model?.lambdaA ?? null;
+  if(!(lambdaH>0&&lambdaA>0)) return null;
   lambdaH=clamp(lambdaH,0.25,3.8); lambdaA=clamp(lambdaA,0.20,3.5);
   const dist=dixonColesDistribution(lambdaH,lambdaA);
   const seedBase=Math.abs(hashString(`${c.home}|${c.away}`))>>>0, rngState={value:seedBase||123456789};
-  let hWin=0,draw=0,aWin=0,over25=0,over35=0,btts=0, total=0;
-  for(const cell of dist){ const n=Math.max(1,Math.round(cell.p*iterations)); const hg=cell.hg, ag=cell.ag, t=hg+ag; total+=t*n; if(hg>ag)hWin+=n; else if(hg===ag)draw+=n; else aWin+=n; if(t>=3)over25+=n; if(t>=4)over35+=n; if(hg>0&&ag>0)btts+=n; }
-  // Tiny deterministic Monte Carlo perturbation avoids presenting a perfectly
-  // mechanical probability while keeping the Dixon-Coles distribution primary.
-  const jitter=(seededRandom(rngState)-0.5)*0.4;
-  return {iterations,historicalSample,quality:historicalSample>=8?"alta":historicalSample>=3?"media":"baseline",lambdaH,lambdaA,eloHome:model?.eloHome??null,eloAway:model?.eloAway??null,prob:{"1":clamp(hWin/iterations*100+jitter,1,99),"X":clamp(draw/iterations*100,1,99),"2":clamp(aWin/iterations*100-jitter,1,99),"Over 2.5":over25/iterations*100,"Under 2.5":(1-over25/iterations)*100,"Over 3.5":over35/iterations*100,"Under 3.5":(1-over35/iterations)*100,"Goal":btts/iterations*100,"No Goal":(1-btts/iterations)*100},expectedGoals:total/iterations};
+  let hWin=0,draw=0,aWin=0,over15=0,over25=0,over35=0,over45=0,btts=0,total=0;
+  for(let i=0;i<iterations;i++){
+    const u=seededRandom(rngState); let acc=0,cell=dist[dist.length-1];
+    for(const x of dist){acc+=x.p;if(u<=acc){cell=x;break;}}
+    const hg=cell.hg,ag=cell.ag,t=hg+ag; total+=t;
+    if(hg>ag)hWin++; else if(hg===ag)draw++; else aWin++;
+    if(t>=2)over15++; if(t>=3)over25++; if(t>=4)over35++; if(t>=5)over45++; if(hg>0&&ag>0)btts++;
+  }
+  return {iterations,historicalSample,quality:historicalSample>=8?'alta':historicalSample>=5?'media':'insufficiente',lambdaH,lambdaA,eloHome:model?.eloHome??null,eloAway:model?.eloAway??null,prob:{
+    '1':hWin/iterations*100,'X':draw/iterations*100,'2':aWin/iterations*100,
+    'Over 1.5':over15/iterations*100,'Under 1.5':100-over15/iterations*100,
+    'Over 2.5':over25/iterations*100,'Under 2.5':100-over25/iterations*100,
+    'Over 3.5':over35/iterations*100,'Under 3.5':100-over35/iterations*100,
+    'Over 4.5':over45/iterations*100,'Under 4.5':100-over45/iterations*100,
+    'Goal':btts/iterations*100,'No Goal':100-btts/iterations*100
+  },expectedGoals:total/iterations};
 }
-function expectedGoalsModel(h,a,c,globalElo=null){
-  const hasH=Number.isFinite(h?.gfHome)||Number.isFinite(h?.gf);
-  const hasA=Number.isFinite(a?.gfAway)||Number.isFinite(a?.gf);
-  if(!hasH||!hasA) return null;
-  const baseH=1.42, baseA=1.18;
-  const hAttack=Number.isFinite(h.gfHome)?0.70*h.gfHome+0.30*(h.gf??h.gfHome):h.gf;
-  const hDefense=Number.isFinite(h.gaHome)?0.70*h.gaHome+0.30*(h.ga??h.gaHome):h.ga;
-  const aAttack=Number.isFinite(a.gfAway)?0.70*a.gfAway+0.30*(a.gf??a.gfAway):a.gf;
-  const aDefense=Number.isFinite(a.gaAway)?0.70*a.gaAway+0.30*(a.ga??a.gaAway):a.ga;
-  let lambdaH=0.55*(baseH*(hAttack/baseH)*(aDefense/baseA))+0.45*avg(hAttack,aDefense);
-  let lambdaA=0.55*(baseA*(aAttack/baseA)*(hDefense/baseH))+0.45*avg(aAttack,hDefense);
+
+function expectedGoalsModel(h,a,c,globalElo=null,leagueBaseline=null){
+  const hasH=Number.isFinite(h?.gfHome)||Number.isFinite(h?.gf), hasA=Number.isFinite(a?.gfAway)||Number.isFinite(a?.gf);
+  const bothSamples=Math.min(Number(h?.sample||0),Number(a?.sample||0));
+  if(!hasH||!hasA||bothSamples<5) return null;
+  const leagueHome=Number(leagueBaseline?.homeGoals)>0?Number(leagueBaseline.homeGoals):1.45;
+  const leagueAway=Number(leagueBaseline?.awayGoals)>0?Number(leagueBaseline.awayGoals):1.18;
+  const rel=clamp(Math.min(Number(h?.homeSample||0),Number(a?.awaySample||0))/6,0,1);
+  const hAttack=1+(((Number.isFinite(h.gfHome)?h.gfHome:h.gf)/leagueHome)-1)*rel;
+  const hDefense=1+(((Number.isFinite(h.gaHome)?h.gaHome:h.ga)/leagueAway)-1)*rel;
+  const aAttack=1+(((Number.isFinite(a.gfAway)?a.gfAway:a.gf)/leagueAway)-1)*rel;
+  const aDefense=1+(((Number.isFinite(a.gaAway)?a.gaAway:a.ga)/leagueHome)-1)*rel;
+  let lambdaH=leagueHome*(0.62*hAttack+0.38*aDefense);
+  let lambdaA=leagueAway*(0.62*aAttack+0.38*hDefense);
   const formDiff=(Number.isFinite(h.form)?h.form:1.5)-(Number.isFinite(a.form)?a.form:1.5);
-  lambdaH*=Math.exp(clamp(formDiff/30,-0.12,0.12));
-  lambdaA*=Math.exp(clamp(-formDiff/30,-0.12,0.12));
-  const elo=globalElo?globalEloDiff(c,globalElo):buildEloContext(c);
-  const eloShift=clamp((elo.diff||55)/400,-0.30,0.30);
-  lambdaH*=Math.exp(eloShift*0.18); lambdaA*=Math.exp(-eloShift*0.14);
+  const formShift=clamp(formDiff/30,-0.10,0.10); lambdaH*=Math.exp(formShift); lambdaA*=Math.exp(-formShift*0.85);
+  const elo=globalElo?globalEloDiff(c,globalElo):buildEloContext(c); const eloShift=clamp((elo.diff||55)/400,-0.25,0.25);
+  lambdaH*=Math.exp(eloShift*0.16); lambdaA*=Math.exp(-eloShift*0.12);
   return {lambdaH:clamp(lambdaH,0.25,3.6),lambdaA:clamp(lambdaA,0.20,3.3),eloHome:elo.homeElo,eloAway:elo.awayElo};
 }
+
 function dixonColesDistribution(lambdaH,lambdaA,rho=-0.08){
   const cells=[]; let total=0;
   for(let hg=0;hg<=7;hg++) for(let ag=0;ag<=7;ag++){
@@ -962,6 +964,16 @@ function dixonColesDistribution(lambdaH,lambdaA,rho=-0.08){
   }
   return cells.map(x=>({...x,p:x.p/total}));
 }
+function buildLeagueBaselines(fdResults){
+  const out=new Map();
+  for(const {code,d} of fdResults){
+    const rows=Array.isArray(d?.matches)?d.matches:[]; let hg=0,ag=0,n=0;
+    for(const m of rows){const h=Number(m?.score?.fullTime?.home),a=Number(m?.score?.fullTime?.away);if(m?.status!=='FINISHED'||!Number.isFinite(h)||!Number.isFinite(a))continue;hg+=h;ag+=a;n++;}
+    if(n>=8) out.set(String(code).toUpperCase(),{homeGoals:hg/n,awayGoals:ag/n,sample:n});
+  }
+  return out;
+}
+
 function buildGlobalElo(fdResults){
   const rows=[]; for(const {d} of fdResults){ for(const m of (Array.isArray(d?.matches)?d.matches:[])){ if(Number.isFinite(m?.score?.fullTime?.home)&&Number.isFinite(m?.score?.fullTime?.away)&&m?.homeTeam?.id&&m?.awayTeam?.id) rows.push(m); } }
   rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate)); const elo=new Map();
@@ -971,11 +983,13 @@ function buildGlobalElo(fdResults){
 function globalEloDiff(c,elo){ const h=Number(c?._homeTeamId),a=Number(c?._awayTeamId); const homeElo=elo.get(h)||1500,awayElo=elo.get(a)||1500; return {homeElo,awayElo,diff:homeElo-awayElo+55}; }
 function hashString(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
 
+function quoteFreshnessScore(ageMin){const n=Number(ageMin);if(!Number.isFinite(n)||n<0)return 0;if(n<=5)return 100;if(n<=15)return 90;if(n<=30)return 75;if(n<=60)return 45;return 10;}
+
 function liquidityScore(c) {
-  const n=Number(c?.liquidity);
-  if(!Number.isFinite(n) || n<=0) return 45;
-  // Scala logaritmica: evita che un mercato con liquiditÃ  enorme domini il ranking.
-  return clamp(25 + 22*Math.log10(1+n), 25, 100);
+  const n=Number(c?.liquidity); if(!Number.isFinite(n)||n<=0)return 35;
+  let score=clamp(25+22*Math.log10(1+n),25,100); const spread=Number(c?.quoteSpread);
+  if(Number.isFinite(spread)){if(spread<=0.03)score+=8;else if(spread<=0.08)score+=3;else if(spread>=0.20)score-=10;}
+  return clamp(score,0,100);
 }
 
 function marketType(c) {
@@ -1006,7 +1020,7 @@ function calibrateIndependentProbability(rawProb, sampleSize, source) {
   return {
     value: clamp(value, 2, 98),
     reliability,
-    ready: source === "stat" && n >= 3
+    ready: source === "stat" && n >= 5
   };
 }
 
@@ -1020,7 +1034,7 @@ function applyEnrichedScore(c, av, pred) {
 
   const homeN=Array.isArray(c._homeMatches)?c._homeMatches.length:0;
   const awayN=Array.isArray(c._awayMatches)?c._awayMatches.length:0;
-  const sampleSize=Math.max(homeN,awayN,Number(mc?.historicalSample||0));
+  const sampleSize=Math.min(homeN,awayN,Number(mc?.historicalSample||Infinity));
 
   // P_model è indipendente dal mercato: usiamo il modello statistico locale
   // come fonte primaria. Frequenze e prediction API sono validazione/context,
@@ -1037,7 +1051,7 @@ function applyEnrichedScore(c, av, pred) {
   if(!modelReady && probabilitySource==="none") modelProb=50;
 
   // Concordanza: serve come controllo, non come generatore della probabilità.
-  const vals=[mcProb,statProb,predictionProb,freqProb].filter(v=>v!=null);
+  const vals=[statProb,freqProb].filter(v=>v!=null);
   let agreement=72;
   if(vals.length>=2){
     const mean=vals.reduce((a,v)=>a+v,0)/vals.length;
@@ -1071,23 +1085,20 @@ function applyEnrichedScore(c, av, pred) {
   let evidence=0;
   if(statProb!=null) evidence+=28;
   if(mcProb!=null) evidence+=18;
-  if(predictionProb!=null) evidence+=12;
   if(freqProb!=null) evidence+=6;
   if(Number.isFinite(c.form)) evidence+=7;
   if(matchup!=null||venue!=null) evidence+=5;
   if(c.h2h?.sample>=3) evidence+=4;
   if(c.standingNote) evidence+=3;
-  if(absence!=null) evidence+=2;
   if(Number.isFinite(Number(c.odds))) evidence+=5;
   const analysisSupport=clamp(evidence,0,100);
 
   const liq=liquidityScore(c);
   const type=marketType(c);
   let score =
-    modelProb*0.30 +
-    analysisSupport*0.25 +
+    modelProb*0.35 +
+    analysisSupport*0.30 +
     valueScore*0.20 +
-    agreement*0.10 +
     contextScore*0.10 +
     liq*0.05;
 
@@ -1096,20 +1107,19 @@ function applyEnrichedScore(c, av, pred) {
   if(edge<0) score-=Math.min(12,Math.abs(edge)*0.35);
   if(agreement<55) score-=Math.min(10,(55-agreement)*0.35);
   if(!modelReady) score=Math.min(score,42);
+  if(sampleSize<5) score=Math.min(score,35);
   if(sampleSize<3) score=Math.min(score,38);
   else if(sampleSize<5) score=Math.min(score,48);
   else if(sampleSize<8) score-=Math.min(5,(8-sampleSize)*0.55);
   if(analysisSupport<15) score=Math.min(score,38);
   else if(analysisSupport<25) score=Math.min(score,48);
   else if(analysisSupport<40) score-=Math.min(6,(40-analysisSupport)*0.18);
-  if(av && (av.home?.length||av.away?.length)) score-=Math.min(4,Math.abs((av.home?.length||0)-(av.away?.length||0))*0.5);
   score=clamp(score,0,100);
 
   const components=[
-    {name:'probabilità modello calibrata',weight:30,value:modelProb},
-    {name:'qualità dati',weight:25,value:analysisSupport},
+    {name:'probabilità modello',weight:35,value:modelProb},
+    {name:'qualità dati',weight:30,value:analysisSupport},
     {name:'valore quota Betfair',weight:20,value:valueScore},
-    {name:'concordanza fonti',weight:10,value:agreement},
     {name:'contesto e stabilità',weight:10,value:contextScore},
     {name:'liquidità Betfair',weight:5,value:liq}
   ];
@@ -1118,14 +1128,14 @@ function applyEnrichedScore(c, av, pred) {
     prob:round(modelProb), edge:round(edge), score:round(score),
     topSelectionScore:round(score), analysisSupport:round(analysisSupport),
     analysisLimited:analysisSupport<40, modelAgreement:round(agreement),
-    probabilitySource, modelSample:sampleSize, modelVersion:"V136-DixonColes-Elo",
+    probabilitySource, modelSample:sampleSize, modelVersion:"V140-LeagueBaseline-DixonColes-Elo-MC",
     calibrationReliability:round(calibrated.reliability*100),
     modelReady, probabilityCalibrated:true,
     liquidity: c.liquidity!=null?Number(c.liquidity):null,
     scoreComponents:components.map(x=>({...x,value:round(x.value)})),
     absence:absence==null?0:round(absence), pred:predictionProb==null?0:round(predictionProb),
     monteCarlo:mc||null, eloHome:mc?.eloHome??null, eloAway:mc?.eloAway??null,
-    marketType:type, valueScore:round(valueScore), contextScore:round(contextScore)
+    marketType:type, valueScore:round(valueScore), contextScore:round(contextScore), topEligible:Boolean(modelReady && sampleSize>=5 && analysisSupport>=55 && Number(c.quoteFreshnessScore||0)>=45)
   };
 }
 
@@ -1667,6 +1677,7 @@ async function loadBetfairSnapshot(supaUrl, serviceKey) {
         status:r.status,
         backPrice:bestBackForRunner(r),
         backSize:bestBackSizeForRunner(r),
+        layPrice:(()=>{const xs=Array.isArray(r?.ex?.availableToLay)?r.ex.availableToLay:[];const p=xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x));return p.length?Math.min(...p):null;})(),
         name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r?.selectionId))?.runnerName:null)||String(r.selectionId)
       }));
       const item={marketId:String(m.marketId),marketName:name,event:m.event||null,competition:m.competition||null,receivedAt:book.received_at||m.received_at,runners};
@@ -1737,12 +1748,12 @@ function extractBetfairOdds(markets, requestedMarket="all", homeTeamName="", awa
         if(/\bover\b/i.test(r.name)) value=`Over ${line.toFixed(1)}`;
         else if(/\bunder\b/i.test(r.name)) value=`Under ${line.toFixed(1)}`;
       }
-      if(value) out.push({value,odd,bookmaker:"Betfair Exchange",liquidity:r.backSize??null,marketId:m.marketId});
+      if(value){const ageMin=m.receivedAt?Math.max(0,(Date.now()-new Date(m.receivedAt).getTime())/60000):Infinity;const layPrice=Number(r.layPrice);const spread=Number.isFinite(layPrice)&&layPrice>odd?layPrice-odd:null;out.push({value,odd,bookmaker:"Betfair Exchange",liquidity:r.backSize??null,marketId:m.marketId,receivedAt:m.receivedAt||null,quoteAgeMin:ageMin,quoteFreshnessScore:quoteFreshnessScore(ageMin),quoteSpread:spread});}
     }
   }
   // Una sola quota BACK per esito: prendiamo la migliore disponibile.
   const best=new Map();
-  for(const x of out){ const old=best.get(x.value); if(!old||x.odd>old.odd) best.set(x.value,x); }
+  for(const x of out){const old=best.get(x.value);if(!old||x.quoteAgeMin<old.quoteAgeMin||(x.quoteAgeMin===old.quoteAgeMin&&x.odd>old.odd))best.set(x.value,x);}
   return [...best.values()];
 }
 
@@ -1893,7 +1904,7 @@ function standingContext(name, standing) {
   return null;
 }
 
-function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTeamId, homeStanding, awayStanding, globalElo=null) {
+function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTeamId, homeStanding, awayStanding, globalElo=null, leagueBaseline=null) {
   const out = [];
   const h = summarize(homeStats?.matches, homeStats?.teamId);
   const a = summarize(awayStats?.matches, awayStats?.teamId);
@@ -1902,7 +1913,7 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
   const awayNote = standingContext(awayStats?.teamName, awayStanding);
   const standingNote = [homeNote, awayNote].filter(Boolean).join("; ") || null;
 
-  const eg=expectedGoalsModel(h,a,{_homeTeamId:homeTeamId,_awayTeamId:awayTeamId},globalElo);
+  const eg=expectedGoalsModel(h,a,{_homeTeamId:homeTeamId,_awayTeamId:awayTeamId,_leagueBaseline:leagueBaseline},globalElo,leagueBaseline);
   const lambdaH = eg?.lambdaH ?? null;
   const lambdaA = eg?.lambdaA ?? null;
   const total = lambdaH != null && lambdaA != null ? lambdaH + lambdaA : null;
@@ -1926,25 +1937,19 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
       pStat = probs[o.value] * 100;
     }
 
-    // Do not let a tiny historical sample create fake certainty.
-    const sampleSize = Math.max(
+    // V140: senza storico sufficiente o modello di gol, lo scenario non nasce.
+    const sampleSize = Math.min(
       Array.isArray(homeStats?.matches) ? homeStats.matches.length : 0,
       Array.isArray(awayStats?.matches) ? awayStats.matches.length : 0
     );
-    const pFreq = sampleSize >= 5 ? (freq[o.value] ?? null) : null;
+    if (pStat == null || sampleSize < 5) continue;
+    const pFreq = freq[o.value] ?? null;
     const pFair = fair[o.value] ?? (100 / o.odd);
-    let prob, confidence, probabilitySource;
-    if (pStat != null) {
-      prob = pStat; confidence = 0.88; probabilitySource = "stat";
-    } else if (pFreq != null) {
-      // La frequenza storica è solo un fallback descrittivo: non la
-      // promuoviamo a previsione forte quando manca il modello di gol.
-      prob = pFreq; confidence = 0.35; probabilitySource = "frequency";
-    } else {
-      prob = 50; confidence = 0.15; probabilitySource = "none";
-    }
-
+    const prob = pStat;
+    const confidence = 0.88;
+    const probabilitySource = "stat";
     const edge = prob - (100 / o.odd);
+
     const formBonus = (h.form!=null && a.form!=null) ? clamp((h.form + a.form) * 1.2, -5, 5) : 0;
 
     // SCORE BASE: prima valutiamo la solidita' dello scenario, poi il valore
@@ -1985,7 +1990,7 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
     score = clamp(score, 0, 100);
 
     out.push({
-      market: marketLabel(o.value), odds: o.odd, bookmaker: o.bookmaker || null, prob: round(prob), edge: round(edge),
+      market: marketLabel(o.value), odds: o.odd, bookmaker: o.bookmaker || null, quoteAgeMin:o.quoteAgeMin??null, quoteFreshnessScore:o.quoteFreshnessScore??0, quoteSpread:o.quoteSpread??null, prob: round(prob), edge: round(edge),
       form: round(formBonus), absence: 0, pred: 0, confidence: round(confidence * 100),
       homeForm: h.form==null?null:round(h.form), awayForm: a.form==null?null:round(a.form),
       pStat: pStat == null ? null : round(pStat), pFreq: pFreq == null ? null : round(pFreq),
