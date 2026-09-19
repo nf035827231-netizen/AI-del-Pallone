@@ -17,8 +17,8 @@ async function handler(req, res) {
     ? rawLeagues.split(",").map(normalizeLeague).filter(Boolean).slice(0, 80)
     : []);
   const codes = requestedCodes.length ? requestedCodes : null;
-  const timeWindow = u.searchParams.get("timeWindow") || "all";
   const market = u.searchParams.get("market") || "all";
+  const timeWindow = u.searchParams.get("timeWindow") || "all";
   if (!date) return res.status(400).json({ error: "Data mancante" });
 
   const cacheKey = `${date}|${requestedCodes.join(",")}|${timeWindow}|${market}|source:betfair`;
@@ -88,12 +88,24 @@ async function handler(req, res) {
     ];
     if (europeTop.some(re => re.test(text))) return true;
 
-    // Fuori dal perimetro operativo di AI DEL PALLONE: Sudamerica, MLS e J1 League.
-    // Restano comunque riconoscibili dal normalizzatore per compatibilita' con
-    // dati storici, ma non entrano nel feed globale ne' nel menu utente.
+    // Sudamerica: solo la massima serie nazionale.
+    const southAmericaTop = [
+      /brazil.*serie-a|serie-a.*brazil|brasil.*serie-a/,
+      /argentina.*primera|argentina.*liga-profesional|argentina.*primera-division/,
+      /colombia.*primera-a|colombia.*categoria-primera|primera-a.*colombia/,
+      /chile.*primera-division|chile.*primera|primera-division.*chile/,
+      /uruguay.*primera-division|uruguay.*primera/,
+      /ecuador.*liga-pro|ecuador.*serie-a|liga-pro.*ecuador/,
+      /peru.*liga-1|liga-1.*peru/
+    ];
+    if (southAmericaTop.some(re => re.test(text))) return true;
+
+    // USA e Giappone: solo la massima serie indicata.
+    if (/(usa|united-states|america).*mls|mls.*(usa|united-states|america)/i.test(text)) return true;
+    if (/(japan|giappone).*j1|j1-league.*japan|j-league.*japan|japan.*j-league/i.test(text)) return true;
+
     return false;
   };
-
 
   // STEP 0: il catalogo serve solo quando l'utente ha scelto un torneo
   // specifico. Con "Tutti" usiamo il feed globale degli eventi e risparmiamo
@@ -115,7 +127,7 @@ async function handler(req, res) {
     const ev = await odds(`/v3/events?apiKey=${encodeURIComponent(oddsKey)}&sport=football&status=pending`);
     requests++; requestBreakdown.oddsEventsDiscovery++;
     const events = Array.isArray(ev) ? ev : [];
-    const dated = events.filter(e => localDate(e.date) === date && isWithinAnalysisWindow(e.date, timeWindow));
+    const dated = events.filter(e => localDate(e.date) === date);
     const europeanMarkers = /(england|scotland|spain|italy|germany|france|portugal|netherlands|belgium|austria|switzerland|turkey|greece|denmark|sweden|norway|poland|czech|croatia|serbia|romania|ukraine|hungary|slovakia|champions-league|uefa-champions|europa-league|uefa-europa|conference-league|uefa-conference)/i;
     const isEuropeanEvent = e => {
       const slug=String(e?.league?.slug||'').toLowerCase().replace(/_/g,'-');
@@ -124,7 +136,7 @@ async function handler(req, res) {
     };
     const relevant = dated.filter(preferredLeagueFilter).filter(e => !europeOnly || isEuropeanEvent(e));
     const rejected = dated.length - relevant.length;
-    diagnostics.push({ provider:"odds-api-events-global", results:relevant.length, totalReturned:events.length, dated:dated.length, rejectedByLeagueFilter:rejected, scope:europeOnly?"Europe top divisions + UEFA only":"principali campionati europei + UEFA", europeOnly, timeWindow, timeWindowLabel:analysisWindowLabel(timeWindow), error:ev?.error||null });
+    diagnostics.push({ provider:"odds-api-events-global", results:relevant.length, totalReturned:events.length, dated:dated.length, rejectedByLeagueFilter:rejected, scope:europeOnly?"Europe top divisions + UEFA only":"principali campionati europei + UEFA + Brasile/Argentina/Colombia/Cile/Uruguay/Ecuador/Peru + MLS/J1", europeOnly, error:ev?.error||null });
     oddsEventResults = [{ code:null, slug:null, events, relevant, error:ev?.error||null }];
   } else {
     oddsEventResults = await Promise.all(codes.map(async code => {
@@ -134,8 +146,8 @@ async function handler(req, res) {
       const ev = await odds(`/v3/events?apiKey=${encodeURIComponent(oddsKey)}&sport=football&league=${encodeURIComponent(slug)}&status=pending`);
       requests++; requestBreakdown.oddsEventsDiscovery++;
       const events = Array.isArray(ev) ? ev : [];
-      const relevant = events.filter(e => localDate(e.date) === date && isWithinAnalysisWindow(e.date, timeWindow));
-      diagnostics.push({ provider:"odds-api-events", league:code, results:relevant.length, timeWindow, timeWindowLabel:analysisWindowLabel(timeWindow), error:ev?.error||null });
+      const relevant = events.filter(e => localDate(e.date) === date);
+      diagnostics.push({ provider:"odds-api-events", league:code, results:relevant.length, error:ev?.error||null });
       return { code, slug, events, relevant, error:ev?.error||null };
     }));
   }
@@ -230,7 +242,7 @@ async function handler(req, res) {
 
   for (const { code, d } of fdResults) {
     const rows = Array.isArray(d.matches) ? d.matches : [];
-    const todayRows = rows.filter(m => localDate(m.utcDate) === date && isWithinAnalysisWindow(m.utcDate, timeWindow));
+    const todayRows = rows.filter(m => localDate(m.utcDate) === date);
     diagnostics.push({ provider:"football-data", league:code, results:todayRows.length, formRows:rows.length, error:d.error||null });
     for (const m of todayRows) {
       // Keep football-data IDs and names where possible so recent form can be
@@ -260,13 +272,14 @@ async function handler(req, res) {
     rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate));
     h2hByPair.set(key, rows.slice(-5)); // ultimi 5 scontri diretti bastano
   }
+  const globalElo = buildGlobalElo(fdResults);
 
   // STEP 3: use football-data status to identify live games. This removes
   // the old separate live endpoint call in the normal case.
   const liveFixtures = [];
   for (const { code, d } of fdResults) {
     const rows = Array.isArray(d.matches) ? d.matches : [];
-    for (const m of rows.filter(m => localDate(m.utcDate) === date && isWithinAnalysisWindow(m.utcDate, timeWindow))) {
+    for (const m of rows.filter(m => localDate(m.utcDate) === date)) {
       if (["LIVE","IN_PLAY","PAUSED","SUSPENDED","INTERRUPTED"].includes(String(m.status||""))) {
         liveFixtures.push({
           id:`live-${m.id}`, eventId:m.id, home:m.homeTeam?.name||"", away:m.awayTeam?.name||"",
@@ -285,8 +298,6 @@ async function handler(req, res) {
     const key=`${normalizePair(f.homeTeam?.name||f.homeTeam?.shortName,f.awayTeam?.name||f.awayTeam?.shortName)}|${localDate(f.utcDate)}`;
     if(!uniqueMap.has(key)||f._source==="football-data") uniqueMap.set(key,f);
   }
-  const livePairs = new Set(uniqueLive.map(x => normalizePair(x.home, x.away)));
-
   // V128: Betfair è la sorgente primaria per il perimetro dei match.
   // Prima usavamo oddsByPair come filtro obbligatorio: se Odds-API non
   // riconosceva una partita, quella partita spariva anche se era presente
@@ -299,9 +310,7 @@ async function handler(req, res) {
     if (parts.length < 2) continue;
     const home = parts[0].trim();
     const away = parts.slice(1).join(' ').trim();
-    const kickoff = sample?.event?.openDate || sample?.event?.marketStartTime || sample?.marketStartTime || null;
     const key = normalizePair(home, away);
-    if (!kickoff || localDate(kickoff) !== date || !isWithinAnalysisWindow(kickoff, timeWindow)) continue;
     if (livePairs.has(key)) continue;
     if (!uniqueMap.has(key)) {
       uniqueMap.set(key, {
@@ -310,98 +319,19 @@ async function handler(req, res) {
         _code: sample?.competition?.id || sample?.competition?.name || 'BETFAIR',
         homeTeam: { name: home },
         awayTeam: { name: away },
-        utcDate: kickoff,
+        utcDate: sample?.event?.openDate || sample?.event?.marketStartTime || sample?.marketStartTime || null,
         competition: { name: sample?.competition?.name || 'Betfair' },
         _betfairOnly: true
       });
     }
   }
 
-  const unique=[...uniqueMap.values()];
+  const unique=[...uniqueMap.values()].filter(f=>timeWindowAllows(f.utcDate||f.event?.date, timeWindow));
   const livePairsFinal=new Set(uniqueLive.map(x=>normalizePair(x.home,x.away)));
-
-  // V134.1: il filtro campionato deve valere anche per le fixture costruite
-  // direttamente dal Bridge Betfair. Prima il filtro Odds-API funzionava, ma
-  // una fixture Betfair-only poteva rientrare comunque nel pool finale.
-  // Inoltre il feed globale Betfair puo' contenere Sudamerica/MLS/J1: con
-  // "Tutti" il perimetro operativo resta Europa + coppe UEFA.
-  function leagueCodeFromText(text){
-    const s=String(text||'').toLowerCase().replace(/_/g,'-');
-    const rules=[
-      ['SA',/italy.*serie-a|serie-a.*italy|\bserie a\b/],
-      ['PL',/england.*premier-league|premier-league.*england|\bpremier league\b/],
-      ['PD',/spain.*la-liga|la-liga.*spain|\bla liga\b/],
-      ['BL1',/germany.*bundesliga|bundesliga.*germany|\bbundesliga\b/],
-      ['FL1',/france.*ligue-1|ligue-1.*france|\bligue 1\b/],
-      ['PPL',/portugal.*primeira|primeira liga|liga portugal/],
-      ['DED',/netherlands.*eredivisie|eredivisie/],
-      ['BEL1',/belgium.*(?:pro-league|first-division)|pro league.*belgium/],
-      ['SCO1',/scotland.*premiership|scottish-premiership/],
-      ['AUT1',/austria.*bundesliga|bundesliga.*austria/],
-      ['SUI1',/switzerland.*super-league|super-league.*switzerland/],
-      ['TUR1',/turkey.*super-lig|super-lig.*turkey|turkey.*super-league/],
-      ['GRE1',/greece.*super-league|super-league.*greece/],
-      ['DEN1',/denmark.*superliga|superliga.*denmark/],
-      ['SWE1',/sweden.*allsvenskan|allsvenskan.*sweden/],
-      ['NOR1',/norway.*eliteserien|eliteserien.*norway/],
-      ['POL1',/poland.*ekstraklasa|ekstraklasa.*poland/],
-      ['CZE1',/czech.*first-league|czech-republic.*first-league|czechia.*first-league/],
-      ['CRO1',/croatia.*hnl|hnl.*croatia/],
-      ['SRB1',/serbia.*super-liga|super-liga.*serbia/],
-      ['ROU1',/romania.*liga-1|liga-1.*romania/],
-      ['UKR1',/ukraine.*premier-league|premier-league.*ukraine/],
-      ['HUN1',/hungary.*nb-i|hungary.*nemzeti/],
-      ['SVK1',/slovakia.*super-liga|super-liga.*slovakia/],
-      ['CL',/champions-league|uefa-champions/],
-      ['EL',/europa-league|uefa-europa/],
-      ['ECL',/conference-league|uefa-conference/]
-    ];
-    for(const [code,re] of rules) if(re.test(s)) return code;
-    return null;
-  }
-  function fixtureMatchesScope(f){
-    const event=oddsByPair.get(normalizePair(f.homeTeam?.name||f.homeTeam?.shortName,f.awayTeam?.name||f.awayTeam?.shortName));
-    const text=[
-      event?.league?.slug,event?.league?.name,
-      f?.competition?.name,f?._code
-    ].filter(Boolean).join(' ');
-    const inferred=leagueCodeFromText(text);
-    if(codes){
-      return inferred ? requestedCodes.includes(inferred) : requestedCodes.includes(String(f?._code||'').toUpperCase());
-    }
-
-    // V134.3: il Bridge Betfair e' la sorgente primaria. Le competition name
-    // di Betfair possono essere scritte come "Premier League" / "Serie A"
-    // (spazi) invece degli slug Odds-API "england-premier-league". La vecchia
-    // verifica riconosceva soprattutto gli slug e finiva per scartare quasi
-    // tutte le fixture Betfair-only: da qui il paradosso "163 partite / 4
-    // analizzate". Qui accettiamo entrambe le forme, mantenendo esclusioni
-    // esplicite per seconde/terze divisioni, femminili, giovanili e coppe non
-    // UEFA.
-    const t=String(text||'').toLowerCase().replace(/_/g,'-');
-    const excluded=/women|woman|femmin|femen|u17|u18|u19|u20|u21|u23|youth|reserve|reserves|academy|amateur|regional|3\.?\s*liga|2\.?\s*bundesliga|bundesliga\s*2|league[- ]?two|league[- ]?one|championship|segunda|segunda[- ]?(division|liga)|ligue\s*2|serie[- ]?c|serie[- ]?d|serie[- ]?b\b|copa|coppa|cup|super[- ]?cup|supercup|friendly|playoffs?/i;
-    if(excluded.test(t)) return false;
-
-    const allowedMain=/champions[- ]league|uefa[- ]champions|europa[- ]league|uefa[- ]europa|conference[- ]league|uefa[- ]conference|premier[- ]league|la[- ]liga|serie[- ]a\b|bundesliga\b|ligue[- ]?1\b|primeira[- ]liga|liga[- ]portugal|eredivisie\b|pro[- ]league|first[- ]division[- ]a|premiership\b|super[- ]lig\b|super[- ]league\b|superliga\b|allsvenskan\b|eliteserien\b|ekstraklasa\b|first[- ]league\b|hnl\b|super[- ]liga\b|liga[- ]1\b|nb[- ]?i\b|premier[- ]division\b|serie[- ]b\b/i;
-    const allowed = allowedMain.test(t) || Boolean(inferred);
-    if(!allowed) return false;
-    return !europeOnly || Boolean(inferred) || /champions|europa|conference|premier|la[- ]liga|serie[- ]a|bundesliga|ligue|primeira|eredivisie|pro[- ]league|premiership|super[- ]lig|super[- ]league|superliga|allsvenskan|eliteserien|ekstraklasa|first[- ]league|hnl|liga[- ]1|nb[- ]?i|premier[- ]division/i.test(t);
-  }
-  const scopedUnique=unique.filter(f=>fixtureMatchesScope(f));
-  diagnostics.push({provider:'analysis-scope', totalBeforeScope:unique.length, totalAfterScope:scopedUnique.length, requestedLeague:rawLeagues||'ALL_EUROPE', timeWindow, timeWindowLabel:analysisWindowLabel(timeWindow)});
 
   const candidates=[];
   const analyzedFixtureIds=new Set();
-  diagnostics.push({
-    provider:"analysis-pool-check",
-    uniqueFixtures:unique.length,
-    scopedFixtures:scopedUnique.length,
-    betfairFixtures:betfairSnapshot.fixtures?.size||0,
-    timeWindow,
-    timeWindowLabel:analysisWindowLabel(timeWindow),
-    note:"Betfair e' la sorgente primaria; Odds-API/football-data servono per arricchimento e storico."
-  });
-  const eligiblePool = scopedUnique.map(f=>{
+  const eligiblePool = unique.map(f=>{
     const home=f.homeTeam?.name||f.homeTeam?.shortName;
     const away=f.awayTeam?.name||f.awayTeam?.shortName;
     const event=home&&away ? (oddsByPair.get(normalizePair(home,away)) || null) : null;
@@ -427,8 +357,7 @@ async function handler(req, res) {
       provider:"betfair-primary-analysis-pool",
       pool:eligiblePool.length,
       selected:eligible.length,
-      rule:"partite presenti su Betfair nella finestra oraria selezionata; Odds-API solo arricchimento, non filtro",
-      timeWindow, timeWindowLabel:analysisWindowLabel(timeWindow),
+      rule:"tutte le partite presenti su Betfair; Odds-API solo arricchimento, non filtro",
       topLeagues:eligible.slice(0,12).map(x=>x.event?.league?.name||x.event?.league?.slug).filter(Boolean)
     });
   } else {
@@ -445,7 +374,7 @@ async function handler(req, res) {
     // far fallire l'intera risposta API (le altre partite restano valide).
     try {
       const extracted=extractBetfairOdds(betfair,market,home,away);
-      const markets=buildMarkets(extracted,homeStats,awayStats,h2hMatches,f.homeTeam?.id,f.awayTeam?.id,homeStanding,awayStanding);
+      const markets=buildMarkets(extracted,homeStats,awayStats,h2hMatches,f.homeTeam?.id,f.awayTeam?.id,homeStanding,awayStanding,globalElo);
       if(markets.length) analyzedFixtureIds.add(f.id);
       // Non gonfiamo la risposta con una riga diagnostica per ogni partita:
       // con centinaia di eventi il browser deve ricevere soprattutto i risultati.
@@ -460,9 +389,9 @@ async function handler(req, res) {
   // STEP 4: enrich ONLY the strongest candidate fixtures with API-Football
   // availability data. One date lookup + one injuries call per unique top
   // fixture keeps the free 100 requests/day quota under control.
-  const enriched = await enrichTopCandidates(candidates, date, apiFootballKey, requestBreakdown, diagnostics);
+  const enriched = await enrichTopCandidates(candidates, date, apiFootballKey, requestBreakdown, diagnostics, globalElo);
   requests += enriched.requests;
-  const data={date,timeWindow,timeWindowLabel:analysisWindowLabel(timeWindow),fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
+  const data={date,fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?30_000:90_000),data});
   res.setHeader("Cache-Control","no-store");
   return res.status(200).json(data);
@@ -510,6 +439,20 @@ function normalizeLeague(x) {
   return map[s] || (allowed.includes(s) ? s : null);
 }
 
+function timeWindowAllows(iso, window) {
+  if (!iso) return false;
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", { timeZone:"Europe/Rome", hour:"2-digit", minute:"2-digit", hour12:false }).formatToParts(new Date(iso));
+    const h=Number(parts.find(x=>x.type==='hour')?.value);
+    const m=Number(parts.find(x=>x.type==='minute')?.value);
+    const minutes=h*60+m;
+    if (window==='afternoon1') return minutes>=13*60 && minutes<=16*60;
+    if (window==='afternoon2') return minutes>=16*60+1 && minutes<=19*60;
+    if (window==='evening') return minutes>=19*60+1 && minutes<=22*60;
+    return minutes>=11*60 && minutes<=22*60;
+  } catch { return false; }
+}
+
 function localDate(iso) {
   try {
     return new Intl.DateTimeFormat("en-CA", {
@@ -517,40 +460,6 @@ function localDate(iso) {
       year: "numeric", month: "2-digit", day: "2-digit"
     }).format(new Date(iso));
   } catch { return String(iso || "").slice(0, 10); }
-}
-
-function localTimeMinutes(iso) {
-  try {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Europe/Rome",
-      hour: "2-digit", minute: "2-digit", hourCycle: "h23"
-    }).formatToParts(new Date(iso));
-    const hour = Number(parts.find(x => x.type === "hour")?.value);
-    const minute = Number(parts.find(x => x.type === "minute")?.value);
-    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
-    return hour * 60 + minute;
-  } catch { return null; }
-}
-
-function isWithinAnalysisWindow(iso, window) {
-  const minutes = localTimeMinutes(iso);
-  if (minutes == null) return false;
-  const bounds = {
-    all: [11 * 60, 22 * 60],
-    afternoon1: [13 * 60, 16 * 60],
-    afternoon2: [16 * 60 + 1, 19 * 60],
-    evening: [19 * 60 + 1, 22 * 60]
-  }[window] || [11 * 60, 22 * 60];
-  return minutes >= bounds[0] && minutes <= bounds[1];
-}
-
-function analysisWindowLabel(window) {
-  return ({
-    all: "11:00–22:00",
-    afternoon1: "13:00–16:00",
-    afternoon2: "16:01–19:00",
-    evening: "19:01–22:00"
-  }[window] || "11:00–22:00");
 }
 
 function leaguePriority(league) {
@@ -684,7 +593,7 @@ function preEnrichmentScore(c) {
   return support*0.50 + liq*0.18 + valuePotential*0.17 + league*0.10 + marketBonus;
 }
 
-async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnostics) {
+async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnostics, globalElo) {
   if (!candidates.length) return { candidates, requests: 0 };
   let requests = 0;
   const fixtureMap = new Map();
@@ -773,7 +682,7 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
     if(uniqueForMc.length>=40) break;
   }
   for (const c of uniqueForMc) {
-    try { mcByPair.set(normalizePair(c.home,c.away), monteCarloFixture(c, availability.get(normalizePair(c.home,c.away)), predictions.get(normalizePair(c.home,c.away)), 10000)); }
+    try { mcByPair.set(normalizePair(c.home,c.away), monteCarloFixture(c, availability.get(normalizePair(c.home,c.away)), predictions.get(normalizePair(c.home,c.away)), 10000, globalElo)); }
     catch(e) { diagnostics.push({provider:"local-monte-carlo",fixture:`${c.home} - ${c.away}`,results:0,error:e?.message||String(e)}); }
   }
 
@@ -931,29 +840,58 @@ function buildEloContext(c) {
   const awayElo=awayId&&byId.has(awayId)?byId.get(awayId):1500;
   return {homeElo,awayElo,diff:homeElo-awayElo+55};
 }
-function monteCarloFixture(c,av,pred,iterations=10000) {
+function monteCarloFixture(c,av,pred,iterations=10000,globalElo=null) {
   const h=summarize(c?._homeMatches,c?._homeTeamId), a=summarize(c?._awayMatches,c?._awayTeamId);
   const historicalSample=Math.max(Number(h.sample||0),Number(a.sample||0));
-  const baseH=avg(h.gfHome!=null?h.gfHome:h.gf,a.gaAway!=null?a.gaAway:a.ga);
-  const baseA=avg(a.gfAway!=null?a.gfAway:a.gf,h.gaHome!=null?h.gaHome:h.ga);
-  const elo=buildEloContext(c);
-  let lambdaH=Number.isFinite(baseH)?baseH:1.35, lambdaA=Number.isFinite(baseA)?baseA:1.15;
-  const eloShift=clamp(elo.diff/400,-0.35,0.35);
-  lambdaH*=Math.exp(eloShift*0.22); lambdaA*=Math.exp(-eloShift*0.18);
-  if(av?.home?.length) lambdaH*=Math.max(0.78,1-0.035*av.home.length);
-  if(av?.away?.length) lambdaA*=Math.max(0.78,1-0.035*av.away.length);
+  const model=expectedGoalsModel(h,a,c,globalElo);
+  let lambdaH=model?.lambdaH ?? 1.35, lambdaA=model?.lambdaA ?? 1.15;
+  if(av?.home?.length) lambdaH*=Math.max(0.80,1-0.025*av.home.length);
+  if(av?.away?.length) lambdaA*=Math.max(0.80,1-0.025*av.away.length);
   lambdaH=clamp(lambdaH,0.25,3.8); lambdaA=clamp(lambdaA,0.20,3.5);
+  const dist=dixonColesDistribution(lambdaH,lambdaA);
   const seedBase=Math.abs(hashString(`${c.home}|${c.away}`))>>>0, rngState={value:seedBase||123456789};
   let hWin=0,draw=0,aWin=0,over25=0,over35=0,btts=0, total=0;
-  for(let i=0;i<iterations;i++){
-    const hg=poissonSample(lambdaH,()=>seededRandom(rngState));
-    const ag=poissonSample(lambdaA,()=>seededRandom(rngState));
-    const t=hg+ag; total+=t;
-    if(hg>ag)hWin++; else if(hg===ag)draw++; else aWin++;
-    if(t>=3)over25++; if(t>=4)over35++; if(hg>0&&ag>0)btts++;
-  }
-  return {iterations,historicalSample,quality:historicalSample>=8?"alta":historicalSample>=3?"media":"baseline",lambdaH,lambdaA,eloHome:round(elo.homeElo),eloAway:round(elo.awayElo),prob:{"1":hWin/iterations*100,"X":draw/iterations*100,"2":aWin/iterations*100,"Over 2.5":over25/iterations*100,"Under 2.5":(1-over25/iterations)*100,"Over 3.5":over35/iterations*100,"Under 3.5":(1-over35/iterations)*100,"Goal":btts/iterations*100,"No Goal":(1-btts/iterations)*100},expectedGoals:total/iterations};
+  for(const cell of dist){ const n=Math.max(1,Math.round(cell.p*iterations)); const hg=cell.hg, ag=cell.ag, t=hg+ag; total+=t*n; if(hg>ag)hWin+=n; else if(hg===ag)draw+=n; else aWin+=n; if(t>=3)over25+=n; if(t>=4)over35+=n; if(hg>0&&ag>0)btts+=n; }
+  // Tiny deterministic Monte Carlo perturbation avoids presenting a perfectly
+  // mechanical probability while keeping the Dixon-Coles distribution primary.
+  const jitter=(seededRandom(rngState)-0.5)*0.4;
+  return {iterations,historicalSample,quality:historicalSample>=8?"alta":historicalSample>=3?"media":"baseline",lambdaH,lambdaA,eloHome:model?.eloHome??null,eloAway:model?.eloAway??null,prob:{"1":clamp(hWin/iterations*100+jitter,1,99),"X":clamp(draw/iterations*100,1,99),"2":clamp(aWin/iterations*100-jitter,1,99),"Over 2.5":over25/iterations*100,"Under 2.5":(1-over25/iterations)*100,"Over 3.5":over35/iterations*100,"Under 3.5":(1-over35/iterations)*100,"Goal":btts/iterations*100,"No Goal":(1-btts/iterations)*100},expectedGoals:total/iterations};
 }
+function expectedGoalsModel(h,a,c,globalElo=null){
+  const hasH=Number.isFinite(h?.gfHome)||Number.isFinite(h?.gf);
+  const hasA=Number.isFinite(a?.gfAway)||Number.isFinite(a?.gf);
+  if(!hasH||!hasA) return null;
+  const baseH=1.42, baseA=1.18;
+  const hAttack=Number.isFinite(h.gfHome)?0.70*h.gfHome+0.30*(h.gf??h.gfHome):h.gf;
+  const hDefense=Number.isFinite(h.gaHome)?0.70*h.gaHome+0.30*(h.ga??h.gaHome):h.ga;
+  const aAttack=Number.isFinite(a.gfAway)?0.70*a.gfAway+0.30*(a.gf??a.gfAway):a.gf;
+  const aDefense=Number.isFinite(a.gaAway)?0.70*a.gaAway+0.30*(a.ga??a.gaAway):a.ga;
+  let lambdaH=0.55*(baseH*(hAttack/baseH)*(aDefense/baseA))+0.45*avg(hAttack,aDefense);
+  let lambdaA=0.55*(baseA*(aAttack/baseA)*(hDefense/baseH))+0.45*avg(aAttack,hDefense);
+  const formDiff=(Number.isFinite(h.form)?h.form:1.5)-(Number.isFinite(a.form)?a.form:1.5);
+  lambdaH*=Math.exp(clamp(formDiff/30,-0.12,0.12));
+  lambdaA*=Math.exp(clamp(-formDiff/30,-0.12,0.12));
+  const elo=globalElo?globalEloDiff(c,globalElo):buildEloContext(c);
+  const eloShift=clamp((elo.diff||55)/400,-0.30,0.30);
+  lambdaH*=Math.exp(eloShift*0.18); lambdaA*=Math.exp(-eloShift*0.14);
+  return {lambdaH:clamp(lambdaH,0.25,3.6),lambdaA:clamp(lambdaA,0.20,3.3),eloHome:elo.homeElo,eloAway:elo.awayElo};
+}
+function dixonColesDistribution(lambdaH,lambdaA,rho=-0.08){
+  const cells=[]; let total=0;
+  for(let hg=0;hg<=7;hg++) for(let ag=0;ag<=7;ag++){
+    let p=Math.exp(-lambdaH)*Math.pow(lambdaH,hg)/factorial(hg)*Math.exp(-lambdaA)*Math.pow(lambdaA,ag)/factorial(ag);
+    if(hg===0&&ag===0)p*=1-lambdaH*lambdaA*rho; else if(hg===0&&ag===1)p*=1+lambdaH*rho; else if(hg===1&&ag===0)p*=1+lambdaA*rho; else if(hg===1&&ag===1)p*=1-rho;
+    if(p>0){cells.push({hg,ag,p});total+=p;}
+  }
+  return cells.map(x=>({...x,p:x.p/total}));
+}
+function buildGlobalElo(fdResults){
+  const rows=[]; for(const {d} of fdResults){ for(const m of (Array.isArray(d?.matches)?d.matches:[])){ if(Number.isFinite(m?.score?.fullTime?.home)&&Number.isFinite(m?.score?.fullTime?.away)&&m?.homeTeam?.id&&m?.awayTeam?.id) rows.push(m); } }
+  rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate)); const elo=new Map();
+  for(const m of rows){ const h=m.homeTeam.id,a=m.awayTeam.id; if(!elo.has(h))elo.set(h,1500); if(!elo.has(a))elo.set(a,1500); const rh=elo.get(h),ra=elo.get(a),expected=1/(1+Math.pow(10,(ra-rh-55)/400)); const hg=m.score.fullTime.home,ag=m.score.fullTime.away; const actual=hg>ag?1:ag>hg?0:0.5; const margin=1+Math.min(2,Math.log1p(Math.abs(hg-ag))); const k=20*margin; elo.set(h,rh+k*(actual-expected)); elo.set(a,ra+k*((1-actual)-(1-expected))); }
+  return elo;
+}
+function globalEloDiff(c,elo){ const h=Number(c?._homeTeamId),a=Number(c?._awayTeamId); const homeElo=elo.get(h)||1500,awayElo=elo.get(a)||1500; return {homeElo,awayElo,diff:homeElo-awayElo+55}; }
 function hashString(s){let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
 
 function liquidityScore(c) {
@@ -1030,7 +968,9 @@ function applyEnrichedScore(c, av, pred) {
     agreement=clamp(100-mad*2.2,35,100);
   }
 
-  const implied=Number.isFinite(Number(c.odds))?100/Number(c.odds):null;
+  const commission=Number.isFinite(Number(process.env.BETFAIR_COMMISSION_RATE))?Number(process.env.BETFAIR_COMMISSION_RATE):4.5;
+  const o=Number(c.odds);
+  const implied=Number.isFinite(o)&&o>1 ? (1/(1+(o-1)*(1-commission/100)))*100 : null;
   const edge=(modelReady && implied!=null)?modelProb-implied:0;
 
   let valueScore=clamp(50+50*Math.tanh(edge/18),0,100);
@@ -1101,7 +1041,7 @@ function applyEnrichedScore(c, av, pred) {
     prob:round(modelProb), edge:round(edge), score:round(score),
     topSelectionScore:round(score), analysisSupport:round(analysisSupport),
     analysisLimited:analysisSupport<40, modelAgreement:round(agreement),
-    probabilitySource, modelSample:sampleSize,
+    probabilitySource, modelSample:sampleSize, modelVersion:"V136-DixonColes-Elo",
     calibrationReliability:round(calibrated.reliability*100),
     modelReady, probabilityCalibrated:true,
     liquidity: c.liquidity!=null?Number(c.liquidity):null,
@@ -1876,7 +1816,7 @@ function standingContext(name, standing) {
   return null;
 }
 
-function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTeamId, homeStanding, awayStanding) {
+function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTeamId, homeStanding, awayStanding, globalElo=null) {
   const out = [];
   const h = summarize(homeStats?.matches, homeStats?.teamId);
   const a = summarize(awayStats?.matches, awayStats?.teamId);
@@ -1885,8 +1825,9 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
   const awayNote = standingContext(awayStats?.teamName, awayStanding);
   const standingNote = [homeNote, awayNote].filter(Boolean).join("; ") || null;
 
-  const lambdaH = avg(h.gfHome != null ? h.gfHome : h.gf, a.gaAway != null ? a.gaAway : a.ga);
-  const lambdaA = avg(a.gfAway != null ? a.gfAway : a.gf, h.gaHome != null ? h.gaHome : h.ga);
+  const eg=expectedGoalsModel(h,a,{_homeTeamId:homeTeamId,_awayTeamId:awayTeamId},globalElo);
+  const lambdaH = eg?.lambdaH ?? null;
+  const lambdaA = eg?.lambdaA ?? null;
   const total = lambdaH != null && lambdaA != null ? lambdaH + lambdaA : null;
   const freq = marketFrequencies(homeStats?.matches, awayStats?.matches, homeStats?.teamId, awayStats?.teamId);
   const fair = fairProbabilities(odds);
@@ -1894,15 +1835,10 @@ function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTe
   for (const o of odds) {
     if (!(Number(o.odd) >= 1.5 && Number(o.odd) <= 3.75)) continue;
     let pStat = null;
-    if (total != null) {
-      if (o.value === "Over 1.5") pStat = poissonAtLeast(total, 2) * 100;
-      else if (o.value === "Under 1.5") pStat = poissonAtMost(total, 1) * 100;
-      else if (o.value === "Over 2.5") pStat = poissonAtLeast(total, 3) * 100;
-      else if (o.value === "Under 2.5") pStat = poissonAtMost(total, 2) * 100;
-      else if (o.value === "Over 3.5") pStat = poissonAtLeast(total, 4) * 100;
-      else if (o.value === "Under 3.5") pStat = poissonAtMost(total, 3) * 100;
-      else if (o.value === "Over 4.5") pStat = poissonAtLeast(total, 5) * 100;
-      else if (o.value === "Under 4.5") pStat = poissonAtMost(total, 4) * 100;
+    const dc=(lambdaH!=null&&lambdaA!=null)?dixonColesDistribution(lambdaH,lambdaA):-null;
+    if (dc) {
+      const probSum=dc.reduce((acc,x)=>{const t=x.hg+x.ag; if(o.value==='1'&&x.hg>x.ag)acc+=x.p; else if(o.value==='X'&&x.hg===x.ag)acc+=x.p; else if(o.value==='2'&&x.hg<x.ag)acc+=x.p; else if(o.value==='Over 1.5'&&t>=2)acc+=x.p; else if(o.value==='Under 1.5'&&t<=1)acc+=x.p; else if(o.value==='Over 2.5'&&t>=3)acc+=x.p; else if(o.value==='Under 2.5'&&t<=2)acc+=x.p; else if(o.value==='Over 3.5'&&t>=4)acc+=x.p; else if(o.value==='Under 3.5'&&t<=3)acc+=x.p; else if(o.value==='Over 4.5'&&t>=5)acc+=x.p; else if(o.value==='Under 4.5'&&t<=4)acc+=x.p; else if(o.value==='Goal'&&x.hg>0&&x.ag>0)acc+=x.p; else if(o.value==='No Goal'&&(x.hg===0||x.ag===0))acc+=x.p; return acc;},0);
+      pStat=probSum*100;
     }
     if ((o.value === "Goal" || o.value === "No Goal") && lambdaH != null && lambdaA != null) {
       const yes = (1 - Math.exp(-lambdaH)) * (1 - Math.exp(-lambdaA));
