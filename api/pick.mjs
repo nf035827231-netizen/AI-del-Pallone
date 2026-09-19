@@ -369,13 +369,38 @@ async function handler(req, res) {
     if(codes){
       return inferred ? requestedCodes.includes(inferred) : requestedCodes.includes(String(f?._code||'').toUpperCase());
     }
-    return preferredLeagueFilter({league:{slug:event?.league?.slug||'',name:event?.league?.name||f?.competition?.name||''}}) && (!europeOnly || inferred || /champions|europa|conference|premier|la liga|serie a|bundesliga|ligue 1|primeira|eredivisie|pro league|premiership|super league|superliga|allsvenskan|eliteserien|ekstraklasa|first league|hnl|super liga|liga 1|premier league|nb i|super liga slovakia/i.test(text));
+
+    // V134.3: il Bridge Betfair e' la sorgente primaria. Le competition name
+    // di Betfair possono essere scritte come "Premier League" / "Serie A"
+    // (spazi) invece degli slug Odds-API "england-premier-league". La vecchia
+    // verifica riconosceva soprattutto gli slug e finiva per scartare quasi
+    // tutte le fixture Betfair-only: da qui il paradosso "163 partite / 4
+    // analizzate". Qui accettiamo entrambe le forme, mantenendo esclusioni
+    // esplicite per seconde/terze divisioni, femminili, giovanili e coppe non
+    // UEFA.
+    const t=String(text||'').toLowerCase().replace(/_/g,'-');
+    const excluded=/women|woman|femmin|femen|u17|u18|u19|u20|u21|u23|youth|reserve|reserves|academy|amateur|regional|3\.?\s*liga|2\.?\s*bundesliga|bundesliga\s*2|league[- ]?two|league[- ]?one|championship|segunda|segunda[- ]?(division|liga)|ligue\s*2|serie[- ]?c|serie[- ]?d|serie[- ]?b\b|copa|coppa|cup|super[- ]?cup|supercup|friendly|playoffs?/i;
+    if(excluded.test(t)) return false;
+
+    const allowedMain=/champions[- ]league|uefa[- ]champions|europa[- ]league|uefa[- ]europa|conference[- ]league|uefa[- ]conference|premier[- ]league|la[- ]liga|serie[- ]a\b|bundesliga\b|ligue[- ]?1\b|primeira[- ]liga|liga[- ]portugal|eredivisie\b|pro[- ]league|first[- ]division[- ]a|premiership\b|super[- ]lig\b|super[- ]league\b|superliga\b|allsvenskan\b|eliteserien\b|ekstraklasa\b|first[- ]league\b|hnl\b|super[- ]liga\b|liga[- ]1\b|nb[- ]?i\b|premier[- ]division\b|serie[- ]b\b/i;
+    const allowed = allowedMain.test(t) || Boolean(inferred);
+    if(!allowed) return false;
+    return !europeOnly || Boolean(inferred) || /champions|europa|conference|premier|la[- ]liga|serie[- ]a|bundesliga|ligue|primeira|eredivisie|pro[- ]league|premiership|super[- ]lig|super[- ]league|superliga|allsvenskan|eliteserien|ekstraklasa|first[- ]league|hnl|liga[- ]1|nb[- ]?i|premier[- ]division/i.test(t);
   }
   const scopedUnique=unique.filter(f=>fixtureMatchesScope(f));
   diagnostics.push({provider:'analysis-scope', totalBeforeScope:unique.length, totalAfterScope:scopedUnique.length, requestedLeague:rawLeagues||'ALL_EUROPE', timeWindow, timeWindowLabel:analysisWindowLabel(timeWindow)});
 
   const candidates=[];
   const analyzedFixtureIds=new Set();
+  diagnostics.push({
+    provider:"analysis-pool-check",
+    uniqueFixtures:unique.length,
+    scopedFixtures:scopedUnique.length,
+    betfairFixtures:betfairSnapshot.fixtures?.size||0,
+    timeWindow,
+    timeWindowLabel:analysisWindowLabel(timeWindow),
+    note:"Betfair e' la sorgente primaria; Odds-API/football-data servono per arricchimento e storico."
+  });
   const eligiblePool = scopedUnique.map(f=>{
     const home=f.homeTeam?.name||f.homeTeam?.shortName;
     const away=f.awayTeam?.name||f.awayTeam?.shortName;
@@ -676,10 +701,10 @@ async function enrichTopCandidates(candidates, date, apiKey, breakdown, diagnost
   for (const c of [...candidates].sort((a,b)=>preEnrichmentScore(b)-preEnrichmentScore(a))) {
     const key = normalizePair(c.home, c.away);
     if (!seen.has(key)) { seen.add(key); uniqueFixtures.push(c); }
-    if (uniqueFixtures.length >= 18) break;
+    if (uniqueFixtures.length >= 30) break;
   }
   enrichedFixtureCount = uniqueFixtures.length;
-  // Le 18 partite vengono arricchite, ma il ranking finale resta libero su tutti gli scenari.
+  // Le 30 partite vengono arricchite, ma il ranking finale resta libero su tutti gli scenari.
   try {
     const fx = await apiFootball(`/fixtures?date=${encodeURIComponent(date)}&timezone=Europe%2FRome`, apiKey);
     requests++; breakdown.apiFootballFixtures++; 
