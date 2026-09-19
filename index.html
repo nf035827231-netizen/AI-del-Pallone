@@ -1119,7 +1119,7 @@ function renderAIPicks(picks){
  const box=$('aiPicks'); const dateBox=$('aiDateLabel');
  if(dateBox){ const d=$('date')?.value; dateBox.textContent=d?new Date(d+'T12:00:00').toLocaleDateString('it-IT',{day:'2-digit',month:'short',year:'numeric'}):''; }
  if(!box)return;
- if(!picks?.length){box.innerHTML='<div class="ai-picks-empty">Oggi il modello non ha trovato scenari sufficientemente supportati dai dati.</div>';return;}
+ if(!picks?.length){box.innerHTML='<div class="ai-picks-empty">Oggi non sono disponibili 3 scenari pre-match con quota BACK Betfair fino a 3,70.</div>';return;}
  const compName=code=>({SA:'Serie A',SB:'Serie B',PL:'Premier League',PD:'LaLiga',BL1:'Bundesliga',FL1:'Ligue 1',CL:'Champions League',ELC:'Championship',DED:'Eredivisie',PPL:'Primeira Liga'})[code]||code||'Calcio';
  box.className='ai-picks';
  box.innerHTML=picks.map((x,i)=>`<article class="ai-pick-card ${i===0?'top':''}"><span class="rank">${i===0?'⭐ TOP AI':i===1?'🥈 SECONDO SCENARIO':'🥉 TERZO SCENARIO'}</span><div class="competition">${esc(compName(x.leagueCode||x.league))}${x.kickoff?` · ${new Date(x.kickoff).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})}`:''}</div><div class="ai-match">${esc(x.home)} <span style="color:#718198">–</span> ${esc(x.away)}</div><div class="ai-market"><span>Scenario indicato dall'AI</span><b>${esc(x.market)}</b></div><div class="ai-odds-row"><span>Quota usata dall'AI</span><b>${Number(x.odds||0)>1?Number(x.odds).toFixed(2):'—'}</b></div><div class="ai-metrics"><div class="ai-metric"><span>Probabilità</span><b>${Number(x.prob||0).toFixed(1)}%</b></div><div class="ai-metric"><span>Quota</span><b>${Number(x.odds||0)>1?Number(x.odds).toFixed(2):'—'}</b></div><div class="ai-metric"><span>Ultime 3</span><b>${Number(x.modelSample||0)>=3?'3/3':String(Number(x.modelSample||0))+'/3'}</b></div></div><div class="ai-reason"><b>Perché?</b> ${esc(x.reason||'Lo scenario è stato selezionato sulla base dei segnali disponibili.')}</div></article>`).join('');
@@ -1230,7 +1230,7 @@ function render(cs){
  const summaryWrap=$('dailySummaryBtnWrap');if(summaryWrap)summaryWrap.style.display=picks.length?'block':'none';
  const minAnalysis=picks.length?Math.min(...picks.map(x=>Number(x.analysisSupport)||0)):0;
  const notice=picks.length<3
-   ?`<div class="top3-notice empty">🟡 ${picks.length} scenario/i disponibili. Il modello confronta tutti gli scenari disponibili e mostra i migliori; la qualità dell’analisi resta indicata nel badge.</div>`
+   ?`<div class="top3-notice empty">🟡 ${picks.length} scenario/i disponibili. Il modello ordina per probabilità stimata e mostra i migliori scenari disponibili; la qualità dei dati resta indicata nel badge.</div>`
    :minAnalysis<45
      ?`<div class="top3-notice empty">⚠️ TOP disponibile: il modello privilegia gli scenari con dati sufficienti e usa un secondo livello solo quando non ci sono abbastanza candidati di qualità.</div>`
      :`<div class="top3-notice small">ℹ️ TOP ordinato esclusivamente per probabilità stimata da classifica + ultime 3. Betfair Exchange è usata solo per la quota BACK (massimo 3,70).</div>`;
