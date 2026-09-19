@@ -188,8 +188,10 @@ async function handler(req, res) {
   // actually have a pending fixture on the selected date. This is the key
   // reduction: no historical/form request for empty competitions.
   const recentByTeam = new Map();
+  const recentByTeamName = new Map();
   const teamCrests = new Map();
   const standingsByTeam = new Map();
+  const standingsByTeamName = new Map();
   // Storico: per mantenere l'algoritmo semplice ma avere davvero le ultime 3
   // e la classifica, usiamo una sola richiesta matches per competizione.
   // La classifica viene ricostruita dai risultati FINISHED, quindi non serve
@@ -244,6 +246,11 @@ async function handler(req, res) {
         if (!team?.id) continue;
         if (!recentByTeam.has(team.id)) recentByTeam.set(team.id, []);
         recentByTeam.get(team.id).push(m);
+        const teamKey = normalize(team.name);
+        if (teamKey) {
+          if (!recentByTeamName.has(teamKey)) recentByTeamName.set(teamKey, []);
+          recentByTeamName.get(teamKey).push(m);
+        }
       }
     }
 
@@ -266,7 +273,12 @@ async function handler(req, res) {
       }
       const table=[...tableMap.values()].sort((a,b)=>b.points-a.points || ((b.gf-b.ga)-(a.gf-a.ga)) || b.gf-a.gf || a.name.localeCompare(b.name));
       const totalTeams=table.length;
-      table.forEach((row,i)=>standingsByTeam.set(row.id,{position:i+1,totalTeams,playedGames:row.playedGames,points:row.points}));
+      table.forEach((row,i)=>{
+        const standing = {position:i+1,totalTeams,playedGames:row.playedGames,points:row.points};
+        standingsByTeam.set(row.id, standing);
+        const teamKey = normalize(row.name);
+        if (teamKey) standingsByTeamName.set(teamKey, standing);
+      });
     }
   }
 
@@ -415,10 +427,14 @@ async function handler(req, res) {
   }
 
   for(const {f,home,away,event,betfair} of eligible){
-    const homeStats=f.homeTeam?.id?{teamId:f.homeTeam.id,teamName:home,matches:recentByTeam.get(f.homeTeam.id)||[]}:null;
-    const awayStats=f.awayTeam?.id?{teamId:f.awayTeam.id,teamName:away,matches:recentByTeam.get(f.awayTeam.id)||[]}:null;
-    const homeStanding=f.homeTeam?.id?standingsByTeam.get(f.homeTeam.id)||null:null;
-    const awayStanding=f.awayTeam?.id?standingsByTeam.get(f.awayTeam.id)||null:null;
+    const homeNameKey = normalize(home);
+    const awayNameKey = normalize(away);
+    const homeMatches = (f.homeTeam?.id ? recentByTeam.get(f.homeTeam.id) : null) || recentByTeamName.get(homeNameKey) || [];
+    const awayMatches = (f.awayTeam?.id ? recentByTeam.get(f.awayTeam.id) : null) || recentByTeamName.get(awayNameKey) || [];
+    const homeStats={teamId:f.homeTeam?.id||null,teamName:home,matches:homeMatches};
+    const awayStats={teamId:f.awayTeam?.id||null,teamName:away,matches:awayMatches};
+    const homeStanding=(f.homeTeam?.id ? standingsByTeam.get(f.homeTeam.id) : null) || standingsByTeamName.get(homeNameKey) || null;
+    const awayStanding=(f.awayTeam?.id ? standingsByTeam.get(f.awayTeam.id) : null) || standingsByTeamName.get(awayNameKey) || null;
     try {
       // La partita è considerata ANALIZZATA anche senza quota: classifica +
       // ultime 3 vengono comunque valutate. Senza quota non può però entrare
@@ -437,7 +453,8 @@ async function handler(req, res) {
     }
   }
 
-  diagnostics.push({provider:'model-quality-gate',rule:'minimum 3 finished matches for BOTH teams for TOP; simple model only; Betfair is preferred for odds, Odds-API fallback is allowed; value threshold softened to 2pp',candidatesBeforeEnrichment:candidates.length,minimumSample:3});
+  const withRecent3 = candidates.filter(c => Number(c?.recentForm?.homeMatches||0) >= 3 && Number(c?.recentForm?.awayMatches||0) >= 3).length;
+  diagnostics.push({provider:'model-quality-gate',rule:'minimum 3 finished matches for BOTH teams for TOP; lookup by Football-Data ID OR normalized team name; simple model only; latest available odds accepted',candidatesBeforeEnrichment:candidates.length,withRecent3,minimumSample:3});
 
   // STEP 4: modello volutamente semplice. Nessuna API-Football, nessun ELO,
   // nessun Monte Carlo, nessun H2H e nessun infortunio entra nel punteggio.
@@ -1967,7 +1984,7 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
       confidence: round(score), score: round(score), topSelectionScore: round(score),
       analysisSupport: round((formScore + standingsScore) / 2), valueScore: round(valueScore),
       modelReady: sample >= 3, topEligible,
-      modelVersion:"V143-Semplice-Classifica-3Partite-Quota-Fallback",
+      modelVersion:"V147-Semplice-Classifica-3Partite-Quota-NomeTeam",
       standingNote, homeStanding, awayStanding,
       recentForm: {home:h.form, away:a.form, homeMatches:h.sample, awayMatches:a.sample},
       reason,
