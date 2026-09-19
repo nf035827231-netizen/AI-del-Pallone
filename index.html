@@ -595,7 +595,7 @@ body[data-theme="light"] .archive-item .bet-match-card{background:#f7f9fc!import
 
 <section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="timeWindow" aria-label="Finestra oraria"><option value="all">🕐 Tutto il giorno · 11:00–22:00</option><option value="afternoon1">☀️ Primo pomeriggio · 13:00–16:00</option><option value="afternoon2">🌤️ Tardo pomeriggio · 16:01–19:00</option><option value="evening">🌙 Sera · 19:01–22:00</option></select><select id="market"><option value="all">Tutti i mercati</option><option value="totals">Under / Over 1.5 · 2.5 · 3.5 · 4.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Per ridurre le chiamate API, i risultati utili vengono memorizzati per 15 minuti. Le quote usate dal modello arrivano da Betfair Exchange (BACK); Bet365 non viene usato per Probabilità, Edge o TOP. Una nuova analisi usa la cache finché è valida.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
-<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le migliori disponibili del giorno</h2><p class="small top3-subtitle">Probabilità stimata, qualità dell'analisi e valore della quota vengono combinati per ordinare gli scenari disponibili.</p></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">📊</span><div><b>30%</b><small>Probabilità modello</small></div></div><div class="top3-method-item"><span class="method-icon">🧠</span><div><b>25%</b><small>Qualità dei dati</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>20%</b><small>Valore quota Betfair</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🛡️</span><div><b>1 partita = 1 esito</b><small>Nel TOP 3 non ripetiamo la stessa gara</small></div></div></div></section>
+<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le migliori disponibili del giorno</h2><p class="small top3-subtitle">Probabilità stimata, qualità dell'analisi e valore della quota vengono combinati per ordinare gli scenari disponibili.</p></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">📊</span><div><b>35%</b><small>Probabilità modello</small></div></div><div class="top3-method-item"><span class="method-icon">🧠</span><div><b>30%</b><small>Qualità dei dati</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>20%</b><small>Valore quota Betfair</small></div></div><div class="top3-method-item"><span class="method-icon">🧭</span><div><b>10%</b><small>Contesto</small></div></div><div class="top3-method-item"><span class="method-icon">💧</span><div><b>5%</b><small>Liquidità</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🛡️</span><div><b>1 partita = 1 esito</b><small>Nel TOP 3 non ripetiamo la stessa gara</small></div></div></div></section>
 
 <section class="card tab-section active" data-section="today"><h2>📊 Classifica candidati</h2><div id="candidates" class="empty">Nessun candidato.</div></section>
 
@@ -1178,10 +1178,8 @@ function render(cs){
    $("pick").innerHTML='<div class="empty">🟡 Nessun candidato disponibile.</div>';
    $("candidates").innerHTML='<div class="empty">Nessun candidato.</div>';return;
  }
- // TOP 1/2/3: ranking unico su tutti gli scenari realmente disponibili,
- // ma senza trasformare un candidato "di emergenza" in un TOP normale.
- // Prima cerchiamo scenari con modello pronto e qualità sufficiente; solo se
- // non ce ne sono abbastanza scendiamo a un secondo livello di qualità.
+ // TOP 1/2/3: solo scenari realmente pronti. Nessun "riempitivo" se i dati
+ // non raggiungono i requisiti minimi del modello V140.
  const picks=[]; const usedMatch=new Set(); const exact=new Set();
  const base=[...cs].filter(v=>{
    const key=`${v.fixtureId||''}|${v.market||''}`;
@@ -1205,12 +1203,9 @@ function render(cs){
      picks.push(v);usedMatch.add(mk);
    }
  };
- // Tier 1: scenario realmente utilizzabile.
- selectTier(base.filter(v=>Boolean(v.modelReady) && Number(v.analysisSupport)>=55 && Number(v.topSelectionScore)>=55));
- // Tier 2: dati discreti ma modello non completamente pronto.
- selectTier(base.filter(v=>Number(v.analysisSupport)>=45 && Number(v.topSelectionScore)>=50));
- // Tier 3: solo se non esistono alternative migliori. Mai sotto 40/100 di analisi.
- selectTier(base.filter(v=>Number(v.analysisSupport)>=40 && Number(v.topSelectionScore)>=45));
+ // V140: un candidato entra nel TOP solo se il modello è pronto,
+ // il campione è sufficiente, l'analisi è >=55 e la quota è abbastanza fresca.
+ selectTier(base.filter(v=>Boolean(v.topEligible) && Boolean(v.modelReady) && Number(v.modelSample)>=5 && Number(v.analysisSupport)>=55 && Number(v.topSelectionScore)>=55 && Number(v.quoteFreshnessScore||0)>=45));
  const absenceHtml=x=>{
    if(!x.availability){
      const fixtureKey=`${x.home} - ${x.away}`;
