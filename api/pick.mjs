@@ -188,7 +188,6 @@ async function handler(req, res) {
   // actually have a pending fixture on the selected date. This is the key
   // reduction: no historical/form request for empty competitions.
   const recentByTeam = new Map();
-  const h2hByPair = new Map();
   const teamCrests = new Map();
   const standingsByTeam = new Map();
   // Budget server-side: con "Tutti" il feed globale puo' contenere molte
@@ -220,16 +219,12 @@ async function handler(req, res) {
   }
   if (!footballToken) diagnostics.push({provider:"football-data", results:0, error:"FOOTBALL_DATA_TOKEN non configurato: si continua comunque con Odds-API.io + API-Football."});
   const fdResults = await Promise.all(fdCodes.map(async code => {
-    const from = daysAgo(date, 120);
-    const [d, teamsData, standingsData] = await Promise.all([
+    const from = daysAgo(date, 90);
+    const [d, standingsData] = await Promise.all([
       fd(`/v4/competitions/${encodeURIComponent(code)}/matches?dateFrom=${from}&dateTo=${date}&limit=500`, footballToken),
-      fd(`/v4/competitions/${encodeURIComponent(code)}/teams`, footballToken),
       fd(`/v4/competitions/${encodeURIComponent(code)}/standings`, footballToken)
     ]);
-    requests += 3; requestBreakdown.footballFixturesAndForm += 3;
-    if (Array.isArray(teamsData?.teams)) {
-      for (const t of teamsData.teams) { if (t?.id && t?.crest) teamCrests.set(t.id, t.crest); }
-    }
+    requests += 2; requestBreakdown.footballFixturesAndForm += 2;
     // La classifica esiste in forma di tabella semplice solo per i campionati
     // a girone unico (non per Champions/Coppe a gironi multipli o fasi a
     // eliminazione): se non troviamo una tabella "TOTAL", salto senza errori.
@@ -251,6 +246,8 @@ async function handler(req, res) {
     for (const m of todayRows) {
       // Keep football-data IDs and names where possible so recent form can be
       // attached to the same fixture without another team-specific request.
+      if (m?.homeTeam?.id && m?.homeTeam?.crest) teamCrests.set(m.homeTeam.id, m.homeTeam.crest);
+      if (m?.awayTeam?.id && m?.awayTeam?.crest) teamCrests.set(m.awayTeam.id, m.awayTeam.crest);
       fixtures.push({ ...m, _code:code, _source:"football-data" });
     }
     for (const m of rows) {
@@ -260,24 +257,13 @@ async function handler(req, res) {
         if (!recentByTeam.has(team.id)) recentByTeam.set(team.id, []);
         recentByTeam.get(team.id).push(m);
       }
-      const hId=m.homeTeam?.id, aId=m.awayTeam?.id;
-      if (hId && aId) {
-        const key=h2hKey(hId,aId);
-        if (!h2hByPair.has(key)) h2hByPair.set(key, []);
-        h2hByPair.get(key).push(m);
-      }
     }
   }
+
   for (const [id, rows] of recentByTeam) {
     rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate));
-    recentByTeam.set(id, rows.slice(-10));
+    recentByTeam.set(id, rows.slice(-3));
   }
-  for (const [key, rows] of h2hByPair) {
-    rows.sort((a,b)=>new Date(a.utcDate)-new Date(b.utcDate));
-    h2hByPair.set(key, rows.slice(-5)); // ultimi 5 scontri diretti bastano
-  }
-  const globalElo = buildGlobalElo(fdResults);
-  const leagueBaselines = buildLeagueBaselines(fdResults);
 
   // STEP 3: use football-data status to identify live games. This removes
   // the old separate live endpoint call in the normal case.
@@ -395,33 +381,31 @@ async function handler(req, res) {
   for(const {f,home,away,event,betfair} of eligible){
     const homeStats=f.homeTeam?.id?{teamId:f.homeTeam.id,teamName:home,matches:recentByTeam.get(f.homeTeam.id)||[]}:null;
     const awayStats=f.awayTeam?.id?{teamId:f.awayTeam.id,teamName:away,matches:recentByTeam.get(f.awayTeam.id)||[]}:null;
-    const h2hMatches=(f.homeTeam?.id&&f.awayTeam?.id)?(h2hByPair.get(h2hKey(f.homeTeam.id,f.awayTeam.id))||[]):[];
     const homeStanding=f.homeTeam?.id?standingsByTeam.get(f.homeTeam.id)||null:null;
     const awayStanding=f.awayTeam?.id?standingsByTeam.get(f.awayTeam.id)||null:null;
     // try/catch difensivo: un errore sull'analisi di UNA partita non deve
     // far fallire l'intera risposta API (le altre partite restano valide).
     try {
       const extracted=extractBetfairOdds(betfair,market,home,away);
-      const leagueBaseline = leagueBaselines.get(String(f._code || "").toUpperCase()) || null;
-      const markets=buildMarkets(extracted,homeStats,awayStats,h2hMatches,f.homeTeam?.id,f.awayTeam?.id,homeStanding,awayStanding,globalElo,leagueBaseline);
+      const markets=buildMarkets(extracted,homeStats,awayStats,homeStanding,awayStanding);
       if(markets.length) analyzedFixtureIds.add(f.id);
       // Non gonfiamo la risposta con una riga diagnostica per ogni partita:
       // con centinaia di eventi il browser deve ricevere soprattutto i risultati.
       // Conserviamo invece gli errori e i casi senza mercati analizzabili.
       if(!markets.length) diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:extracted.map(x=>x.value),analyzedMarkets:0,bookmaker:"Betfair Exchange",marketIds:betfair.map(x=>x.marketId),error:"Nessun mercato BACK nel perimetro richiesto"});
-      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId,_leagueBaseline:leagueBaseline});
+      for(const m of markets) candidates.push({...m,home,away,homeLogo:teamCrests.get(f.homeTeam?.id)||f.homeTeam?.crest||null,awayLogo:teamCrests.get(f.awayTeam?.id)||f.awayTeam?.crest||null,league:f.competition?.name||f._code,leagueCode:f._code,fixtureId:f.id,eventId:event?.id||f.id,kickoff:f.utcDate||event?.date||m.kickoff||null,oddsSource:"Betfair Exchange",statsSource:(homeStats?.matches?.length||awayStats?.matches?.length)?"football-data.org":"odds-only",_homeMatches:homeStats?.matches||[],_awayMatches:awayStats?.matches||[],_homeTeamId:homeStats?.teamId,_awayTeamId:awayStats?.teamId,homeStanding,awayStanding});
     } catch (e) {
       diagnostics.push({provider:"betfair-analysis",league:f._code,fixture:`${home} - ${away}`,oddsMarkets:[],analyzedMarkets:0,error:`Errore interno analisi Betfair: ${e?.message||String(e)}`});
     }
   }
 
-  diagnostics.push({provider:'model-quality-gate',rule:'minimum 5 finished matches for BOTH teams; no 50% fallback; Betfair-only excluded when a specific league is selected',candidatesBeforeEnrichment:candidates.length,minimumSample:5});
+  diagnostics.push({provider:'model-quality-gate',rule:'minimum 3 finished matches for BOTH teams; simple model only; Betfair-only excluded when a specific league is selected',candidatesBeforeEnrichment:candidates.length,minimumSample:3});
 
-  // STEP 4: enrich ONLY the strongest candidate fixtures with API-Football
-  // availability data. One date lookup + one injuries call per unique top
-  // fixture keeps the free 100 requests/day quota under control.
-  const enriched = await enrichTopCandidates(candidates, date, apiFootballKey, requestBreakdown, diagnostics, globalElo);
-  requests += enriched.requests;
+  // STEP 4: modello volutamente semplice. Nessuna API-Football, nessun ELO,
+  // nessun Monte Carlo, nessun H2H e nessun infortunio entra nel punteggio.
+  // Per ogni scenario contiamo solo: classifica + ultime 3 gare + quota.
+  const enriched = finalizeSimpleCandidates(candidates);
+  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"edge >= 5 punti percentuali e score >= 60"});
   const data={date,fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?30_000:90_000),data});
   res.setHeader("Cache-Control","no-store");
@@ -455,6 +439,7 @@ function competitionTextMatchesCode(text, code) {
   const t = String(text || '').toLowerCase();
   switch (String(code || '').toUpperCase()) {
     case 'SA': return /italy|italia/.test(t) && /serie[\s_-]*a/.test(t) && !/serie[\s_-]*b|women|primavera/.test(t);
+    case 'SB': return /italy|italia/.test(t) && /serie[\s_-]*b/.test(t) && !/women|primavera|serie[\s_-]*c/.test(t);
     case 'PL': return /premier[\s_-]*league/.test(t) && /england|england's|inglese|uk/.test(t);
     case 'PD': return /la[\s_-]*liga/.test(t) && /spain|españa|spagna/.test(t);
     case 'BL1': return /bundesliga/.test(t) && /germany|deutschland|german/.test(t) && !/2\.?\s*bundesliga/.test(t);
@@ -489,7 +474,8 @@ function inferFootballDataCode(event) {
   const slug = String(event?.league?.slug || "").toLowerCase();
   const name = String(event?.league?.name || "").toLowerCase();
   const s = `${slug} ${name}`;
-  if (/italy.*serie-a|serie a/.test(s)) return "SA";
+  if (/italy.*serie-a|serie a/.test(s) && !/serie b/.test(s)) return "SA";
+  if (/italy.*serie-b|serie b/.test(s)) return "SB";
   if (/england.*premier|premier league/.test(s)) return "PL";
   if (/spain.*la-liga|la liga/.test(s)) return "PD";
   if (/germany.*bundesliga/.test(s) && !/2\.?\s*bundesliga/.test(s)) return "BL1";
@@ -1909,103 +1895,157 @@ function standingContext(name, standing) {
   return null;
 }
 
-function buildMarkets(odds, homeStats, awayStats, h2hMatches, homeTeamId, awayTeamId, homeStanding, awayStanding, globalElo=null, leagueBaseline=null) {
+function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
   const out = [];
   const h = summarize(homeStats?.matches, homeStats?.teamId);
   const a = summarize(awayStats?.matches, awayStats?.teamId);
-  const h2h = summarizeH2H(h2hMatches, homeTeamId, awayTeamId);
-  const homeNote = standingContext(homeStats?.teamName, homeStanding);
-  const awayNote = standingContext(awayStats?.teamName, awayStanding);
-  const standingNote = [homeNote, awayNote].filter(Boolean).join("; ") || null;
-
-  const eg=expectedGoalsModel(h,a,{_homeTeamId:homeTeamId,_awayTeamId:awayTeamId,_leagueBaseline:leagueBaseline},globalElo,leagueBaseline);
-  const lambdaH = eg?.lambdaH ?? null;
-  const lambdaA = eg?.lambdaA ?? null;
-  const total = lambdaH != null && lambdaA != null ? lambdaH + lambdaA : null;
-  const freq = marketFrequencies(homeStats?.matches, awayStats?.matches, homeStats?.teamId, awayStats?.teamId);
-  const fair = fairProbabilities(odds);
+  const standingNote = simpleStandingNote(homeStats?.teamName, homeStanding, awayStats?.teamName, awayStanding);
+  const last3 = [...(homeStats?.matches || []), ...(awayStats?.matches || [])]
+    .filter(m => Number.isFinite(m?.score?.fullTime?.home) && Number.isFinite(m?.score?.fullTime?.away));
 
   for (const o of odds) {
-    if (!(Number(o.odd) >= 1.5 && Number(o.odd) <= 3.75)) continue;
-    let pStat = null;
-    const dc=(lambdaH!=null&&lambdaA!=null)?dixonColesDistribution(lambdaH,lambdaA):-null;
-    if (dc) {
-      const probSum=dc.reduce((acc,x)=>{const t=x.hg+x.ag; if(o.value==='1'&&x.hg>x.ag)acc+=x.p; else if(o.value==='X'&&x.hg===x.ag)acc+=x.p; else if(o.value==='2'&&x.hg<x.ag)acc+=x.p; else if(o.value==='Over 1.5'&&t>=2)acc+=x.p; else if(o.value==='Under 1.5'&&t<=1)acc+=x.p; else if(o.value==='Over 2.5'&&t>=3)acc+=x.p; else if(o.value==='Under 2.5'&&t<=2)acc+=x.p; else if(o.value==='Over 3.5'&&t>=4)acc+=x.p; else if(o.value==='Under 3.5'&&t<=3)acc+=x.p; else if(o.value==='Over 4.5'&&t>=5)acc+=x.p; else if(o.value==='Under 4.5'&&t<=4)acc+=x.p; else if(o.value==='Goal'&&x.hg>0&&x.ag>0)acc+=x.p; else if(o.value==='No Goal'&&(x.hg===0||x.ag===0))acc+=x.p; return acc;},0);
-      pStat=probSum*100;
-    }
-    if ((o.value === "Goal" || o.value === "No Goal") && lambdaH != null && lambdaA != null) {
-      const yes = (1 - Math.exp(-lambdaH)) * (1 - Math.exp(-lambdaA));
-      pStat = (o.value === "Goal" ? yes : 1 - yes) * 100;
-    }
-    if ((o.value === "1" || o.value === "X" || o.value === "2") && lambdaH != null && lambdaA != null) {
-      const probs = poisson1x2(lambdaH, lambdaA);
-      pStat = probs[o.value] * 100;
-    }
+    const odd = Number(o.odd);
+    if (!(odd >= 1.50 && odd <= 3.75)) continue;
 
-    // V140: senza storico sufficiente o modello di gol, lo scenario non nasce.
-    const sampleSize = Math.min(
-      Array.isArray(homeStats?.matches) ? homeStats.matches.length : 0,
-      Array.isArray(awayStats?.matches) ? awayStats.matches.length : 0
-    );
-    if (pStat == null || sampleSize < 5) continue;
-    const pFreq = freq[o.value] ?? null;
-    const pFair = fair[o.value] ?? (100 / o.odd);
-    const prob = pStat;
-    const confidence = 0.88;
-    const probabilitySource = "stat";
-    const edge = prob - (100 / o.odd);
+    const prob = simpleProbability(o.value, h, a, homeStanding, awayStanding);
+    if (!Number.isFinite(prob)) continue;
 
-    const formBonus = (h.form!=null && a.form!=null) ? clamp((h.form + a.form) * 1.2, -5, 5) : 0;
+    const implied = 100 / odd;
+    const edge = prob - implied;
+    const formScore = simpleFormSupport(o.value, h, a);
+    const standingsScore = simpleStandingsSupport(o.value, homeStanding, awayStanding);
+    const valueScore = clamp(50 + edge * 3, 0, 100);
+    const score = clamp(prob * 0.45 + formScore * 0.25 + standingsScore * 0.10 + valueScore * 0.20, 0, 100);
 
-    // SCORE BASE: prima valutiamo la solidita' dello scenario, poi il valore
-    // della quota. La quota NON puo' trasformare un'analisi debole in un TOP.
-    const analysisParts=[];
-    if (pStat != null) analysisParts.push([55, pStat]);
-    if (pFreq != null) analysisParts.push([20, pFreq]);
-    if (h.form!=null && a.form!=null) {
-      const formSignal = clamp(50 + ((h.form + a.form) * 4.5), 0, 100);
-      analysisParts.push([15, formSignal]);
-    }
-    if (h2h?.sample >= 2) {
-      let h2hSignal = 50;
-      if (o.value === "1") h2hSignal = 50 + (h2h.homeWins / h2h.sample) * 50;
-      else if (o.value === "2") h2hSignal = 50 + (h2h.awayWins / h2h.sample) * 50;
-      else if (o.value === "X") h2hSignal = 50 + (h2h.draws / h2h.sample) * 50;
-      else if (o.value === "Goal") h2hSignal = h2h.bttsRate ?? 50;
-      else if (o.value === "No Goal") h2hSignal = 100 - (h2h.bttsRate ?? 50);
-      else if (String(o.value).startsWith("Over")) h2hSignal = h2h.overRate ?? 50;
-      else if (String(o.value).startsWith("Under")) h2hSignal = 100 - (h2h.overRate ?? 50);
-      analysisParts.push([10, clamp(h2hSignal,0,100)]);
-    }
-    const analysisWeight=analysisParts.reduce((a,x)=>a+x[0],0);
-    const analysisScore=analysisWeight ? analysisParts.reduce((a,x)=>a+x[0]*x[1],0)/analysisWeight : 35;
-
-    // La PROBABILITÃ Ã¨ il segnale principale per il ranking.
-    // La quota serve per misurare il valore (edge), non per far salire
-    // artificialmente una previsione meno probabile.
-    const valueScore = clamp(50 + 50 * Math.tanh(edge / 20), 0, 100);
-    const probabilityScore = clamp(prob, 0, 100);
-    // Ranking: probabilitÃ  60%, supporto analitico 25%, valore quota 15%.
-    // In questo modo un esito molto probabile e ben supportato precede
-    // normalmente una quota alta ma meno probabile.
-    let score = probabilityScore * 0.60 + analysisScore * 0.25 + valueScore * 0.15;
-    // Se non abbiamo dati analitici reali, non consentiamo comunque una
-    // promozione automatica dovuta alla sola quota.
-    if (analysisWeight < 35) score = Math.min(score, Math.max(52, probabilityScore * 0.75));
-    score = clamp(score, 0, 100);
+    const sample = Math.min(h.sample || 0, a.sample || 0);
+    const topEligible = sample >= 3 && edge >= 5 && score >= 60 && Number(o.quoteFreshnessScore || 0) >= 45;
+    const reason = simpleReason(o.value, odd, prob, edge, h, a, homeStanding, awayStanding, standingNote);
 
     out.push({
-      market: marketLabel(o.value), odds: o.odd, bookmaker: o.bookmaker || null, quoteAgeMin:o.quoteAgeMin??null, quoteFreshnessScore:o.quoteFreshnessScore??0, quoteSpread:o.quoteSpread??null, prob: round(prob), edge: round(edge),
-      form: round(formBonus), absence: 0, pred: 0, confidence: round(confidence * 100),
-      homeForm: h.form==null?null:round(h.form), awayForm: a.form==null?null:round(a.form),
-      pStat: pStat == null ? null : round(pStat), pFreq: pFreq == null ? null : round(pFreq),
-      probabilitySource, modelSample: sampleSize, pFair: round(pFair), liquidity: o.liquidity ?? null, score: round(score),
-      reason: buildSimpleReason(o.value, prob, edge, pStat, pFreq, o.odd, {...o, homeName: homeStats?.teamName, awayName: awayStats?.teamName}, homeStats, awayStats, h2h, standingNote),
-      h2h: h2h ? { sample:h2h.sample, homeWins:h2h.homeWins, draws:h2h.draws, awayWins:h2h.awayWins, overRate:h2h.overRate, bttsRate:h2h.bttsRate } : null,
-      standingNote: standingNote
+      market: marketLabel(o.value), odds: odd, bookmaker: o.bookmaker || "Betfair Exchange",
+      quoteAgeMin:o.quoteAgeMin ?? null, quoteFreshnessScore:o.quoteFreshnessScore ?? 0,
+      quoteSpread:o.quoteSpread ?? null, liquidity:o.liquidity ?? null,
+      prob: round(prob), edge: round(edge), pStat: round(prob), pFreq: null,
+      pFair: round(implied), probabilitySource:"simple", modelSample:sample,
+      form: round((h.form ?? 0) - (a.form ?? 0)), homeForm: h.form == null ? null : round(h.form), awayForm: a.form == null ? null : round(a.form),
+      confidence: round(score), score: round(score), topSelectionScore: round(score),
+      analysisSupport: round((formScore + standingsScore) / 2), valueScore: round(valueScore),
+      modelReady: sample >= 3, topEligible,
+      modelVersion:"V142-Semplice-Classifica-3Partite-Quota",
+      standingNote, homeStanding, awayStanding,
+      recentForm: {home:h.form, away:a.form, homeMatches:h.sample, awayMatches:a.sample},
+      reason,
+      fieldAnalysis:{reason, confidence:round(score), confidenceLabel:score>=75?"Alta":score>=60?"Media":"Bassa", warnings:topEligible?[]:["Quota o dati recenti non abbastanza favorevoli per il TOP"]}
     });
   }
   return out;
+}
+
+function simpleTeamStrength(standing, form) {
+  const pos = Number(standing?.position), total = Number(standing?.totalTeams);
+  const standingScore = Number.isFinite(pos) && Number.isFinite(total) && total > 1 ? clamp((total - pos) / (total - 1), 0, 1) : 0.5;
+  const formScore = Number.isFinite(form) ? clamp(form / 3, 0, 1) : 0.5;
+  return standingScore * 0.55 + formScore * 0.45;
+}
+
+function simpleProbability(value, h, a, hs, as) {
+  const homeStrength = simpleTeamStrength(hs, h.form);
+  const awayStrength = simpleTeamStrength(as, a.form);
+  const diff = homeStrength - awayStrength;
+  const m = String(value || "");
+
+  if (m === "1" || m === "X" || m === "2") {
+    const draw = clamp(30 - Math.abs(diff) * 10, 23, 31);
+    const homeShare = clamp(0.50 + diff * 0.65 + 0.08, 0.12, 0.88);
+    const remaining = 100 - draw;
+    const home = remaining * homeShare;
+    const away = remaining - home;
+    return m === "1" ? home : m === "2" ? away : draw;
+  }
+
+  const rows = [...(h._recentRows || []), ...(a._recentRows || [])];
+  if (!rows.length) return null;
+  const valid = rows.filter(r => Number.isFinite(r.total));
+  if (!valid.length) return null;
+  if (m === "Goal" || m === "No Goal") {
+    const rate = valid.filter(r => r.btts).length / valid.length;
+    const p = clamp(50 + (rate - 0.5) * 70, 15, 85);
+    return m === "Goal" ? p : 100 - p;
+  }
+  if (m === "Over 2.5" || m === "Under 2.5") {
+    const rate = valid.filter(r => r.total >= 3).length / valid.length;
+    const p = clamp(50 + (rate - 0.5) * 70, 15, 85);
+    return m.startsWith("Over") ? p : 100 - p;
+  }
+  if (m === "Over 3.5" || m === "Under 3.5") {
+    const rate = valid.filter(r => r.total >= 4).length / valid.length;
+    const p = clamp(50 + (rate - 0.5) * 70, 12, 88);
+    return m.startsWith("Over") ? p : 100 - p;
+  }
+  return null;
+}
+
+function simpleFormSupport(value, h, a) {
+  const m = String(value || "");
+  const diff = (h.form ?? 1.5) - (a.form ?? 1.5);
+  if (m === "1 (Casa)" || m === "1") return clamp(50 + diff * 18, 0, 100);
+  if (m === "2 (Trasferta)" || m === "2") return clamp(50 - diff * 18, 0, 100);
+  if (m === "X (Pareggio)" || m === "X") return clamp(65 - Math.abs(diff) * 20, 0, 100);
+  const rows=[...(h._recentRows||[]),...(a._recentRows||[])];
+  if (!rows.length) return 50;
+  if (m === "Goal") return pct(rows.filter(r=>r.btts).length, rows.length);
+  if (m === "No Goal") return 100-pct(rows.filter(r=>r.btts).length, rows.length);
+  if (m === "Over 2.5") return pct(rows.filter(r=>r.total>=3).length, rows.length);
+  if (m === "Under 2.5") return pct(rows.filter(r=>r.total<=2).length, rows.length);
+  if (m === "Over 3.5") return pct(rows.filter(r=>r.total>=4).length, rows.length);
+  if (m === "Under 3.5") return pct(rows.filter(r=>r.total<=3).length, rows.length);
+  return 50;
+}
+
+function simpleStandingsSupport(value, hs, as) {
+  const hp=simpleStandingPct(hs), ap=simpleStandingPct(as), diff=hp-ap;
+  const m=String(value||"");
+  if (m === "1 (Casa)" || m === "1") return clamp(50 + diff*45,0,100);
+  if (m === "2 (Trasferta)" || m === "2") return clamp(50 - diff*45,0,100);
+  if (m === "X (Pareggio)" || m === "X") return clamp(70 - Math.abs(diff)*35,0,100);
+  return 50;
+}
+
+function simpleStandingPct(s) {
+  const p=Number(s?.position), n=Number(s?.totalTeams);
+  return Number.isFinite(p)&&Number.isFinite(n)&&n>1 ? clamp((n-p)/(n-1),0,1) : 0.5;
+}
+
+function simpleStandingNote(homeName, hs, awayName, as) {
+  const bits=[];
+  if (hs?.position && hs?.totalTeams) bits.push(`${homeName} è ${hs.position}ª su ${hs.totalTeams}`);
+  if (as?.position && as?.totalTeams) bits.push(`${awayName} è ${as.position}º su ${as.totalTeams}`);
+  return bits.length ? bits.join("; ") : null;
+}
+
+function simpleReason(value, odd, prob, edge, h, a, hs, as, standingNote) {
+  const home=h.teamName || "La squadra di casa", away=a.teamName || "la squadra ospite";
+  const last=(team)=>`${team.form==null?"":`forma ultime 3: ${team.form.toFixed(1)} punti di media`}`;
+  const parts=[];
+  if (standingNote) parts.push(standingNote);
+  if (value === "1" || value === "1 (Casa)") parts.push(`${home} ha una situazione recente migliore rispetto a ${away}: ${last(h)}`);
+  else if (value === "2" || value === "2 (Trasferta)") parts.push(`${away} ha una situazione recente migliore rispetto a ${home}: ${last(a)}`);
+  else if (value === "X" || value === "X (Pareggio)") parts.push(`Le ultime 3 partite mostrano un equilibrio tra le due squadre`);
+  else parts.push(`Il dato delle ultime 3 partite delle due squadre sostiene questo mercato`);
+  if (edge >= 5) parts.push(`la quota ${odd.toFixed(2)} offre un margine stimato di ${edge.toFixed(1)} punti percentuali rispetto alla probabilità calcolata`);
+  else parts.push(`la quota ${odd.toFixed(2)} non offre un margine abbastanza ampio`);
+  return parts.slice(0,3).join(". ") + ".";
+}
+
+function finalizeSimpleCandidates(candidates) {
+  const out = candidates.map(c => ({
+    ...c,
+    topEligible: Boolean(c.topEligible),
+    analysisLimited: !c.topEligible,
+    modelAgreement: null
+  }));
+  out.sort((a,b)=>Number(b.score||0)-Number(a.score||0) || Number(b.edge||0)-Number(a.edge||0));
+  return {candidates:out.slice(0,120), requests:0};
 }
 
 function h2hSentence(value, home, away, h2h) {
@@ -2152,32 +2192,26 @@ function summarizeH2H(matches, homeTeamId, awayTeamId) {
 
 function summarize(ms, teamId) {
   const rows = Array.isArray(ms) ? ms.filter(m => Number.isFinite(m?.score?.fullTime?.home) && Number.isFinite(m?.score?.fullTime?.away)) : [];
-  if (!rows.length) return { gf:null,ga:null,gfHome:null,gaHome:null,gfAway:null,gaAway:null,form:null,sample:0,homeSample:0,awaySample:0 };
-  const ordered = [...rows].sort((a,b)=>new Date(a?.utcDate||0)-new Date(b?.utcDate||0));
-  let gf=0,ga=0,weightSum=0,homeGF=0,homeGA=0,homeW=0,awayGF=0,awayGA=0,awayW=0,points=0,pointsW=0;
-  const recent = ordered.slice(-8);
-  recent.forEach((m,idx)=>{
+  const ordered = [...rows].sort((a,b)=>new Date(a?.utcDate||0)-new Date(b?.utcDate||0)).slice(-3);
+  if (!ordered.length) return { gf:null,ga:null,gfHome:null,gaHome:null,gfAway:null,gaAway:null,form:null,sample:0,homeSample:0,awaySample:0,_recentRows:[],teamName:null };
+  let gf=0,ga=0,points=0;
+  for(const m of ordered){
     const hg=m.score.fullTime.home, ag=m.score.fullTime.away;
-    // Peso crescente: le ultime partite contano di piÃ¹, ma non cancelliamo lo storico.
-    const w=1 + (idx/(Math.max(1,recent.length-1))) * 0.75;
-    const isHome = m.homeTeam?.id === teamId;
-    const isAway = m.awayTeam?.id === teamId;
-    if(!isHome && !isAway) return;
+    const isHome=m.homeTeam?.id===teamId, isAway=m.awayTeam?.id===teamId;
+    if(!isHome&&!isAway) continue;
     const gfor=isHome?hg:ag, gagain=isHome?ag:hg;
-    gf += gfor*w; ga += gagain*w; weightSum += w;
-    if(isHome){homeGF += hg*w; homeGA += ag*w; homeW += w;}
-    if(isAway){awayGF += ag*w; awayGA += hg*w; awayW += w;}
-    if(teamId){
-      const p=m.score.winner==='DRAW'?1:((m.score.winner==='HOME'&&isHome)||(m.score.winner==='AWAY'&&isAway)?3:0);
-      points += p*w; pointsW += w;
-    }
-  });
+    gf+=gfor; ga+=gagain;
+    points += gfor>gagain ? 3 : gfor===gagain ? 1 : 0;
+  }
+  const validCount=ordered.filter(m=>m.homeTeam?.id===teamId||m.awayTeam?.id===teamId).length;
   return {
-    gf:weightSum?gf/weightSum:null, ga:weightSum?ga/weightSum:null,
-    gfHome:homeW?homeGF/homeW:null, gaHome:homeW?homeGA/homeW:null,
-    gfAway:awayW?awayGF/awayW:null, gaAway:awayW?awayGA/awayW:null,
-    form:pointsW?points/pointsW:null,
-    sample:recent.length, homeSample:ordered.filter(m=>m.homeTeam?.id===teamId).length, awaySample:ordered.filter(m=>m.awayTeam?.id===teamId).length
+    gf:validCount?gf/validCount:null, ga:validCount?ga/validCount:null,
+    gfHome:null,gaHome:null,gfAway:null,gaAway:null,
+    form:validCount?points/validCount:null,
+    sample:validCount, homeSample:ordered.filter(m=>m.homeTeam?.id===teamId).length,
+    awaySample:ordered.filter(m=>m.awayTeam?.id===teamId).length,
+    _recentRows:ordered.map(m=>({total:m.score.fullTime.home+m.score.fullTime.away,btts:m.score.fullTime.home>0&&m.score.fullTime.away>0})),
+    teamName: ordered.find(m=>m.homeTeam?.id===teamId)?.homeTeam?.name || ordered.find(m=>m.awayTeam?.id===teamId)?.awayTeam?.name || null
   };
 }
 function avg(a,b){return a!=null&&b!=null?(a+b)/2:null}
