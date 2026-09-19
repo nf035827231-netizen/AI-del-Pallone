@@ -22,5 +22,3 @@ VERCEL
 
 BRIDGE
 Il Bridge continua a essere eseguito sul Mac e invia i dati a Supabase. Non deve essere modificato per questa correzione.
-Deploy test 18-09-2026
-Deploy test 18-09-2026
