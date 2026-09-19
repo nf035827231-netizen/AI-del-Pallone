@@ -427,13 +427,13 @@ async function handler(req, res) {
     }
   }
 
-  diagnostics.push({provider:'model-quality-gate',rule:'minimum 3 finished matches for BOTH teams for TOP; simple model only; Betfair is preferred for odds, Odds-API fallback is allowed',candidatesBeforeEnrichment:candidates.length,minimumSample:3});
+  diagnostics.push({provider:'model-quality-gate',rule:'minimum 3 finished matches for BOTH teams for TOP; simple model only; Betfair is preferred for odds, Odds-API fallback is allowed; value threshold softened to 2pp',candidatesBeforeEnrichment:candidates.length,minimumSample:3});
 
   // STEP 4: modello volutamente semplice. Nessuna API-Football, nessun ELO,
   // nessun Monte Carlo, nessun H2H e nessun infortunio entra nel punteggio.
   // Per ogni scenario contiamo solo: classifica + ultime 3 gare + quota.
   const enriched = finalizeSimpleCandidates(candidates);
-  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"edge >= 5 punti percentuali e score >= 60; quota Betfair preferita, Odds-API fallback"});
+  diagnostics.push({provider:"simple-model",rule:"classifica + ultime 3 partite + quota; nessun ELO/Monte Carlo/H2H/API-Football",minimumSample:3,topRule:"edge >= 2 punti percentuali e score >= 55; usa l'ultima quota disponibile anche se non recente; Betfair preferita, Odds-API fallback"});
   const data={date,fixtures:unique.length,analyzed:analyzedFixtureIds.size,requests,requestBreakdown,candidates:enriched.candidates,liveFixtures:uniqueLive,diagnostics,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?30_000:90_000),data});
   res.setHeader("Cache-Control","no-store");
@@ -1944,7 +1944,7 @@ function buildMarkets(odds, homeStats, awayStats, homeStanding, awayStanding) {
 
     const sample = Math.min(h.sample || 0, a.sample || 0);
     const quoteFreshness = Number.isFinite(Number(o.quoteFreshnessScore)) ? Number(o.quoteFreshnessScore) : 100;
-    const topEligible = sample >= 3 && edge >= 5 && score >= 60 && quoteFreshness >= 45;
+    const topEligible = sample >= 3 && edge >= 2 && score >= 55;
     const reason = simpleReason(o.value, odd, prob, edge, h, a, homeStanding, awayStanding, standingNote);
 
     out.push({
