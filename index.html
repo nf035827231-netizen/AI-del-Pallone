@@ -1206,7 +1206,7 @@ function render(cs){
  };
  // V140: un candidato entra nel TOP solo se il modello è pronto,
  // il campione è sufficiente, l'analisi è >=55 e la quota è abbastanza fresca.
- selectTier(base.filter(v=>Boolean(v.topEligible) && Boolean(v.modelReady) && Number(v.modelSample)>=3 && Number(v.topSelectionScore)>=60 && Number(v.edge)>=5 && Number(v.quoteFreshnessScore||0)>=45));
+ selectTier(base.filter(v=>Boolean(v.topEligible) && Boolean(v.modelReady) && Number(v.modelSample)>=3 && Number(v.topSelectionScore)>=55 && Number(v.edge)>=2));
  const absenceHtml=x=>{
    if(!x.availability){
      const fixtureKey=`${x.home} - ${x.away}`;
