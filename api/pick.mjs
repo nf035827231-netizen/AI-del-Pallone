@@ -39,7 +39,7 @@ async function handler(req,res){
   const fdToken=process.env.FOOTBALL_DATA_TOKEN||'';
   const supaUrl=process.env.SUPABASE_URL||'';
   const serviceKey=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
-  const cacheKey=`v175-3h-oddsapiio-footballdata|${date}|${requestedCodes?.join(',')||'ALL'}|${timeWindow}|${market}`;
+  const cacheKey=`v176-3h-oddsapiio-footballdata|${date}|${requestedCodes?.join(',')||'ALL'}|${timeWindow}|${market}`;
   const cached=RESPONSE_CACHE.get(cacheKey);
   if(cached&&cached.expires>Date.now())return res.status(200).json({...cached.data,cached:true});
 
@@ -84,31 +84,42 @@ async function handler(req,res){
   diagnostics.push({provider:'odds-api.io-events',fixtures:events.length,apiEvents:Array.isArray(eventPayload)?eventPayload.length:0,rule:`unica richiesta /events; solo eventi pending futuri nelle prossime ${LOOKAHEAD_HOURS} ore; nessun evento live`,windowStart:new Date(windowStart).toISOString(),windowEnd:new Date(windowEnd).toISOString()});
   if(!events.length)return finish(res,{date,fixtures:0,analyzed:0,quotedFixtures:0,candidates:[],liveFixtures:[],diagnostics,requests,requestBreakdown},cacheKey);
 
-  // 3) Discover accessible bookmakers once, then batch odds. Odds-API.io requires
-  // the bookmakers parameter on /odds and /odds/multi. Keep the list cached for 1 hour
-  // so this does not become a repeated source of unnecessary calls.
-  const bookmakerData=await getBookmakersCached(oddsKey);
-  if(bookmakerData.error){
-    requests++; requestBreakdown.oddsApiIo++;
-    diagnostics.push({provider:'odds-api.io-bookmakers',error:bookmakerData.error});
-  } else if(bookmakerData.fetched){
-    requests++; requestBreakdown.oddsApiIo++;
-  }
-  const bookmakerNames=bookmakerData.names||[];
-  diagnostics.push({provider:'odds-api.io-bookmakers',available:bookmakerNames.length,selected:bookmakerNames.slice(0,30),rule:'nomi bookmaker ottenuti da /bookmakers e passati esplicitamente a /odds/multi'});
+  // 3) Use only recreational bookmakers. The free Odds-API.io plan
+  // does NOT allow sharp books/exchanges (e.g. 10BET in the current account).
+  // Do not call /bookmakers and do not send the whole directory: that can select
+  // a sharp/exchange bookmaker and trigger HTTP 403.
+  // This build intentionally uses ONLY Bet365.
+  // Do not read ODDS_BOOKMAKERS from the environment: the selected bookmaker
+  // must remain fixed to avoid accidentally requesting sharp/exchange books.
+  const bookmakerNames=['Bet365'];
+  diagnostics.push({
+    provider:'odds-api.io-bookmakers',
+    available:bookmakerNames.length,
+    selected:bookmakerNames,
+    rule:'solo Bet365; niente sharp/exchange; bookmaker fisso'
+  });
 
   const oddsMap=new Map();
   const eventIds=events.map(e=>String(e.id));
   const batches=chunk(eventIds,10);
   for(const ids of batches){
-    const params={eventIds:ids.join(',')};
-    if(bookmakerNames.length)params.bookmakers=bookmakerNames.slice(0,30).join(',');
+    const params={eventIds:ids.join(','),bookmakers:bookmakerNames.join(',')};
     const data=await oddsGet('/odds/multi',oddsKey,params);
     requests++; requestBreakdown.oddsApiIo++;
-    if(data?.__error){diagnostics.push({provider:'odds-api.io-odds',eventBatch:ids.length,error:data.__error});continue;}
+    if(data?.__error){
+      diagnostics.push({provider:'odds-api.io-odds',eventBatch:ids.length,error:data.__error});
+      continue;
+    }
     ingestOddsPayload(data,oddsMap);
   }
-  diagnostics.push({provider:'odds-api.io-odds',eventsChecked:events.length,batches:batches.length,eventsReturned:oddsMap.size,markets:'ML + Totals + BTTS when supplied by selected bookmakers',rule:'quote richieste solo per gli eventi già filtrati nella finestra 0-3 ore'});
+  diagnostics.push({
+    provider:'odds-api.io-odds',
+    eventsChecked:events.length,
+    batches:batches.length,
+    eventsReturned:oddsMap.size,
+    markets:'ML + Totals + BTTS when supplied by selected recreational bookmakers',
+    rule:'quote richieste solo per gli eventi filtrati nella finestra 0-3 ore; solo Bet365'
+  });
 
   // 4) Football-Data.org: one competition request per used competition.
   const codes=[...new Set(events.map(e=>e.fdCode).filter(Boolean))];
@@ -240,24 +251,9 @@ function recentForTeam(matches,name,kickoff){const cut=Date.parse(kickoff),out=[
 function findFootballDataMatch(matches,e){let best=null,score=0;for(const m of matches){const d=Math.abs(Date.parse(m.date)-Date.parse(e.date));if(d>36*3600000)continue;const s=teamSimilarity(e.home,m.home)+teamSimilarity(e.away,m.away);if(s>score){score=s;best=m;}}return score>=1.5?best:null;}
 
 async function footballDataGet(path,token){try{const r=await fetch(`${FD_BASE}${path}`,{headers:{Accept:'application/json','X-Auth-Token':token},cache:'no-store'});const text=await r.text();if(!r.ok)return {__error:`Football-Data.org HTTP ${r.status}: ${text.slice(0,300)}`};return text?JSON.parse(text):{};}catch(e){return {__error:e?.message||String(e)};}}
-async function getBookmakersCached(key){
-  if(BOOKMAKER_CACHE.expires>Date.now() && BOOKMAKER_CACHE.names.length) return {names:BOOKMAKER_CACHE.names,fetched:false};
-  try{
-    const r=await fetch(`${ODDS_BASE}/bookmakers?${new URLSearchParams({apiKey:key})}`,{headers:{Accept:'application/json'},cache:'no-store'});
-    const text=await r.text();
-    if(!r.ok)return {names:[],fetched:true,error:`Odds-API.io bookmakers HTTP ${r.status}: ${text.slice(0,300)}`};
-    const payload=text?JSON.parse(text):[];
-    const rows=Array.isArray(payload)?payload:(Array.isArray(payload?.bookmakers)?payload.bookmakers:Array.isArray(payload?.data)?payload.data:[]);
-    const names=rows.filter(x=>x&&x.active!==false).map(x=>x.name||x.slug).filter(Boolean).map(String).slice(0,30);
-    if(!names.length)return {names:[],fetched:true,error:'Odds-API.io /bookmakers non ha restituito bookmaker attivi accessibili con questa chiave.'};
-    BOOKMAKER_CACHE.names=names; BOOKMAKER_CACHE.expires=Date.now()+60*60*1000;
-    return {names,fetched:true};
-  }catch(e){return {names:[],fetched:true,error:e?.message||String(e)};}
-}
-
 async function oddsGet(path,key,params={}){try{const qs=new URLSearchParams({apiKey:key,...params});const r=await fetch(`${ODDS_BASE}${path}?${qs.toString()}`,{headers:{Accept:'application/json'},cache:'no-store'});const text=await r.text();if(!r.ok)return {__error:`Odds-API.io HTTP ${r.status}: ${text.slice(0,300)}`};return text?JSON.parse(text):{};}catch(e){return {__error:e?.message||String(e)};}}
 
-function makeScenario(e,o,p,hs,as,recent,fdMatch){return {home:e.home,away:e.away,market:marketLabel(o.value),odds:o.odd,bookmaker:o.bookmaker,betUrl:o.href||null,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:3,probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V174-3H-ODDS-APIO-FOOTBALL-DATA',homeStanding:hs,awayStanding:as,standingNote:standingNote(e.home,hs,e.away,as),recentForm:{home:recent.home,away:recent.away,homeMatches:3,awayMatches:3},reason:buildReason(p,e.home,e.away,hs,as,recent.home,recent.away),oddsSource:'Odds-API.io',statsSource:'Football-Data.org',fixtureId:`football-data-${fdMatch.id}`,eventId:fdMatch.id,oddsApiEventId:e.id,kickoff:e.date,league:e.league,leagueCode:e.fdCode,priorityLeague:false,homeLogo:null,awayLogo:null,riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',oddsAgeMin:null,fieldAnalysis:{reason:buildReason(p,e.home,e.away,hs,as,recent.home,recent.away),confidence:round(p),confidenceLabel:p>=70?'Alta':p>=55?'Media':'Bassa',warnings:[]}};}
+function makeScenario(e,o,p,hs,as,recent,fdMatch){return {home:e.home,away:e.away,market:marketLabel(o.value),odds:o.odd,bookmaker:o.bookmaker,betUrl:o.href||null,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:3,probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V176-3H-ODDS-APIO-FOOTBALL-DATA',homeStanding:hs,awayStanding:as,standingNote:standingNote(e.home,hs,e.away,as),recentForm:{home:recent.home,away:recent.away,homeMatches:3,awayMatches:3},reason:buildReason(p,e.home,e.away,hs,as,recent.home,recent.away),oddsSource:'Odds-API.io',statsSource:'Football-Data.org',fixtureId:`football-data-${fdMatch.id}`,eventId:fdMatch.id,oddsApiEventId:e.id,kickoff:e.date,league:e.league,leagueCode:e.fdCode,priorityLeague:false,homeLogo:null,awayLogo:null,riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',oddsAgeMin:null,fieldAnalysis:{reason:buildReason(p,e.home,e.away,hs,as,recent.home,recent.away),confidence:round(p),confidenceLabel:p>=70?'Alta':p>=55?'Media':'Bassa',warnings:[]}};}
 
 function estimateProbabilities(hs,as,hm,am,homeName,awayName){const hS=standingStrength(hs),aS=standingStrength(as),fH=pointsFromTeamRows(hm,homeName),fA=pointsFromTeamRows(am,awayName),fDiff=(fH/9)-(fA/9),sDiff=hS-aS;let home=.5+sDiff*.23+fDiff*.07+.045,draw=.27-Math.abs(sDiff)*.06-Math.abs(fDiff)*.03,away=1-home-draw;home=clamp(home,.12,.78);away=clamp(away,.10,.72);draw=clamp(draw,.16,.34);const sum=home+draw+away;home/=sum;draw/=sum;away/=sum;const totals=goalMarketProbabilities(hm,am,sDiff,fDiff);return {'1':home*100,'X':draw*100,'2':away*100,...totals};}
 function goalMarketProbabilities(hm,am,sDiff,fDiff){const rows=[...hm,...am],freq=fn=>rows.length?rows.filter(fn).length/rows.length:.5,over=line=>freq(m=>(m.score.home+m.score.away)>line),formBoost=clamp(fDiff*.05+sDiff*.03,-.08,.08),adj=p=>clamp(p+formBoost,.10,.90),p15=adj(over(1.5)),p25=adj(over(2.5)),p35=adj(over(3.5)),btts=adj(freq(m=>m.score.home>0&&m.score.away>0));return {'Over 1.5':p15*100,'Under 1.5':(1-p15)*100,'Over 2.5':p25*100,'Under 2.5':(1-p25)*100,'Over 3.5':p35*100,'Under 3.5':(1-p35)*100,'Goal':btts*100,'No Goal':(1-btts)*100};}
