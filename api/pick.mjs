@@ -110,7 +110,7 @@ async function handler(req,res){
   // sincronizzati e l'ultimo book disponibile per ogni marketId.
   const bf=await loadBetfairSnapshot(supaUrl,serviceKey);
   requests++; requestBreakdown.betfairSnapshot++;
-  diagnostics.push({provider:'betfair-exchange',catalogueRows:bf.catalogueRows,catalogueMarkets:bf.catalogueMarkets,bookMarkets:bf.bookMarkets,marketsWithBook:bf.marketsWithBook||0,eventCount:bf.eventCount||bf.events.size,events:bf.events.size,sample:bf.sample||[],error:bf.error||null,role:'unica fonte delle quote BACK'});
+  diagnostics.push({provider:'betfair-exchange',catalogueRows:bf.catalogueRows,catalogueMarkets:bf.catalogueMarkets,bookMarkets:bf.bookMarkets,marketsWithBook:bf.marketsWithBook||0,matchOddsMarkets:bf.matchOddsMarkets||0,matchOddsWithBack:bf.matchOddsWithBack||0,totalMarketsWithBack:bf.totalMarketsWithBack||0,eventCount:bf.eventCount||bf.events.size,events:bf.events.size,sample:bf.sample||[],error:bf.error||null,role:'unica fonte delle quote BACK'});
 
   const standingsByCode=new Map(sourceResults.map(x=>[x.code,x.standings]));
   const quoted=[];
@@ -355,7 +355,7 @@ async function loadBetfairSnapshot(url,key){try{
   for(const r of bookRows){
     if(r?.market_id&&!latestBook.has(String(r.market_id)))latestBook.set(String(r.market_id),r);
   }
-  const events=new Map(); let catalogueMarkets=0; let marketsWithBook=0; let eventCount=0;
+  const events=new Map(); let catalogueMarkets=0; let marketsWithBook=0; let eventCount=0; let matchOddsMarkets=0; let matchOddsWithBack=0; let totalMarketsWithBack=0;
   const seenMarkets=new Set();
   for(const row of catRows){
     for(const m of unwrapCatalogue(row?.payload)){
@@ -372,6 +372,12 @@ async function loadBetfairSnapshot(url,key){try{
       }));
       const eventTeams=parseEventTeams(m?.event?.name||'');
       if(!eventTeams)continue;
+      const marketName=String(m.marketName||'');
+      const isMatchOdds=/match odds|1x2|esito finale/i.test(marketName);
+      const hasBack=runners.some(r=>Number.isFinite(r.backPrice)&&r.backPrice>1);
+      if(isMatchOdds)matchOddsMarkets++;
+      if(isMatchOdds&&hasBack)matchOddsWithBack++;
+      if(hasBack)totalMarketsWithBack++;
       const item={
         marketId:mid,marketName:String(m.marketName||''),event:m.event||null,competition:m.competition||null,
         marketStartTime:m.marketStartTime||null,receivedAt:book?.received_at||row.received_at,
@@ -385,8 +391,8 @@ async function loadBetfairSnapshot(url,key){try{
   const sample=[...events.values()].flat().slice(0,20).map(m=>({
     name:m.event?.name||'',market:m.marketName,hasBook:m.hasBook,marketId:m.marketId
   }));
-  return {events,catalogueRows:catRows.length,catalogueMarkets,bookMarkets:latestBook.size,marketsWithBook,eventCount,sample,error:null};
- }catch(e){return {events:new Map(),catalogueRows:0,catalogueMarkets:0,bookMarkets:0,marketsWithBook:0,eventCount:0,sample:[],error:e?.message||String(e)};}}
+  return {events,catalogueRows:catRows.length,catalogueMarkets,bookMarkets:latestBook.size,marketsWithBook,matchOddsMarkets,matchOddsWithBack,totalMarketsWithBack,eventCount,sample,error:null};
+ }catch(e){return {events:new Map(),catalogueRows:0,catalogueMarkets:0,bookMarkets:0,marketsWithBook:0,matchOddsMarkets:0,matchOddsWithBack:0,totalMarketsWithBack:0,eventCount:0,sample:[],error:e?.message||String(e)};}}
 
 function unwrapCatalogue(payload){const out=[];walk(payload,v=>{if(v?.marketId&&v?.marketName)out.push(v);});return out;}
 function unwrapBooks(payload){const out=[];walk(payload,v=>{if(v&&v.selectionId!=null&&('status' in v||v.ex))out.push(v);});return out;}
