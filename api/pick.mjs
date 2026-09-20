@@ -77,6 +77,7 @@ async function handler(req,res){
   // piccola, solo quando serve — non ancora implementata, vedi nota in fondo alla risposta.
   const daysBack=60, daysForward=7;
   const from=shiftDate(date,-daysBack), to=shiftDate(date,daysForward);
+  const apiFootballCircuitBreaker={disabled:false}; // per questa sola richiesta
 
   async function fetchPool(codeList){
     const codes=[...new Set(codeList)].filter(c=>ESPN_LEAGUES[c]);
@@ -97,7 +98,7 @@ async function handler(req,res){
       // proviamo API-Football, solo per questo singolo campionato.
       const espnFailed=Boolean(score?.__error)||(fixtures.length===0&&standings.size===0);
       if(espnFailed){
-        const fb=await tryApiFootballFallback(code,cfg,date,diagnostics);
+        const fb=await tryApiFootballFallback(code,cfg,date,diagnostics,apiFootballCircuitBreaker);
         if(fb.fixtures.length) fixtures=fb.fixtures;
         if(fb.standings.size) standings=fb.standings;
       }
@@ -317,12 +318,23 @@ async function logModelPredictions(url,key,date,picks){
 
 async function espn(path){
   const base='https://site.api.espn.com';
+  // User-Agent e header "da browser": alcune richieste con uno User-Agent palesemente
+  // non-browser (es. un nome di app) vengono bloccate con 403 dal WAF di ESPN. Questi
+  // endpoint non sono un'API ufficiale documentata, quindi ci comportiamo come farebbe
+  // una normale richiesta da espn.com per ridurre il rischio di blocco.
+  const headers={
+    Accept:'application/json',
+    'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    'Accept-Language':'en-US,en;q=0.9,it;q=0.8',
+    Referer:'https://www.espn.com/',
+    Origin:'https://www.espn.com'
+  };
   for(let attempt=0;attempt<3;attempt++){
     try{
-      const r=await fetch(base+path,{headers:{Accept:'application/json','User-Agent':'AI-del-Pallone/154'},cache:'no-store'});
+      const r=await fetch(base+path,{headers,cache:'no-store'});
       const text=await r.text();let body={};try{body=text?JSON.parse(text):{};}catch{body={};}
       if(r.ok)return body;
-      if(r.status===429&&attempt<2){await sleep(600*(attempt+1));continue;}
+      if((r.status===429||r.status===403)&&attempt<2){await sleep(700*(attempt+1));continue;}
       return {...body,__error:`HTTP ${r.status}`};
     }catch(e){if(attempt===2)return{__error:e?.message||String(e)};await sleep(300*(attempt+1));}
   }
@@ -410,7 +422,13 @@ function parseApiFootballStandings(payload,code){
 // di utilizzabile. Non blocca mai: se manca la chiave, se il campionato non è mappato,
 // o se la chiamata fallisce (rete, quota esaurita), ritorna fixtures/standings vuoti e
 // si continua semplicemente senza quel campionato per oggi.
-async function tryApiFootballFallback(code,cfg,date,diagnostics){
+// Se il piano API-Football in uso non copre la stagione corrente (o siamo a corto di
+// chiamate/minuto), non ha senso ritentare per ogni singolo campionato nella stessa
+// richiesta: dopo il primo errore di questo tipo, la riserva si disattiva per il resto
+// di QUESTA richiesta (il flag arriva da fuori, non è globale: su un container "a caldo"
+// riusato tra richieste diverse, un module-level flag resterebbe true per sempre).
+async function tryApiFootballFallback(code,cfg,date,diagnostics,circuitBreaker){
+  if(circuitBreaker.disabled) return {fixtures:[],standings:new Map()};
   const leagueId=API_FOOTBALL_LEAGUE_IDS[code];
   if(!leagueId) return {fixtures:[],standings:new Map()};
   const season=apiFootballSeason(date);
@@ -420,6 +438,11 @@ async function tryApiFootballFallback(code,cfg,date,diagnostics){
     apiFootball('/standings',{league:leagueId,season})
   ]);
   const skip=fx.__skip||st.__skip;
+  const planOrRateIssue=[fx,st].some(r=>/plan|rateLimit/i.test(r?.__error||''));
+  if(planOrRateIssue){
+    circuitBreaker.disabled=true;
+    if(!skip) diagnostics.push({provider:'api-football-fallback',note:'Disattivata per il resto di questa richiesta: piano non compatibile con la stagione corrente o limite chiamate/minuto raggiunto.'});
+  }
   if(!skip) diagnostics.push({provider:'api-football-fallback',league:cfg.name,code,leagueId,season,fixtures:Array.isArray(fx?.response)?fx.response.length:0,standingsFound:!!st?.response?.[0],fixturesError:fx.__error||null,standingsError:st.__error||null,quotaLikely:Boolean(fx.__quotaLikely||st.__quotaLikely),role:'fallback quando ESPN non risponde'});
   const fixtures=(Array.isArray(fx?.response)?fx.response:[]).map(x=>adaptApiFootballFixture(x,code,cfg)).filter(Boolean);
   const standings=st?.response?.[0]?parseApiFootballStandings(st,code):new Map();
