@@ -136,27 +136,48 @@ export default async function handler(req,res){
     if(!matching.length)
       return res.status(404).json({ok:false,error:'Mercato Betfair non trovato',home,away});
 
-    // Calcio: includiamo SOLO Match Odds (1X2) e Under/Over Goal.
-    // Tutti gli altri mercati vengono esclusi.
+    // Calcio: includiamo Match Odds (1X2), Under/Over 2.5 · 3.5, e Goal/No Goal (Both Teams
+    // to Score) — stesso identico perimetro di mercati che usa il motore in pick.mjs.
     const selected=matching.filter(m=>{
       const name=String(m.marketName||'');
       return /match odds|1x2|esito finale/i.test(name) ||
-             /under.*over|over.*under/i.test(name);
+             /under.*over|over.*under/i.test(name) ||
+             /both teams to score|goal.*no.?goal|gg.*ng/i.test(name);
     });
 
     const allowed=selected.filter(m=>{
       const name=String(m.marketName||'');
-      // Under/Over: solo linee goal 1.5, 2.5, 3.5, 4.5.
       if(/under.*over|over.*under/i.test(name)){
-        return /(?:1\.5|2\.5|3\.5|4\.5)/.test(name);
+        return /(?:2\.5|3\.5)/.test(name); // solo le linee che il prodotto usa davvero
       }
+      if(/both teams to score|goal.*no.?goal|gg.*ng/i.test(name)) return true;
       return /match odds|1x2|esito finale/i.test(name);
     });
 
     if(!allowed.length)
-      return res.status(404).json({ok:false,error:'Nessun mercato 1X2 o Under/Over trovato',home,away});
+      return res.status(404).json({ok:false,error:'Nessun mercato 1X2, Under/Over 2.5-3.5 o Goal/No Goal trovato',home,away});
 
-    const uniqueAllowed=[...new Map(allowed.map(m=>[String(m.marketId),m])).values()];
+    // Se il chiamante specifica quale mercato ha effettivamente scelto il pick (es. "Over 3.5",
+    // "1 (Casa)", "Goal"), mostriamo SOLO quello: elimina ogni ambiguità su quale quota si
+    // riferisce davvero alla proposta, invece di mostrare tutte le linee disponibili.
+    const marketParam=String(u.searchParams.get('market')||'').trim();
+    let narrowed=allowed;
+    if(marketParam){
+      const lineMatch=marketParam.match(/(Over|Under)\s+(2\.5|3\.5)/i);
+      const is1x2=/^[12x]\b/i.test(marketParam)||/casa|trasferta|pareggio/i.test(marketParam);
+      const isBtts=/^goal$|^no goal$/i.test(marketParam);
+      if(lineMatch){
+        const line=lineMatch[2];
+        narrowed=allowed.filter(m=>/under.*over|over.*under/i.test(String(m.marketName||''))&&String(m.marketName||'').includes(line));
+      }else if(isBtts){
+        narrowed=allowed.filter(m=>/both teams to score|goal.*no.?goal|gg.*ng/i.test(String(m.marketName||'')));
+      }else if(is1x2){
+        narrowed=allowed.filter(m=>/match odds|1x2|esito finale/i.test(String(m.marketName||'')));
+      }
+      if(!narrowed.length) narrowed=allowed; // se il filtro non trova nulla, meglio mostrare tutto che nulla
+    }
+
+    const uniqueAllowed=[...new Map(narrowed.map(m=>[String(m.marketId),m])).values()];
     const output=[];
     for(const found of uniqueAllowed.slice(0,8)){
       const books=await supa(

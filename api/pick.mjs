@@ -34,8 +34,8 @@ const PRIORITY_CODES=[...TOP8,'SB',...EURO_CUPS];
 const FALLBACK_CODES=Object.keys(ESPN_LEAGUES).filter(c=>!PRIORITY_CODES.includes(c));
 const DEFAULT_CODES=PRIORITY_CODES;
 
-// Mercati che il prodotto vuole analizzare: 1X2 e Over/Under 2.5-3.5. Niente 1.5, 4.5, Goal/No Goal.
-const ALLOWED_MARKETS=new Set(['1','X','2','Over 2.5','Under 2.5','Over 3.5','Under 3.5']);
+// Mercati che il prodotto vuole analizzare: 1X2, Over/Under 2.5-3.5, Goal/No Goal.
+const ALLOWED_MARKETS=new Set(['1','X','2','Over 2.5','Under 2.5','Over 3.5','Under 3.5','Goal','No Goal']);
 // Quota massima 4.00, fissa: non si allarga oltre come si faceva prima con le quote più alte.
 const MAX_ODDS=4.0;
 
@@ -695,4 +695,43 @@ function unwrapCatalogue(payload){const out=[];const walkCat=v=>{if(Array.isArra
 function bestBack(r){const p=Number(r?.backPrice);if(p>1&&Number.isFinite(p))return p;const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];return xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x)).sort((a,b)=>b-a)[0]??null;}
 async function loadBetfairSnapshot(url,key){try{const cat=await supaRead(url,key,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');const books=await supaRead(url,key,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=3000');const latest=new Map();for(const r of books){if(r?.market_id&&!latest.has(String(r.market_id)))latest.set(String(r.market_id),r);}const fixtures=new Map();for(const m of unwrapCatalogue(cat[0]?.payload)){const name=String(m.marketName||'');if(!/match odds|1x2|esito finale|over|under/i.test(name))continue;const b=latest.get(String(m.marketId));if(!b)continue;const runners=(Array.isArray(b.payload?.runners)?b.payload.runners:[]).map(r=>({selectionId:r.selectionId,status:r.status,backPrice:bestBack(r),backSize:r.backSize??null,layPrice:null,name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName:null)||String(r.selectionId)}));const item={marketId:String(m.marketId),marketName:name,event:m.event||null,competition:m.competition||null,receivedAt:b.received_at||m.received_at,runners};const en=String(m.event?.name||'');const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);if(p.length<2)continue;const keyPair=normalizePair(p[0],p.slice(1).join(' '));if(!fixtures.has(keyPair))fixtures.set(keyPair,[]);fixtures.get(keyPair).push(item);}return{fixtures,catalogueMarkets:unwrapCatalogue(cat[0]?.payload).length,bookMarkets:latest.size,error:null};}catch(e){return{fixtures:new Map(),catalogueMarkets:0,bookMarkets:0,error:e?.message||String(e)};}}
 function findBestBetfairFixture(home,away,fixtures){if(!home||!away)return null;const exact=fixtures.get(normalizePair(home,away));if(exact)return exact;const rev=fixtures.get(normalizePair(away,home));if(rev)return rev;let best=null,scoreBest=0;for(const [,ms] of fixtures){const en=String(ms?.[0]?.event?.name||'');const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);if(p.length<2)continue;const bh=p[0],ba=p.slice(1).join(' ');const a=teamSimilarity(home,bh),b=teamSimilarity(away,ba),c=teamSimilarity(home,ba),d=teamSimilarity(away,bh);const direct=(a+b)/2,reverse=(c+d)/2,score=Math.max(direct,reverse);if(Math.max(a,c)>=.50&&Math.max(b,d)>=.50&&score>scoreBest){best=ms;scoreBest=score;}}return best;}
-function extractBetfairOdds(markets,requestedMarket,home,away){const out=[];const totals=requestedMarket==='all'||requestedMarket==='totals',one=requestedMarket==='all'||requestedMarket==='1x2';const hn=normalize(home),an=normalize(away);for(const m of(Array.isArray(markets)?markets:[])){const name=String(m.marketName||'');const isMatch=/match odds|1x2|esito finale/i.test(name);const lm=name.match(/(?:under.*over|over.*under|under\s*\/\s*over|over\s*\/\s*under)[^0-9]*(1\.5|2\.5|3\.5|4\.5)/i);const line=lm?Number(lm[1]):null;if(!isMatch&&!(totals&&line))continue;if(isMatch&&!one)continue;for(const r of(Array.isArray(m.runners)?m.runners:[])){const odd=Number(r.backPrice);if(!(odd>1&&Number.isFinite(odd)))continue;const label=normalize(r.name);let value=null;if(isMatch){if(label==='1'||label==='home'||label==='casa'||label===hn||label.includes(hn))value='1';else if(['x','draw','pareggio','tie','the draw'].includes(label))value='X';else if(label==='2'||label==='away'||label==='trasferta'||label===an||label.includes(an))value='2';}else{if(/\bover\b/i.test(r.name))value=`Over ${line.toFixed(1)}`;else if(/\bunder\b/i.test(r.name))value=`Under ${line.toFixed(1)}`;}if(value){const age=m.receivedAt?Math.max(0,(Date.now()-new Date(m.receivedAt).getTime())/60000):null;out.push({value,odd,quoteAgeMin:age,liquidity:r.backSize??null});}}}const best=new Map();for(const x of out){const old=best.get(x.value);if(!old||((x.quoteAgeMin??1e99)<(old.quoteAgeMin??1e99))||(x.quoteAgeMin===old.quoteAgeMin&&x.odd>old.odd))best.set(x.value,x);}return [...best.values()];}
+function extractBetfairOdds(markets,requestedMarket,home,away){
+  const out=[];
+  const totals=requestedMarket==='all'||requestedMarket==='totals';
+  const one=requestedMarket==='all'||requestedMarket==='1x2';
+  const hn=normalize(home),an=normalize(away);
+  for(const m of(Array.isArray(markets)?markets:[])){
+    const name=String(m.marketName||'');
+    const isMatch=/match odds|1x2|esito finale/i.test(name);
+    const isBtts=/both teams to score|goal.*no.?goal|gg.*ng/i.test(name);
+    const lm=name.match(/(?:under.*over|over.*under|under\s*\/\s*over|over\s*\/\s*under)[^0-9]*(1\.5|2\.5|3\.5|4\.5)/i);
+    const line=lm?Number(lm[1]):null;
+    if(!isMatch&&!isBtts&&!(totals&&line))continue;
+    if(isMatch&&!one)continue;
+    if(isBtts&&!totals)continue; // Goal/No Goal viaggia insieme ai mercati "goal" (totals/all)
+    for(const r of(Array.isArray(m.runners)?m.runners:[])){
+      const odd=Number(r.backPrice);
+      if(!(odd>1&&Number.isFinite(odd)))continue;
+      const label=normalize(r.name);
+      let value=null;
+      if(isMatch){
+        if(label==='1'||label==='home'||label==='casa'||label===hn||label.includes(hn))value='1';
+        else if(['x','draw','pareggio','tie','the draw'].includes(label))value='X';
+        else if(label==='2'||label==='away'||label==='trasferta'||label===an||label.includes(an))value='2';
+      }else if(isBtts){
+        if(['yes','si','sì','gol','goal'].includes(label))value='Goal';
+        else if(['no','nogol','no goal'].includes(label))value='No Goal';
+      }else{
+        if(/\bover\b/i.test(r.name))value=`Over ${line.toFixed(1)}`;
+        else if(/\bunder\b/i.test(r.name))value=`Under ${line.toFixed(1)}`;
+      }
+      if(value){
+        const age=m.receivedAt?Math.max(0,(Date.now()-new Date(m.receivedAt).getTime())/60000):null;
+        out.push({value,odd,quoteAgeMin:age,liquidity:r.backSize??null});
+      }
+    }
+  }
+  const best=new Map();
+  for(const x of out){const old=best.get(x.value);if(!old||((x.quoteAgeMin??1e99)<(old.quoteAgeMin??1e99))||(x.quoteAgeMin===old.quoteAgeMin&&x.odd>old.odd))best.set(x.value,x);}
+  return [...best.values()];
+}
