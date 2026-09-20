@@ -31,3 +31,13 @@ Se Supabase non è ancora configurato, l'app continua a funzionare in modalità 
 
 ## 4. Sicurezza
 La tabella `bets` usa Row Level Security: ogni utente può leggere e modificare solo le proprie giocate.
+
+## 5. Tracciamento performance del modello (v155)
+Esegui anche `supabase-schema-model-predictions.sql` nello SQL Editor: crea la tabella
+`model_predictions`, usata solo lato server (service role key, mai esposta al client) per
+registrare ogni pronostico mostrato da `/api/pick` e confrontarlo poi con il risultato reale.
+
+Chiama periodicamente `/api/stats` (es. una volta al giorno, anche manualmente da browser)
+per liquidare i pronostici passati e ottenere le statistiche reali: win rate, ROI a puntata
+flat, e soprattutto il confronto tra pronostici con edge positivo vs negativo — è il modo
+onesto per capire se il modello sta davvero funzionando o va ricalibrato.
