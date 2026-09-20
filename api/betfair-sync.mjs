@@ -96,18 +96,17 @@ export default async function handler(req,res){
       if(!markets.length)
         throw new Error(`Nessun marketId nel market book (payload ricevuto: ${JSON.stringify(payload).slice(0,500)})`);
 
-      const rows = markets.map(market => ({
-        market_id:market.marketId,
-        data_type:'book',
-        payload:market,
-        received_at:receivedAt
-      }));
-      // Un'unica insert bulk per blocco: molto più veloce e stabile del vecchio
-      // inserimento sequenziale di una riga Supabase alla volta.
-      await supa('betfair_quotes', {
-        method:'POST',
-        body:JSON.stringify(rows)
-      });
+      for(const market of markets){
+        await supa('betfair_quotes', {
+          method:'POST',
+          body:JSON.stringify({
+            market_id:market.marketId,
+            data_type:'book',
+            payload:market,
+            received_at:receivedAt
+          })
+        });
+      }
 
       return res.status(200).json({
         ok:true,
