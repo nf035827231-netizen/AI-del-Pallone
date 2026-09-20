@@ -614,7 +614,7 @@ body[data-theme="light"] .archive-item .bet-match-card{background:#f7f9fc!import
 <div class="today-layout">
 <section class="card tab-section active" data-section="today" style="display:none" aria-hidden="true"><h2>🌍 Campionato</h2><select id="leagueSelect" class="league-selector" aria-label="Seleziona campionato"></select><p class="small"><b>“Tutti i campionati selezionati”</b> usa il perimetro europeo di AI DEL PALLONE e le coppe UEFA. Le gare con calcio d’inizio fuori dalla finestra italiana 11:00–22:00 vengono escluse automaticamente. Puoi anche scegliere un singolo campionato dal menu.</p></section>
 
-<section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="timeWindow" aria-label="Finestra oraria"><option value="all">🕐 Tutto il giorno · 11:00–22:00</option><option value="afternoon1">☀️ Primo pomeriggio · 13:00–16:00</option><option value="afternoon2">🌤️ Tardo pomeriggio · 16:01–19:00</option><option value="evening">🌙 Sera · 19:01–22:00</option></select><select id="market"><option value="all">Tutti i mercati (1X2 + Under/Over 2.5-3.5)</option><option value="totals">Under / Over 2.5 · 3.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Il modello usa ESPN per calendario, classifica, forma casa/trasferta e scontri diretti (ultimi 60 giorni), senza chiave API — con API-Football come riserva automatica se ESPN non risponde per un campionato. Betfair Exchange è l'unica fonte delle quote. Mercati: solo 1X2 e Under/Over 2.5-3.5, quota massima 4.00. Le 5 proposte sono scelte per valore atteso (stima del modello confrontata con la quota reale) e diversificate per fascia di rischio: ~2 sicure, ~2 equilibrate, ~1 value. Si privilegiano i migliori 8 campionati europei + coppe UEFA + nazionali; solo se non bastano per arrivare a 5 si allarga agli altri campionati. I risultati restano in cache.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
+<section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="timeWindow" aria-label="Finestra oraria"><option value="all">🕐 Tutto il giorno · 11:00–22:00</option><option value="afternoon1">☀️ Primo pomeriggio · 13:00–16:00</option><option value="afternoon2">🌤️ Tardo pomeriggio · 16:01–19:00</option><option value="evening">🌙 Sera · 19:01–22:00</option></select><select id="market"><option value="all">Tutti i mercati (1X2 + Under/Over 2.5-3.5)</option><option value="totals">Under / Over 2.5 · 3.5</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Il modello usa ESPN per calendario, classifica e ultime 3 partite, senza chiave API — senza API-Football e senza Football-Data. Betfair Exchange è l'unica fonte delle quote. Mercati: solo 1X2 e Under/Over 2.5-3.5, quota massima 3,70. Le 3 proposte sono una per partita e vengono ordinate esclusivamente per probabilità stimata: la quota non entra nel calcolo della probabilità. Si parte dai migliori 8 campionati europei + coppe UEFA + nazionali; se non bastano 3 partite quotate si allarga agli altri campionati. I risultati restano in cache.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
 <section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le migliori disponibili del giorno</h2><p class="small top3-subtitle">Classifica + ultime 3 partite: il TOP ordina gli scenari esclusivamente in base alla probabilità stimata. Betfair serve solo per mostrare la quota (massimo 3,70).</p></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">🏆</span><div><b>Classifica</b><small>Posizione attuale delle due squadre</small></div></div><div class="top3-method-item"><span class="method-icon">📈</span><div><b>Ultime 3</b><small>Punti e risultati più recenti</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>Quota</b><small>Solo quota Betfair BACK ≤ 3,70</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🎯</span><div><b>Probabilità</b><small>Classifica + ultime 3</small></div></div></div></section>
 
@@ -1123,10 +1123,11 @@ async function run(){
   if(d.fixtures===0 && apiErrors.length){
    const first=apiErrors[0].error;
    const detail=typeof first==='string'?first:JSON.stringify(first);
-   status(`🔴 0 partite · errore API: ${detail}`,"err");
+   status(`🔴 0 partite · errore ESPN: ${detail}`,"err");
   }else{
    const liveText=live.length?` · 🟠 ${live.length} live`:"";
-   status(`🟢 ${d.fixtures} partite · ${d.analyzed} analizzate${liveText} · ${d.requests} chiamate API${d.cached ? " · cache" : ""}`,"ok");
+   const quoteText=d.fixtures>0&&d.analyzed===0?' · ⚠️ 0 con quota Betfair riconosciuta':'';
+   status(`🟢 ${d.fixtures} partite · ${d.analyzed} quotate${quoteText}${liveText} · ${d.requests} chiamate API${d.cached ? " · cache" : ""}`,d.fixtures>0&&d.analyzed===0?'warn':'ok');
   }
   renderLive(live);
   const cs=(d.candidates||[]).map(scoreCandidate).sort((a,b)=>Number(b.prob||0)-Number(a.prob||0));
@@ -1198,20 +1199,16 @@ function render(cs){
    $("pick").innerHTML='<div class="empty">🟡 Nessun candidato disponibile.</div>';
    $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Ultime 3</th><th>Analisi</th></tr>'+cs.filter(x=>Number(x.odds)>1 && Number(x.odds)<=3.7).slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td><b>${Number(x.prob||0).toFixed(1)}%</b></td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:` <small>(Betfair Exchange)</small>`}</td><td>${Number(x.modelSample||0)>=3?"3/3":String(Number(x.modelSample||0))+"/3"}</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td></tr>`).join("")+'</table></div>';
  }
- // V156: TOP 1-5 sempre. Uso l'ordine già calcolato dal backend per valore
- // atteso (edge) — non lo risordino per probabilità grezza, altrimenti
- // vanifico la logica di value betting del motore. Il tetto quota è quello
- // massimo di fallback del backend (10.0): se il motore ha dovuto allargare
- // il range per raggiungere 5 proposte, non le scarto di nuovo qui.
- const TOP_N=5;
+ // V160: TOP 3, una partita per scenario, ordinato per probabilità stimata.
+ const TOP_N=3;
  const picks=[]; const usedMatch=new Set(); const exact=new Set();
  const base=[...cs].filter(v=>{
    const key=`${v.fixtureId||''}|${v.market||''}`;
    if(exact.has(key)) return false;
    exact.add(key);
    const prob=Number(v.prob), odds=Number(v.odds), score=Number(v.topSelectionScore);
-   return Number.isFinite(prob)&&prob>0&&prob<=100&&Number.isFinite(odds)&&odds>1&&odds<=10&&Number.isFinite(score);
- }); // cs arriva già ordinato dal backend per edge/valore atteso: nessun re-sort qui
+   return Number.isFinite(prob)&&prob>0&&prob<=100&&Number.isFinite(odds)&&odds>1&&odds<=3.7&&Number.isFinite(score);
+ }); // backend e frontend ordinano solo per probabilità stimata
  const matchKey=v=>String(`${v.home||''}|${v.away||''}`).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'');
  for(const v of base){
    if(picks.length>=TOP_N) break;
@@ -1260,9 +1257,16 @@ function render(cs){
    :minAnalysis<45
      ?`<div class="top3-notice empty">⚠️ TOP disponibile: il modello privilegia gli scenari con dati sufficienti e usa un secondo livello solo quando non ci sono abbastanza candidati di qualità.</div>`
      :`<div class="top3-notice small">ℹ️ TOP ordinato esclusivamente per probabilità stimata da classifica + ultime 3. Betfair Exchange è usata solo per la quota BACK (massimo 3,70).</div>`;
- $("pick").innerHTML=picks.length?notice+cards:'<div class="empty">🟡 Nessun candidato analizzabile per questa data.</div>';
+ if(!picks.length){
+   const dbg=(lastDiagnostics||[]).filter(d=>['betfair-matching','no-candidates-debug','betfair-exchange'].includes(d.provider));
+   const items=dbg.flatMap(d=>d.unmatched||[]).slice(0,6).map(x=>`<div style="margin-top:5px"><b>${esc(x.fixture||'')}</b> — ${esc(x.reason||'')}</div>`).join('');
+   const why=dbg.find(d=>d.provider==='no-candidates-debug')?.reason||'Nessun candidato disponibile.';
+   $("pick").innerHTML=`<div class="empty"><b>🟡 Nessun pronostico disponibile.</b><div style="margin-top:7px">${esc(why)}</div>${items?`<div class="field-box" style="text-align:left;margin-top:12px"><b>Diagnostica Betfair</b>${items}</div>`:''}</div>`;
+ }else{
+   $("pick").innerHTML=notice+cards;
+ }
  /* Loghi TOP: nessun recupero automatico durante il render. Usa solo quelli già presenti nei dati. */
- $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Ultime 3</th><th>Analisi</th></tr>'+cs.filter(x=>Number(x.modelSample||0)>=3 && Number(x.odds)>1 && Number(x.odds)<=3.7).slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:` <small>(Betfair Exchange)</small>`}</td><td>${Number(x.modelSample||0)>=3?'3/3':String(Number(x.modelSample||0))+'/3'}</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td></tr>`).join("")+'</table></div>';
+ $("candidates").innerHTML='<div class="table-scroll"><table><tr><th>Partita</th><th>Mercato</th><th>Prob.</th><th>Quota</th><th>Ultime 3</th><th>Analisi</th></tr>'+cs.filter(x=>Number(x.odds)>1 && Number(x.odds)<=3.7).slice(0,15).map(x=>`<tr><td><b>${esc(x.home)}</b> – ${esc(x.away)}</td><td><span class="pill">${esc(x.market)}</span></td><td>${x.prob}%</td><td>${x.odds.toFixed(2)}${x.bookmaker?` <small>(${esc(x.bookmaker)})</small>`:` <small>(Betfair Exchange)</small>`}</td><td>${Number(x.modelSample||0)>=3?'3/3':String(Number(x.modelSample||0))+'/3'}</td><td>${Number(x.analysisSupport||0).toFixed(0)}/100</td></tr>`).join("")+'</table></div>';
 }
 
 const ARCHIVE_KEY='pickDelGiorno.archive.v2';
