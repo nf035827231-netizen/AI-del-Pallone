@@ -614,9 +614,9 @@ body[data-theme="light"] .archive-item .bet-match-card{background:#f7f9fc!import
 <div class="today-layout">
 <section class="card tab-section active" data-section="today" style="display:none" aria-hidden="true"><h2>🌍 Campionato</h2><select id="leagueSelect" class="league-selector" aria-label="Seleziona campionato"></select><p class="small"><b>“Tutti i campionati selezionati”</b> usa il perimetro europeo di AI DEL PALLONE e le coppe UEFA. Le gare con calcio d’inizio fuori dalla finestra italiana 11:00–22:00 vengono escluse automaticamente. Puoi anche scegliere un singolo campionato dal menu.</p></section>
 
-<section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="timeWindow" aria-label="Finestra oraria"><option value="all">🕐 Tutto il giorno · 11:00–22:00</option><option value="afternoon1">☀️ Primo pomeriggio · 13:00–16:00</option><option value="afternoon2">🌤️ Tardo pomeriggio · 16:01–19:00</option><option value="evening">🌙 Sera · 19:01–22:00</option></select><select id="market"><option value="all">Tutti i mercati (1X2 + O/U 1.5-2.5-3.5 + G/NG)</option><option value="totals">Under / Over 1.5 · 2.5 · 3.5</option><option value="1x2">1X2</option><option value="btts">Goal / No Goal</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Il modello usa Betfair per gli eventi e le quote BACK e SofaScore per classifica e ultime 3 partite. Nessuna API-Football e nessun Football-Data. Mercati: solo 1X2, Under/Over 1.5-2.5-3.5 e Goal/No Goal, quota massima 3,70. Le 3 proposte sono una per partita e vengono ordinate esclusivamente per probabilità stimata: la quota non entra nel calcolo della probabilità. Si parte dai migliori 8 campionati europei + coppe UEFA + nazionali; se non bastano 3 partite quotate si allarga agli altri campionati. I risultati restano in cache.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
+<section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="timeWindow" aria-label="Finestra oraria"><option value="all">🕐 Tutto il giorno · 11:00–22:00</option><option value="afternoon1">☀️ Primo pomeriggio · 13:00–16:00</option><option value="afternoon2">🌤️ Tardo pomeriggio · 16:01–19:00</option><option value="evening">🌙 Sera · 19:01–22:00</option></select><select id="market"><option value="all">Tutti i mercati (1X2 + O/U 1.5-2.5-3.5 + G/NG)</option><option value="totals">Under / Over 1.5 · 2.5 · 3.5</option><option value="1x2">1X2</option><option value="btts">Goal / No Goal</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Il modello usa Betfair per gli eventi e le quote BACK e Football-Data.org per classifica e ultime 3 partite. Nessun provider calendario/statistiche legacy. Mercati: solo 1X2, Under/Over 1.5-2.5-3.5 e Goal/No Goal, quota massima 3,70. Le 3 proposte sono una per partita e vengono ordinate esclusivamente per probabilità stimata: la quota non entra nel calcolo della probabilità. Si parte dai migliori 8 campionati europei + coppe UEFA + nazionali; se non bastano 3 partite quotate si allarga agli altri campionati. I risultati restano in cache.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
-<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le migliori disponibili del giorno</h2><p class="small top3-subtitle">Classifica + ultime 3 partite: il TOP ordina gli scenari esclusivamente in base alla probabilità stimata. Betfair serve solo per mostrare la quota (massimo 3,70).</p></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">🏆</span><div><b>Classifica</b><small>Posizione attuale delle due squadre</small></div></div><div class="top3-method-item"><span class="method-icon">📈</span><div><b>Ultime 3</b><small>Punti e risultati più recenti</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>Quota</b><small>Solo quota Betfair BACK ≤ 3,70</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🎯</span><div><b>Probabilità</b><small>Classifica + ultime 3</small></div></div></div></section>
+<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le migliori disponibili del giorno</h2><p class="small top3-subtitle">Classifica + ultime 3 partite: il TOP ordina gli scenari esclusivamente in base alla probabilità stimata. Betfair fornisce eventi e quote BACK (massimo 3,70); Football-Data.org fornisce classifica e ultime 3 partite.</p></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">🏆</span><div><b>Classifica</b><small>Posizione attuale delle due squadre</small></div></div><div class="top3-method-item"><span class="method-icon">📈</span><div><b>Ultime 3</b><small>Punti e risultati più recenti</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>Quota</b><small>Solo quota Betfair BACK ≤ 3,70</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🎯</span><div><b>Probabilità</b><small>Classifica + ultime 3</small></div></div></div></section>
 
 <section class="card tab-section active" data-section="today"><h2>📊 Classifica candidati</h2><div id="candidates" class="empty">Nessun candidato.</div></section>
 
@@ -1126,10 +1126,11 @@ async function run(){
    status(`🔴 0 partite · errore fonte dati: ${detail}`,"err");
   }else{
    const liveText=live.length?` · 🟠 ${live.length} live`:"";
-   const quoteText=d.fixtures>0&&d.analyzed===0?' · ⚠️ 0 con quota Betfair riconosciuta':'';
+   const quotedCount=Number.isFinite(Number(d.quotedFixtures))?Number(d.quotedFixtures):Number(d.analyzed||0);
+   const quoteText=d.fixtures>0&&quotedCount===0?' · ⚠️ 0 partite arricchite con Football-Data.org':'';
    const sourceErr=(d.diagnostics||[]).filter(x=>x.error).length;
    const sourceNote=sourceErr?` · ⚠️ ${sourceErr} risposta fonte dati parziale`:'';
-   status(`${sourceErr?'🟠':'🟢'} ${d.fixtures} partite · ${d.analyzed} quotate${quoteText}${liveText} · ${d.requests} chiamate API${sourceNote}${d.cached ? " · cache" : ""}`,d.fixtures>0&&d.analyzed===0?'warn':'ok');
+   status(`${sourceErr?'🟠':'🟢'} ${d.fixtures} partite · ${quotedCount} pronte${quoteText}${liveText} · ${d.requests} chiamate API${sourceNote}${d.cached ? " · cache" : ""}`,d.fixtures>0&&quotedCount===0?'warn':'ok');
   }
   renderLive(live);
   const cs=(d.candidates||[]).map(scoreCandidate).sort((a,b)=>Number(b.prob||0)-Number(a.prob||0));
@@ -1220,22 +1221,7 @@ function render(cs){
    picks.push(v);
    usedMatch.add(mk);
  }
- const absenceHtml=x=>{
-   if(!x.availability){
-     const fixtureKey=`${x.home} - ${x.away}`;
-     const diag=lastDiagnostics.find(d=>d.provider==='api-football-injuries'&&d.fixture===fixtureKey)
-       ||lastDiagnostics.find(d=>d.provider==='api-football-fixtures');
-     let detail='Dati indisponibilità non disponibili per questa partita.';
-     if(diag?.error){
-       const msg=typeof diag.error==='string'?diag.error:(diag.error.message||JSON.stringify(diag.error));
-       detail=msg;
-     }
-     return `<div class="absence-box absence-muted"><div class="absence-title">🏥 Assenze</div>${esc(detail)}</div>`;
-   }
-   if(!x.availability.total) return '<div class="absence-box absence-ok"><div class="absence-title">🏥 Assenze</div>Nessuna assenza segnalata dal provider per questa partita.</div>';
-   const team=(name,rows)=>rows?.length?`<div class="absence-team"><b>${esc(name)}:</b> ${rows.slice(0,5).map(a=>`${esc(a.player)} <span class="pill">${esc(a.status||'indisponibile')}</span>${a.reason&&!['squalificato','infortunato','in dubbio','indisponibile'].includes(a.status)?` <span class="small">${esc(a.reason)}</span>`:''}`).join(', ')}</div>`:'';
-   return `<div class="absence-box"><div class="absence-title">🏥 Assenze importanti</div>${team(x.home,x.availability.home)}${team(x.away,x.availability.away)}</div>`;
- };
+ const absenceHtml=x=>'';
  const logoHtml=(url,name)=>`<img class="team-logo" data-pick-logo="${url?'ready':'missing'}" data-team-name="${esc(name||'')}" src="${esc(url||'')}" alt="Stemma ${esc(name)}" loading="lazy" style="display:${url?'block':'none'}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="team-logo-fallback" style="display:${url?'none':'flex'}">${esc((name||'?').slice(0,2).toUpperCase())}</span>`;
  const cards=picks.map((x,i)=>{
    const kMs=x.kickoff?new Date(x.kickoff).getTime():NaN;
