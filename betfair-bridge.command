@@ -2,7 +2,7 @@
 set -u
 clear
 echo "========================================================"
-echo " AI DEL PALLONE — BETFAIR BRIDGE V160"
+echo " AI DEL PALLONE — BETFAIR BRIDGE V163"
 echo " Mac → Betfair Exchange → Vercel/Supabase"
 echo "========================================================"
 echo

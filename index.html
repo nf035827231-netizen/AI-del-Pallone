@@ -1260,9 +1260,14 @@ function render(cs){
      :`<div class="top3-notice small">ℹ️ TOP ordinato esclusivamente per probabilità stimata da classifica + ultime 3. Betfair Exchange è usata solo per la quota BACK (massimo 3,70).</div>`;
  if(!picks.length){
    const dbg=(lastDiagnostics||[]).filter(d=>['betfair-matching','no-candidates-debug','betfair-exchange'].includes(d.provider));
-   const items=dbg.flatMap(d=>d.unmatched||[]).slice(0,6).map(x=>`<div style="margin-top:5px"><b>${esc(x.fixture||'')}</b> — ${esc(x.reason||'')}</div>`).join('');
+   const bf=dbg.find(d=>d.provider==='betfair-exchange')||{};
+   const items=dbg.flatMap(d=>d.unmatched||[]).slice(0,6).map(x=>{
+     const near=Array.isArray(x.nearest)&&x.nearest.length?`<div style="font-size:12px;color:#718198;margin-top:3px">Più vicino: ${esc(x.nearest[0].event||'—')} · sim. ${Number(x.nearest[0].score||0).toFixed(2)}${x.nearest[0].minutesFromKickoff!=null?` · ${x.nearest[0].minutesFromKickoff} min`:''}${x.nearest[0].hasBook?' · book ✅':' · book ❌'}</div>`:'';
+     return `<div style="margin-top:7px"><b>${esc(x.fixture||'')}</b> — ${esc(x.reason||'')}${near}</div>`;
+   }).join('');
    const why=dbg.find(d=>d.provider==='no-candidates-debug')?.reason||'Nessun candidato disponibile.';
-   $("pick").innerHTML=`<div class="empty"><b>🟡 Nessun pronostico disponibile.</b><div style="margin-top:7px">${esc(why)}</div>${items?`<div class="field-box" style="text-align:left;margin-top:12px"><b>Diagnostica Betfair</b>${items}</div>`:''}</div>`;
+   const bfInfo=`<div style="margin-top:8px;font-size:13px;color:#718198">Cataloghi: ${Number(bf.catalogueRows||0)} · mercati: ${Number(bf.catalogueMarkets||0)} · mercati con book: ${Number(bf.marketsWithBook||0)} · eventi: ${Number(bf.eventCount||bf.events||0)}</div>`;
+   $("pick").innerHTML=`<div class="empty"><b>🟡 Nessun pronostico disponibile.</b><div style="margin-top:7px">${esc(why)}</div>${items||bfInfo?`<div class="field-box" style="text-align:left;margin-top:12px"><b>Diagnostica Betfair</b>${bfInfo}${items}</div>`:''}</div>`;
  }else{
    $("pick").innerHTML=notice+cards;
  }
