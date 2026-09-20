@@ -3,16 +3,16 @@ export default async function handler(req,res){
   const u=new URL(req.url,'https://vercel.local');
   const fixtureId=u.searchParams.get('fixtureId'); const market=u.searchParams.get('market');
   if(!fixtureId||!market)return res.status(400).json({error:'Parametri fixtureId e market richiesti'});
-  const id=String(fixtureId).replace(/^sofascore-/,'');
-  if(!/^\d+$/.test(id))return res.status(200).json({settled:false,reason:'Riferimento partita non riconosciuto'});
+  const eventId=String(fixtureId).replace(/^betfair-/,'');
+  if(!/^\d+$/.test(eventId))return res.status(200).json({settled:false,reason:'Riferimento partita non riconosciuto'});
+  const token=process.env.FOOTBALL_DATA_TOKEN||process.env.FOOTBALL_DATA_API_TOKEN||process.env.FOOTBALL_DATA_API_KEY||'';
+  if(!token)return res.status(200).json({settled:false,reason:'FOOTBALL_DATA_TOKEN non configurato'});
   try{
-    const r=await fetch(`https://www.sofascore.com/api/v1/event/${encodeURIComponent(id)}`,{headers:{Accept:'application/json','Origin':'https://www.sofascore.com','Referer':'https://www.sofascore.com/'},cache:'no-store'});
-    if(!r.ok)return res.status(200).json({settled:false,reason:`SofaScore HTTP ${r.status}`});
+    const r=await fetch(`https://api.football-data.org/v4/matches/${encodeURIComponent(eventId)}`,{headers:{Accept:'application/json','X-Auth-Token':token},cache:'no-store'});
+    if(!r.ok)return res.status(200).json({settled:false,reason:`Football-Data.org HTTP ${r.status}`});
     const m=await r.json();
-    const ev=m?.event||m;
-    const finished=String(ev?.status?.type||ev?.status?.description||'').toLowerCase().includes('finish')||Number(ev?.status?.code)===100;
-    if(!finished)return res.status(200).json({settled:false,reason:'Partita non ancora conclusa'});
-    const hg=Number(ev?.homeScore?.current??ev?.homeScore?.normaltime??ev?.homeScore?.display); const ag=Number(ev?.awayScore?.current??ev?.awayScore?.normaltime??ev?.awayScore?.display);
+    if(String(m?.status||'').toUpperCase()!=='FINISHED')return res.status(200).json({settled:false,reason:'Partita non ancora conclusa'});
+    const hg=Number(m?.score?.fullTime?.home),ag=Number(m?.score?.fullTime?.away);
     if(!Number.isFinite(hg)||!Number.isFinite(ag))return res.status(200).json({settled:false,reason:'Risultato finale non disponibile'});
     const result=evaluateMarket(market,hg,ag); if(result==null)return res.status(200).json({settled:false,reason:`Mercato "${market}" non riconosciuto automaticamente`,homeGoals:hg,awayGoals:ag});
     return res.status(200).json({settled:true,result,homeGoals:hg,awayGoals:ag});

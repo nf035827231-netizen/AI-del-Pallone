@@ -1,13 +1,12 @@
 const RESPONSE_CACHE = new Map();
 
-// V169: fonte precedente completamente rimosso.
-// Betfair = calendario operativo + quote BACK.
-// SofaScore = classifica + ultime 3 partite.
-const LEAGUE_CODES = new Set(['SA','SB','PL','PD','BL1','FL1','PPL','DED','BEL1','SCO1','AUT1','TUR1','DEN1','SWE1','NOR1','POL1','GRE1','ROU1','UKR1','SUI1','CL','EL','ECL','BRA1','MLS1','JPN1','WCQ','NL','EURO','EUROQ']);
+// V171: Betfair = calendario operativo + quote BACK.
+// Football-Data.org = classifica + ultime 3 partite. Nessuna quota entra nella probabilità.
+const LEAGUE_CODES = new Set(['SA','SB','PL','PD','BL1','FL1','PPL','DED','BJL','SCO1','ABL','TSL','DSU','ALL','TIP','POL','GSL','RL1','UPL','SSL','CL','EL','UCL','ECL','BRA1','MLS1','JPN1','WCQ','NL','EURO','EUROQ']);
 const ALLOWED_MARKETS=new Set(['1','X','2','Over 1.5','Under 1.5','Over 2.5','Under 2.5','Over 3.5','Under 3.5','Goal','No Goal']);
 const MAX_ODDS=3.70;
 const TARGET_PICKS=3;
-const SOFA_BASE='https://www.sofascore.com/api/v1';
+const FD_BASE='https://api.football-data.org/v4';
 
 export default async function safeHandler(req,res){
   try{return await handler(req,res);}catch(e){
@@ -28,13 +27,14 @@ async function handler(req,res){
   if(!date) return res.status(400).json({error:'Data mancante'});
   if(!supaUrl||!serviceKey) return res.status(500).json({error:'SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY non configurata'});
 
-  const cacheKey=`v169-betfair-sofascore|${date}|${requestedCodes?.join(',')||'ALL'}|${timeWindow}|${market}`;
+  const cacheKey=`v171-betfair-footballdata|${date}|${requestedCodes?.join(',')||'ALL'}|${timeWindow}|${market}`;
   const cached=RESPONSE_CACHE.get(cacheKey);
   if(cached&&cached.expires>Date.now()) return res.status(200).json({...cached.data,cached:true});
 
   let requests=0;
-  const requestBreakdown={betfairSnapshot:0,sofascoreSchedule:0,sofascoreStandings:0,sofascoreForm:0};
+  const requestBreakdown={betfairSnapshot:0,footballDataMatches:0};
   const diagnostics=[];
+  const token=process.env.FOOTBALL_DATA_TOKEN||process.env.FOOTBALL_DATA_API_TOKEN||process.env.FOOTBALL_DATA_API_KEY||'';
 
   const bf=await loadBetfairSnapshot(supaUrl,serviceKey);
   requests++; requestBreakdown.betfairSnapshot++;
@@ -44,65 +44,54 @@ async function handler(req,res){
   diagnostics.push({provider:'betfair-fixtures',fixtures:betfairFixtures.length,rule:'solo eventi presenti nel catalogue Betfair sincronizzato; kickoff futuro; bridge previsto sulle prossime 6 ore'});
 
   if(!betfairFixtures.length){
-    const data={date,fixtures:0,analyzed:0,requests,requestBreakdown,candidates:[],liveFixtures:[],diagnostics,disclaimer:'Betfair fornisce gli eventi e le quote BACK. SofaScore fornisce classifica e ultime 3 partite. Quota massima 3,70.',cached:false};
+    const data={date,fixtures:0,analyzed:0,quotedFixtures:0,requests,requestBreakdown,candidates:[],liveFixtures:[],diagnostics,disclaimer:`Betfair fornisce eventi e quote BACK. Football-Data.org fornisce risultati/classifica; quota massima ${MAX_ODDS.toFixed(2)}.`,cached:false};
     RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+120000,data});
     return res.status(200).json(data);
   }
 
-  // Un'unica chiamata giornaliera individua gli eventi SofaScore corrispondenti.
-  const sofaSchedule=await sofaGet(`/sport/football/scheduled-events/${date}`);
-  requests++; requestBreakdown.sofascoreSchedule++;
-  diagnostics.push({provider:'sofascore-schedule',events:Array.isArray(sofaSchedule?.events)?sofaSchedule.events.length:0,error:sofaSchedule?.__error||null});
-  const sofaEvents=Array.isArray(sofaSchedule?.events)?sofaSchedule.events:[];
+  if(!token){
+    diagnostics.push({provider:'football-data',error:'FOOTBALL_DATA_TOKEN non configurato',help:'Imposta FOOTBALL_DATA_TOKEN in Vercel. Il token resta server-side.'});
+    diagnostics.push({provider:'no-candidates-debug',reason:'Manca il token Football-Data.org per leggere classifica e ultime 3 partite.',betfairEvents:bf.events.size});
+    const data={date,fixtures:betfairFixtures.length,analyzed:0,quotedFixtures:0,requests,requestBreakdown,candidates:[],liveFixtures:[],diagnostics,disclaimer:'Betfair = eventi/quote BACK. Football-Data.org = classifica e ultime 3. Quota massima 3,70. La quota non entra nella probabilità.',cached:false};
+    RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+60000,data});
+    return res.status(200).json(data);
+  }
 
-  const enriched=[];
-  const unmatched=[];
+  // Una sola richiesta per competizione: prendiamo i match della stagione fino alla data richiesta
+  // e costruiamo localmente sia la classifica sia le ultime 3. Questo evita chiamate per ogni squadra.
+  const jobs=[]; const seenCodes=new Set();
+  for(const f of betfairFixtures){
+    const code=f.leagueCode;
+    if(!code||seenCodes.has(code))continue;
+    seenCodes.add(code); jobs.push(code);
+  }
+  const requestedFdJobs=jobs.slice(0,10);
+  if(jobs.length>requestedFdJobs.length) diagnostics.push({provider:'football-data',warning:`${jobs.length-requestedFdJobs.length} competizioni rinviate: limite operativo 10 chiamate/minuto del piano gratuito.`});
+  const fdResults=await mapLimit(requestedFdJobs,4,async code=>{
+    const data=await footballDataGet(`/competitions/${encodeURIComponent(code)}/matches?dateTo=${encodeURIComponent(date)}`,token);
+    requests++; requestBreakdown.footballDataMatches++;
+    return {code,data};
+  });
+  const leagueData=new Map();
+  for(const x of fdResults){
+    const parsed=parseFootballDataMatches(x.data,date);
+    leagueData.set(x.code,parsed);
+    diagnostics.push({provider:'football-data',competition:x.code,matches:Array.isArray(x.data?.matches)?x.data.matches.length:0,finished:parsed.matches.length,teams:parsed.standings.size,error:x.data?.__error||null});
+  }
+
+  const scenarios=[]; const quoted=[]; const unmatched=[];
   for(const f of betfairFixtures){
     const odds=extractBetfairOdds(f.match,market,f.home,f.away).filter(o=>o.odd>1&&o.odd<=MAX_ODDS&&ALLOWED_MARKETS.has(o.value));
     if(!odds.length){unmatched.push({fixture:`${f.home} - ${f.away}`,league:f.league,reason:'Betfair presente ma nessuna quota BACK ≤ 3,70 nei mercati richiesti'});continue;}
-    const sf=findSofaFixture(f,sofaEvents);
-    if(!sf){unmatched.push({fixture:`${f.home} - ${f.away}`,league:f.league,reason:'evento SofaScore non riconosciuto per classifica/ultime 3'});continue;}
-    enriched.push({...f,sofa:sf,odds});
-  }
-
-  // Classifiche: una richiesta per torneo/stagione, condivisa tra tutte le partite.
-  const standingCache=new Map();
-  const standingJobs=[];
-  for(const f of enriched){
-    const tid=f.sofa?.tournamentId, sid=f.sofa?.seasonId;
-    if(tid&&sid){const k=`${tid}|${sid}`;if(!standingCache.has(k)){standingCache.set(k,null);standingJobs.push({k,tid,sid});}}
-  }
-  const standingResults=await mapLimit(standingJobs,5,async job=>{
-    const data=await sofaGet(`/unique-tournament/${job.tid}/season/${job.sid}/standings/total`);
-    requests++; requestBreakdown.sofascoreStandings++;
-    return {job,data};
-  });
-  for(const x of standingResults){
-    const table=parseSofaStandings(x.data); standingCache.set(x.job.k,table);
-    diagnostics.push({provider:'sofascore-standings',tournamentId:x.job.tid,seasonId:x.job.sid,teams:table.size,error:x.data?.__error||null});
-  }
-
-  // Ultime 3: una chiamata pre-match form per partita; fallback ai match recenti del team.
-  const formResults=await mapLimit(enriched,6,async f=>{
-    const data=await sofaGet(`/event/${encodeURIComponent(f.sofa.id)}/pregame-form`);
-    requests++; requestBreakdown.sofascoreForm++;
-    return {f,data};
-  });
-
-  const scenarios=[]; const quoted=[];
-  for(const {f,data} of formResults){
-    const key=`${f.sofa.tournamentId}|${f.sofa.seasonId}`;
-    const table=standingCache.get(key)||new Map();
-    const hs=findStanding(table,f.home,f.sofa.homeId);
-    const as=findStanding(table,f.away,f.sofa.awayId);
-    const recent=parseSofaPregameForm(data,f.home,f.away);
-    const probs=estimateProbabilities(hs,as,recent.home,recent.away,f.home,f.away);
+    const data=leagueData.get(f.leagueCode);
+    if(!data||data.matches.length===0){unmatched.push({fixture:`${f.home} - ${f.away}`,league:f.league,reason:`Football-Data.org non disponibile per ${f.leagueCode||'questa competizione'}`});continue;}
+    const hs=findStanding(data.standings,f.home); const as=findStanding(data.standings,f.away);
+    const recent={home:recentForTeam(data.matches,f.home,f.kickoff),away:recentForTeam(data.matches,f.away,f.kickoff)};
+    const fdMatch=findFootballDataMatch(data.matches,f);
+    if(!hs||!as||recent.home.length<2||recent.away.length<2||!fdMatch){unmatched.push({fixture:`${f.home} - ${f.away}`,league:f.league,reason:'Dati statistici insufficienti: classifica, ultime 3 o match ID non riconosciuti'});continue;}
     quoted.push(f);
-    for(const o of f.odds){
-      const p=probs[o.value];
-      if(!Number.isFinite(p)||p<=0)continue;
-      scenarios.push(makeScenario(f,o,p,hs,as,recent));
-    }
+    const probs=estimateProbabilities(hs,as,recent.home,recent.away,f.home,f.away);
+    for(const o of odds){const p=probs[o.value];if(!Number.isFinite(p)||p<=0)continue;scenarios.push(makeScenario(f,o,p,hs,as,recent,fdMatch));}
   }
 
   const bestByMatch=new Map();
@@ -110,14 +99,14 @@ async function handler(req,res){
   const candidates=[...bestByMatch.values()].sort((a,b)=>Number(b.prob)-Number(a.prob));
   const finalPicks=candidates.slice(0,TARGET_PICKS);
 
-  diagnostics.push({provider:'v169-model',scenarios:scenarios.length,quotedFixtures:quoted.length,candidates:candidates.length,returned:finalPicks.length,maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],rule:'un solo scenario per partita; TOP 3 ordinato esclusivamente per probabilità; quota Betfair non entra nella probabilità'});
-  diagnostics.push({provider:'betfair-sofascore-matching',matched:quoted.length,unmatched:unmatched.slice(0,30),unmatchedCount:unmatched.length});
-  if(!finalPicks.length) diagnostics.push({provider:'no-candidates-debug',reason:betfairFixtures.length?'Nessuna partita Betfair con quota BACK compatibile e dati statistici riconosciuti.':'Nessun evento Betfair nel periodo.',betfairEvents:bf.events.size,sofascoreEvents:sofaEvents.length});
+  diagnostics.push({provider:'v171-model',scenarios:scenarios.length,quotedFixtures:quoted.length,candidates:candidates.length,returned:finalPicks.length,maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],rule:'un solo scenario per partita; TOP 3 ordinato esclusivamente per probabilità; quota Betfair non entra nella probabilità'});
+  diagnostics.push({provider:'betfair-footballdata-matching',matched:quoted.length,enriched:quoted.length,unmatched:unmatched.slice(0,30),unmatchedCount:unmatched.length,quoteRecognized:betfairFixtures.length-unmatched.filter(x=>String(x.reason||'').includes('quota BACK')).length});
+  if(!finalPicks.length) diagnostics.push({provider:'no-candidates-debug',reason:betfairFixtures.length?'Nessuna partita con quota BACK compatibile e dati Football-Data.org sufficienti.':'Nessun evento Betfair nel periodo.',betfairEvents:bf.events.size,footballDataCompetitions:leagueData.size});
 
-  const disclaimer=`Il modello usa Betfair per eventi e quote BACK e SofaScore per classifica e ultime 3 partite. Quota massima ${MAX_ODDS.toFixed(2)}. Il TOP 3 è ordinato solo per probabilità stimata: la quota non entra nel calcolo della probabilità.`;
+  const disclaimer=`Il modello usa Betfair per eventi e quote BACK e Football-Data.org per classifica + ultime 3 partite. Quota massima ${MAX_ODDS.toFixed(2)}. Il TOP 3 è ordinato solo per probabilità stimata: la quota non entra nel calcolo della probabilità.`;
   await logModelPredictions(supaUrl,serviceKey,date,finalPicks);
   const liveFixtures=[];
-  const data={date,fixtures:betfairFixtures.length,analyzed:quoted.length,requests,requestBreakdown,candidates:candidates.slice(0,120),liveFixtures,diagnostics,disclaimer,cached:false};
+  const data={date,fixtures:betfairFixtures.length,analyzed:quoted.length,quotedFixtures:quoted.length,requests,requestBreakdown,candidates:candidates.slice(0,120),liveFixtures,diagnostics,disclaimer,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?120000:600000),data});
   res.setHeader('Cache-Control','no-store');
   return res.status(200).json(data);
@@ -145,71 +134,56 @@ function buildBetfairFixtures(events,date,timeWindow,requestedCodes){
   return out.sort((a,b)=>new Date(a.kickoff)-new Date(b.kickoff));
 }
 
-function findSofaFixture(f,events){
-  let best=null,bestScore=0,bestDist=Infinity;
-  for(const ev of events){
-    if(!ev?.homeTeam?.name||!ev?.awayTeam?.name)continue;
-    const direct=(teamSimilarity(f.home,ev.homeTeam.name)+teamSimilarity(f.away,ev.awayTeam.name))/2;
-    const reverse=(teamSimilarity(f.home,ev.awayTeam.name)+teamSimilarity(f.away,ev.homeTeam.name))/2;
-    const score=Math.max(direct,reverse);
-    if(score<.68)continue;
-    const ts=Number(ev.startTimestamp)*1000; const dist=Number.isFinite(ts)?Math.abs(ts-new Date(f.kickoff).getTime()):Infinity;
-    if(!best||score>bestScore+.02||(Math.abs(score-bestScore)<=.02&&dist<bestDist)){best=ev;bestScore=score;bestDist=dist;}
+function parseFootballDataMatches(payload,date){
+  const matches=Array.isArray(payload?.matches)?payload.matches:[];
+  const finished=[];
+  for(const m of matches){
+    if(String(m?.status||'').toUpperCase()!=='FINISHED')continue;
+    const hg=Number(m?.score?.fullTime?.home),ag=Number(m?.score?.fullTime?.away);
+    const ts=Date.parse(m?.utcDate||'');
+    if(!Number.isFinite(hg)||!Number.isFinite(ag)||!Number.isFinite(ts))continue;
+    finished.push({
+      id:m.id, date:new Date(ts).toISOString(), home:m?.homeTeam?.name||'', away:m?.awayTeam?.name||'',
+      homeId:m?.homeTeam?.id, awayId:m?.awayTeam?.id, score:{home:hg,away:ag}, leagueCode:m?.competition?.code||null,
+      finished:true
+    });
   }
-  if(!best)return null;
-  return {id:String(best.id),homeId:best.homeTeam?.id,awayId:best.awayTeam?.id,tournamentId:best.tournament?.uniqueTournament?.id||best.tournament?.uniqueTournamentId||best.tournament?.id,seasonId:best.season?.id,homeName:best.homeTeam?.name,awayName:best.awayTeam?.name,score:bestScore};
-}
-
-function parseSofaStandings(payload){
-  if(payload?.__error)return new Map();
-  const root=payload?.standings?.[0]||payload?.standings||payload;
-  const rows=Array.isArray(root?.rows)?root.rows:[]; const total=rows.length; const map=new Map();
-  for(const r of rows){const name=r?.team?.name||r?.team?.shortName||'';if(!name)continue;const position=Number(r.position);const points=Number(r.points);const played=Number(r.matches);map.set(teamKey(name),{teamId:r.team?.id,teamName:name,position:Number.isFinite(position)?position:null,totalTeams:total,points:Number.isFinite(points)?points:null,playedGames:Number.isFinite(played)?played:null});}
-  return map;
-}
-function findStanding(table,name,id){if(id){for(const v of table.values())if(String(v.teamId)===String(id))return v;}return table.get(teamKey(name))||null;}
-
-function parseSofaPregameForm(payload,home,away){
-  const result={home:[],away:[]};
-  if(payload?.__error)return result;
-  const root=payload;
-  // Gestione delle forme più comuni dell'endpoint pregame-form: home/away con form/lastMatches/results.
-  const sides=[['home',home],['away',away]];
-  for(const [side,name] of sides){
-    const obj=root?.[side]||root?.[`${side}Team`]||root?.[side==='home'?'homeTeam':'awayTeam']||{};
-    const candidates=[];
-    for(const key of ['form','lastMatches','events','matches','results']) if(Array.isArray(obj?.[key]))candidates.push(...obj[key]);
-    if(!candidates.length){
-      const arr=findArraysContainingMatches(obj); candidates.push(...arr.flat());
+  finished.sort((a,b)=>new Date(a.date)-new Date(b.date));
+  const teams=new Map();
+  for(const m of finished){
+    for(const side of ['home','away']){
+      const name=m[side]; if(!name)continue; const k=teamKey(name);
+      if(!teams.has(k))teams.set(k,{teamName:name,teamId:m[`${side}Id`],points:0,playedGames:0,gf:0,ga:0,gd:0,wins:0,draws:0,losses:0});
+      const t=teams.get(k); const gf=side==='home'?m.score.home:m.score.away; const ga=side==='home'?m.score.away:m.score.home;
+      t.playedGames++;t.gf+=gf;t.ga+=ga;t.gd=t.gf-t.ga;
+      if(gf>ga){t.points+=3;t.wins++;}else if(gf===ga){t.points++;t.draws++;}else t.losses++;
     }
-    const rows=candidates.map(x=>adaptSofaMatch(x)).filter(Boolean).filter(m=>localDate(m.date)<localTodayRome()||m.finished).sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,3).reverse();
-    result[side]=rows;
   }
-  return result;
-}
-function findArraysContainingMatches(v){const out=[];walk(v,x=>{if(Array.isArray(x)&&x.some(y=>y&&typeof y==='object'&&(y.homeTeam||y.awayTeam||y.home||y.away||y.homeScore||y.awayScore)))out.push(x);});return out;}
-function adaptSofaMatch(x){
-  const home=x?.homeTeam?.name||x?.home?.team?.name||x?.home?.name||x?.homeTeam||'';
-  const away=x?.awayTeam?.name||x?.away?.team?.name||x?.away?.name||x?.awayTeam||'';
-  const hg=Number(x?.homeScore?.current??x?.homeScore?.display??x?.home?.score?.current??x?.home?.score??x?.homeScore);const ag=Number(x?.awayScore?.current??x?.awayScore?.display??x?.away?.score?.current??x?.away?.score??x?.awayScore);
-  const ts=Number(x?.startTimestamp)*1000; const date=Number.isFinite(ts)&&ts>0?new Date(ts).toISOString():x?.date||x?.startTime||'';
-  if(!home||!away||!Number.isFinite(hg)||!Number.isFinite(ag)||!date)return null;
-  const status=String(x?.status?.type||x?.status?.description||'').toLowerCase();
-  return {home,away,date,score:{home:hg,away:ag},finished:status.includes('finish')||status.includes('ended')||status==='100'};
+  const ranked=[...teams.values()].sort((a,b)=>b.points-a.points||b.gd-a.gd||b.gf-a.gf||a.teamName.localeCompare(b.teamName));
+  const total=ranked.length; const standings=new Map();
+  ranked.forEach((t,i)=>standings.set(teamKey(t.teamName),{...t,position:i+1,totalTeams:total}));
+  return {matches:finished,standings};
 }
 
-function leagueCodeFromName(name){const n=normalize(name);if(/serie a/.test(n)&&/ital/.test(n))return 'SA';if(/serie b/.test(n)&&/ital/.test(n))return 'SB';if(/premier league/.test(n))return 'PL';if(/laliga|la liga/.test(n))return 'PD';if(/bundesliga/.test(n))return 'BL1';if(/ligue 1/.test(n))return 'FL1';if(/primeira|liga portugal/.test(n))return 'PPL';if(/eredivisie/.test(n))return 'DED';if(/belgian|jupiler/.test(n))return 'BEL1';if(/scottish|premiership/.test(n))return 'SCO1';if(/champions league/.test(n))return 'CL';if(/europa league/.test(n))return 'EL';if(/conference league/.test(n))return 'ECL';return null;}
-function leagueMatchesCode(name,code){const c=leagueCodeFromName(name);return c===code;}
+function findStanding(table,name){return table.get(teamKey(name))||findStandingLoose(table,name)||null;}
+function findStandingLoose(table,name){let best=null,bestScore=0;for(const v of table.values()){const s=teamSimilarity(name,v.teamName);if(s>bestScore){bestScore=s;best=v;}}return bestScore>=.78?best:null;}
+function recentForTeam(matches,name,kickoff){
+  const cut=Date.parse(kickoff); const out=[];
+  for(let i=matches.length-1;i>=0&&out.length<3;i--){const m=matches[i];const mt=Date.parse(m.date);if(!Number.isFinite(mt)||mt>=cut)continue;if(teamSimilarity(m.home,name)>=.78||teamSimilarity(m.away,name)>=.78)out.push(m);}
+  return out.reverse();
+}
 
-async function sofaGet(path){
+async function footballDataGet(path,token){
   try{
-    const r=await fetch(`${SOFA_BASE}${path}`,{headers:{Accept:'application/json','Origin':'https://www.sofascore.com','Referer':'https://www.sofascore.com/'},cache:'no-store'});
-    const text=await r.text(); if(!r.ok)return {__error:`SofaScore HTTP ${r.status}: ${text.slice(0,220)}`}; return text?JSON.parse(text):{};
+    const r=await fetch(`${FD_BASE}${path}`,{headers:{Accept:'application/json','X-Auth-Token':token},cache:'no-store'});
+    const text=await r.text();
+    if(!r.ok)return {__error:`Football-Data.org HTTP ${r.status}: ${text.slice(0,240)}`};
+    try{return text?JSON.parse(text):{};}catch{return {__error:`Football-Data.org risposta non JSON: ${text.slice(0,240)}`};}
   }catch(e){return {__error:e?.message||String(e)};}
 }
 
-function makeScenario(f,o,p,hs,as,recent){
-  return {home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:Boolean(hs&&as&&recent.home.length>=2&&recent.away.length>=2),topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V169-BETFAIR-SOFASCORE',homeStanding:hs||null,awayStanding:as||null,standingNote:standingNote(f.home,hs,f.away,as),recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),oddsSource:'Betfair Exchange',statsSource:'SofaScore',fixtureId:`sofascore-${f.sofa.id}`,eventId:f.sofa.id,kickoff:f.kickoff,league:f.league,leagueCode:f.leagueCode,priorityLeague:false,homeLogo:null,awayLogo:null,riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',oddsAgeMin:o.quoteAgeMin,fieldAnalysis:{reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),confidence:round(p),confidenceLabel:p>=70?'Alta':p>=55?'Media':'Bassa',warnings:[]}};
+function makeScenario(f,o,p,hs,as,recent,fdMatch){
+  return {home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:Boolean(hs&&as&&recent.home.length>=2&&recent.away.length>=2),topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V171-BETFAIR-FOOTBALL-DATA',homeStanding:hs||null,awayStanding:as||null,standingNote:standingNote(f.home,hs,f.away,as),recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),oddsSource:'Betfair Exchange',statsSource:'Football-Data.org',fixtureId:`football-data-${fdMatch.id}`,eventId:fdMatch.id,betfairEventId:f.match?.event?.id||null,kickoff:f.kickoff,league:f.league,leagueCode:f.leagueCode,priorityLeague:false,homeLogo:null,awayLogo:null,riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',oddsAgeMin:o.quoteAgeMin,fieldAnalysis:{reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),confidence:round(p),confidenceLabel:p>=70?'Alta':p>=55?'Media':'Bassa',warnings:[]}};
 }
 
 async function supaWrite(url,key,path,rows){const r=await fetch(`${url}/rest/v1/${path}`,{method:'POST',headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(rows)});if(!r.ok){const t=await r.text();throw new Error(`Supabase write ${r.status}: ${t.slice(0,300)}`);}}
@@ -472,7 +446,47 @@ function parseEventTeams(name){
 async function supaRead(url,key,path){const r=await fetch(`${url}/rest/v1/${path}`,{headers:{apikey:key,Authorization:`Bearer ${key}`}});const text=await r.text();if(!r.ok)throw new Error(`Supabase ${r.status}: ${text.slice(0,400)}`);return text?JSON.parse(text):[];}
 function ageMin(ts){if(!ts)return null;const d=new Date(ts).getTime();return Number.isFinite(d)?Math.max(0,(Date.now()-d)/60000):null;}
 function marketLabel(v){return({'1':'1 (Casa)','X':'X (Pareggio)','2':'2 (Trasferta)'}[v])||v;}
-function normalizeLeague(x){const s=String(x||'').trim().toUpperCase();const aliases={'135':'SA','136':'SB','39':'PL','140':'PD','78':'BL1','61':'FL1','2':'CL','88':'DED','94':'PPL'};return aliases[s] || (LEAGUE_CODES.has(s)?s:null);}
+function findFootballDataMatch(matches,f){
+  let best=null,bestScore=0,bestDist=Infinity; const target=Date.parse(f.kickoff);
+  for(const m of matches){
+    const direct=(teamSimilarity(f.home,m.home)+teamSimilarity(f.away,m.away))/2;
+    const reverse=(teamSimilarity(f.home,m.away)+teamSimilarity(f.away,m.home))/2;
+    const score=Math.max(direct,reverse); if(score<.72)continue;
+    const dist=Math.abs(Date.parse(m.date)-target);
+    if(!best||score>bestScore+.02||(Math.abs(score-bestScore)<=.02&&dist<bestDist)){best=m;bestScore=score;bestDist=dist;}
+  }
+  return best;
+}
+function leagueCodeFromName(name){
+  const n=normalize(name);
+  if(/serie a/.test(n))return 'SA';
+  if(/serie b/.test(n))return 'SB';
+  if(/scottish.*premier|premiership/.test(n))return 'SCO1';
+  if(/premier league/.test(n))return 'PL';
+  if(/laliga|la liga|primera division/.test(n))return 'PD';
+  if(/bundesliga/.test(n)&&/austria/.test(n))return 'ABL';
+  if(/bundesliga/.test(n))return 'BL1';
+  if(/ligue 1/.test(n))return 'FL1';
+  if(/primeira|liga portugal/.test(n))return 'PPL';
+  if(/eredivisie/.test(n))return 'DED';
+  if(/champions league/.test(n))return 'CL';
+  if(/europa league/.test(n))return 'EL';
+  if(/conference league/.test(n))return 'UCL';
+  if(/jupiler|belgian.*pro/.test(n))return 'BJL';
+  if(/superliga/.test(n)&&/denmark|danish/.test(n))return 'DSU';
+  if(/allsvenskan/.test(n))return 'ALL';
+  if(/super league/.test(n)&&/switzerland|swiss/.test(n))return 'SSL';
+  if(/super lig/.test(n)&&/turk|turkey/.test(n))return 'TSL';
+  if(/premier liha|ukrain/.test(n))return 'UPL';
+  if(/super league/.test(n)&&/greece|greek/.test(n))return 'GSL';
+  if(/eliteserien|tippeligaen/.test(n))return 'TIP';
+  if(/ekstraklasa/.test(n))return 'POL';
+  if(/liga i|liga 1/.test(n)&&/romania|romanian/.test(n))return 'RL1';
+  return null;
+}
+function leagueMatchesCode(name,code){return leagueCodeFromName(name)===code;}
+
+function normalizeLeague(x){const s=String(x||'').trim().toUpperCase();const aliases={'135':'SA','136':'SB','39':'PL','140':'PD','78':'BL1','61':'FL1','2':'CL','88':'DED','94':'PPL','BEL1':'BJL','AUT1':'ABL','DEN1':'DSU','SWE1':'ALL','SUI1':'SSL','TUR1':'TSL','UKR1':'UPL','NOR1':'TIP','ROU1':'RL1','GRE1':'GSL','ECL':'UCL','CZE1':'CZE','CRO1':'CRO','SRB1':'SRB','HUN1':'HUN','SVK1':'SVK'};return aliases[s] || (LEAGUE_CODES.has(s)?s:null);}
 function normalize(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').trim();}
 function teamKey(s){let n=normalize(s);const aliases={inter:'internazionale', 'inter milan':'internazionale', 'internazionale milano':'internazionale', 'ac milan':'milan', 'hellas verona':'verona', 'as roma':'roma', 'ss lazio':'lazio', 'ssc napoli':'napoli', 'juventus fc':'juventus'};n=aliases[n]||n;return n.replace(/\b(fc|cf|sc|ac|afc|fk|sk|club|calcio|football|futbol|the|ss|as|ssc|cfc|bk|sv)\b/g,' ').replace(/\s+/g,' ').trim();}
 function clean(s){return teamKey(s).replace(/\b\d{2,4}\b/g,'').replace(/[^a-z0-9]+/g,'').trim();}
