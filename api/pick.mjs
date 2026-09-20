@@ -49,7 +49,7 @@ async function handler(req,res){
   if(!date) return res.status(400).json({error:'Data mancante'});
   if(!supaUrl||!serviceKey) return res.status(500).json({error:'SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY non configurata'});
 
-  const cacheKey=`v160-clean|${date}|${requestedCodes.join(',')}|${timeWindow}|${market}`;
+  const cacheKey=`v162-clean|${date}|${requestedCodes.join(',')}|${timeWindow}|${market}`;
   const cached=RESPONSE_CACHE.get(cacheKey);
   if(cached&&cached.expires>Date.now()) return res.status(200).json({...cached.data,cached:true});
 
@@ -136,7 +136,7 @@ async function handler(req,res){
       scenarios.push({
         home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),
         analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),
-        probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V161-ESPN-FIX',
+        probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V162-FORM-FIX',
         homeStanding:hs||null,awayStanding:as||null,standingNote:standingNote(f.home,hs,f.away,as),
         recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},
         reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),
@@ -189,7 +189,7 @@ async function handler(req,res){
   }
 
   const finalPicks=candidates.slice(0,TARGET_PICKS);
-  diagnostics.push({provider:'v161-model',scenarios:scenarios.length,quotedFixtures:quoted.length,candidates:candidates.length,returned:finalPicks.length,maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],rule:'Un solo scenario per partita; TOP 3 ordinato esclusivamente per probabilità; Betfair solo per quota BACK'});
+  diagnostics.push({provider:'v162-model',scenarios:scenarios.length,quotedFixtures:quoted.length,candidates:candidates.length,returned:finalPicks.length,maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],rule:'Un solo scenario per partita; TOP 3 ordinato esclusivamente per probabilità; Betfair solo per quota BACK'});
   diagnostics.push({provider:'betfair-matching',matched:quoted.length,unmatched:unmatched.slice(0,30),unmatchedCount:unmatched.length});
 
   if(!finalPicks.length){
@@ -208,7 +208,7 @@ async function handler(req,res){
 function makeScenario(f,o,p,hs,as,recent){
   return {
     home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),
-    analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V161-ESPN-FIX',homeStanding:hs||null,awayStanding:as||null,
+    analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V162-FORM-FIX',homeStanding:hs||null,awayStanding:as||null,
     standingNote:standingNote(f.home,hs,f.away,as),recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),oddsSource:'Betfair Exchange',statsSource:'ESPN',fixtureId:`espn-${f.id}`,eventId:f.id,kickoff:f.date,league:f.league,leagueCode:f.leagueCode,priorityLeague:PRIORITY_CODES.includes(f.leagueCode),homeLogo:f.homeLogo||null,awayLogo:f.awayLogo||null,riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value'
   };
 }
@@ -231,6 +231,12 @@ function adaptEspnEvent(e,code,cfg){
   const home=comps.find(x=>x?.homeAway==='home')||comps[0],away=comps.find(x=>x?.homeAway==='away')||comps[1]; if(!home?.team?.displayName||!away?.team?.displayName||!e?.date)return null;
   const state=String(e?.status?.type?.state||'').toLowerCase(),completed=Boolean(e?.status?.type?.completed); let status='SCHEDULED'; if(state==='in'||state==='live')status='LIVE'; else if(completed||state==='post')status='FINISHED';
   return {id:String(e.id),date:e.date,status,home:home.team.displayName,away:away.team.displayName,homeId:home.team.id,awayId:away.team.id,homeLogo:home.team.logo||null,awayLogo:away.team.logo||null,score:{home:Number(home.score),away:Number(away.score)},league:e?.league?.name||cfg.name,leagueCode:code};
+}
+function formPoints(form){
+  const s=String(form||'').toUpperCase().replace(/[^WDL]/g,'').slice(-3);
+  let points=0;
+  for(const r of s){ if(r==='W') points+=3; else if(r==='D') points+=1; }
+  return points;
 }
 function parseEspnStandings(payload){
   if(payload?.__error)return new Map(); const found=[]; walk(payload,x=>{if(Array.isArray(x?.entries)&&x.entries.some(e=>e?.team))found.push(x.entries);});
