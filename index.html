@@ -1067,7 +1067,7 @@ function scoreCandidate(x){
   return {...x, implied:null, edge:null, score, topSelectionScore:score};
 }
 
-const API_CACHE_PREFIX='pickDelGiorno.apiCache.v18.';
+const API_CACHE_PREFIX='pickDelGiorno.apiCache.v19.';
 // Migrazione: elimina le cache delle versioni precedenti, che potevano contenere
 // candidati ormai esclusi dai nuovi filtri.
 try{
@@ -1209,16 +1209,20 @@ function render(cs){
      ?`<div class="top3-notice empty">⚠️ TOP disponibile: il modello privilegia gli scenari con dati sufficienti e usa un secondo livello solo quando non ci sono abbastanza candidati di qualità.</div>`
      :`<div class="top3-notice small">ℹ️ TOP ordinato esclusivamente per probabilità stimata da classifica + ultime 3. Odds-API.io è usata solo per la quota (massimo 3,70).</div>`;
  if(!picks.length){
-   const dbg=(lastDiagnostics||[]).filter(d=>['oddsapiio-football-data','oddsapiio-football-data-matching','oddsapiio-odds','odds-api.io-odds','odds-api.io-bookmakers','oddsapiio-football-data-matching','no-candidates-debug'].includes(d.provider));
+   const dbg=(lastDiagnostics||[]).filter(d=>['football-data.org','football-data.org-validation','odds-api.io-odds','odds-api.io-bookmakers','odds-api.io-events','no-candidates-debug'].includes(d.provider));
    const oddsDiag=(lastDiagnostics||[]).find(d=>d.provider==='odds-api.io-odds')||{};
    const bookDiag=(lastDiagnostics||[]).find(d=>d.provider==='odds-api.io-bookmakers')||{};
    const eventDiag=(lastDiagnostics||[]).find(d=>d.provider==='odds-api.io-events')||{};
-   const items=dbg.flatMap(d=>d.unmatched||[]).slice(0,6).map(x=>`<div style="margin-top:7px"><b>${esc(x.fixture||'')}</b> — ${esc(x.reason||'')}</div>`).join('');
+   const fdDiags=(lastDiagnostics||[]).filter(d=>d.provider==='football-data.org');
+   const validation=(lastDiagnostics||[]).find(d=>d.provider==='football-data.org-validation')||{};
+   const items=(validation.unmatched||[]).slice(0,8).map(x=>`<div style="margin-top:7px"><b>${esc(x.fixture||'')}</b> — ${esc(x.reason||'')}</div>`).join('');
    const why=(lastDiagnostics||[]).find(d=>d.provider==='no-candidates-debug')?.reason||'Nessun candidato disponibile.';
    const oddsError=oddsDiag.error?`<div style="margin-top:7px;color:#b42318">⚠️ ${esc(oddsDiag.error)}</div>`:'';
    const bookError=bookDiag.error?`<div style="margin-top:7px;color:#b42318">⚠️ ${esc(bookDiag.error)}</div>`:'';
-   const selectedBooks=Array.isArray(bookDiag.selected)?bookDiag.selected.join(', '):'—'; const oddsInfo=`<div style="margin-top:8px;font-size:13px;color:#718198">Eventi nella finestra: ${Number(eventDiag.fixtures||0)} · eventi con risposta quote: ${Number(oddsDiag.eventsReturned||0)} · blocchi /odds/multi: ${Number(oddsDiag.batches||0)} · bookmaker usati: ${esc(selectedBooks)}</div>${oddsError}${bookError}`;
-   $("pick").innerHTML=`<div class="empty"><b>🟡 Nessun pronostico disponibile.</b><div style="margin-top:7px">${esc(why)}</div><div class="field-box" style="text-align:left;margin-top:12px"><b>Diagnostica quote Odds-API.io</b>${oddsInfo}${items}</div></div>`;
+   const selectedBooks=Array.isArray(bookDiag.selected)?bookDiag.selected.join(', '):'—';
+   const fdInfo=fdDiags.map(d=>`<div style="margin-top:7px"><b>Football-Data ${esc(d.competition||'')}</b>: classifica ${Number(d.standingsTeams||0)} squadre · ${Number(d.finishedRecent||0)} partite concluse · fonte classifica: ${esc(d.standingsSource||'—')}${d.standingsError?` · ⚠️ ${esc(d.standingsError)}`:''}${d.matchesError?` · ⚠️ ${esc(d.matchesError)}`:''}</div>`).join('');
+   const oddsInfo=`<div style="margin-top:8px;font-size:13px;color:#718198">Eventi nella finestra: ${Number(eventDiag.fixtures||0)} · eventi con risposta quote: ${Number(oddsDiag.eventsReturned||0)} · blocchi /odds/multi: ${Number(oddsDiag.batches||0)} · bookmaker usati: ${esc(selectedBooks)}</div>${oddsError}${bookError}`;
+   $("pick").innerHTML=`<div class="empty"><b>🟡 Nessun pronostico disponibile.</b><div style="margin-top:7px">${esc(why)}</div><div class="field-box" style="text-align:left;margin-top:12px"><b>Diagnostica analisi</b>${oddsInfo}${fdInfo}${items}</div></div>`;
  }else{
    $("pick").innerHTML=notice+cards;
  }
