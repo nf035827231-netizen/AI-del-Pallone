@@ -492,8 +492,14 @@ async function loadBetfairSnapshot(url,key){try{
   return {events,catalogueRows:catRows.length,catalogueMarkets,bookMarkets:latestBook.size,marketsWithBook,matchOddsMarkets,matchOddsWithBack,totalMarketsWithBack,totalBackRunners,bttsMarkets,totalMarkets,eventCount,sample,error:null};
  }catch(e){return {events:new Map(),catalogueRows:0,catalogueMarkets:0,bookMarkets:0,marketsWithBook:0,matchOddsMarkets:0,matchOddsWithBack:0,totalMarketsWithBack:0,totalBackRunners:0,bttsMarkets:0,totalMarkets:0,eventCount:0,sample:[],error:e?.message||String(e)};}}
 
-function unwrapCatalogue(payload){const out=[];walk(payload,v=>{if(v?.marketId&&v?.marketName)out.push(v);});return out;}
-function unwrapBooks(payload){const out=[];walk(payload,v=>{if(v&&v.selectionId!=null&&('status' in v||v.ex))out.push(v);});return out;}
+function parseMaybeJson(value){
+  if(typeof value!=='string') return value;
+  let v=value;
+  for(let i=0;i<3&&typeof v==='string';i++){try{v=JSON.parse(v);}catch{return value;}}
+  return v;
+}
+function unwrapCatalogue(payload){const out=[];const root=parseMaybeJson(payload);walk(root,v=>{if(v?.marketId&&v?.marketName)out.push(v);});return out;}
+function unwrapBooks(payload){const out=[];const root=parseMaybeJson(payload);walk(root,v=>{if(v&&v.selectionId!=null&&('status' in v||v.ex))out.push(v);});return out;}
 function bestBack(r){const direct=Number(r?.backPrice);if(direct>1&&Number.isFinite(direct))return direct;const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];const prices=xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x));return prices.length?Math.max(...prices):null;}
 function bestBackSize(r){const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];return xs.length?Number(xs[0]?.size)||null:null;}
 function parseEventTeams(name){
