@@ -83,21 +83,32 @@ async function handler(req,res){
     const codes=[...new Set(codeList)].filter(c=>ESPN_LEAGUES[c]);
     const unknownCodes=codeList.filter(c=>!ESPN_LEAGUES[c]);
     if(unknownCodes.length) diagnostics.push({provider:'espn-config',unsupported:unknownCodes,role:'campionati non mappati'});
+    const footballDataKey=process.env.FOOTBALL_DATA_KEY||'';
     const results=await mapLimit(codes,4,async code=>{
       const cfg=ESPN_LEAGUES[code];
-      const [score,table]=await Promise.all([
-        espn(`/apis/site/v2/sports/soccer/${cfg.slug}/scoreboard?dates=${from.replaceAll('-','')}-${to.replaceAll('-','')}`),
-        espn(`/apis/v2/sports/soccer/${cfg.slug}/standings`)
-      ]);
-      requests+=2; requestBreakdown.espnScoreboards++; requestBreakdown.espnStandings++;
-      const events=Array.isArray(score?.events)?score.events:[];
-      let fixtures=events.map(e=>adaptEspnEvent(e,code,cfg)).filter(Boolean);
-      let standings=parseEspnStandings(table,code);
-      diagnostics.push({provider:'espn',league:cfg.name,code,slug:cfg.slug,fixtures:fixtures.length,standings:standings.size,scoreError:score?.__error||null,standingsError:table?.__error||null,role:'calendario + ultime 3 + classifica'});
-      // Riserva: se ESPN non ha risposto per questo campionato (errore o zero dati utili),
-      // proviamo API-Football, solo per questo singolo campionato.
-      const espnFailed=Boolean(score?.__error)||(fixtures.length===0&&standings.size===0);
-      if(espnFailed){
+      let fixtures=[],standings=new Map();
+
+      // 1) football-data.org, se copre questo campionato: fonte gratuita più affidabile di
+      //    ESPN dai server cloud (nessun blocco IP osservato), dati stagione corrente.
+      const fd=await tryFootballData(code,cfg,date,daysBack,daysForward,diagnostics,footballDataKey);
+      if(fd){requests+=2; if(fd.fixtures.length)fixtures=fd.fixtures; if(fd.standings.size)standings=fd.standings;}
+
+      // 2) ESPN, se football-data.org non copre il campionato o non ha dato nulla di utile.
+      if(!fixtures.length&&!standings.size){
+        const [score,table]=await Promise.all([
+          espn(`/apis/site/v2/sports/soccer/${cfg.slug}/scoreboard?dates=${from.replaceAll('-','')}-${to.replaceAll('-','')}`),
+          espn(`/apis/v2/sports/soccer/${cfg.slug}/standings`)
+        ]);
+        requests+=2; requestBreakdown.espnScoreboards++; requestBreakdown.espnStandings++;
+        const events=Array.isArray(score?.events)?score.events:[];
+        const espnFixtures=events.map(e=>adaptEspnEvent(e,code,cfg)).filter(Boolean);
+        const espnStandings=parseEspnStandings(table,code);
+        diagnostics.push({provider:'espn',league:cfg.name,code,slug:cfg.slug,fixtures:espnFixtures.length,standings:espnStandings.size,scoreError:score?.__error||null,standingsError:table?.__error||null,role:'fallback quando football-data.org non copre il campionato'});
+        if(espnFixtures.length)fixtures=espnFixtures; if(espnStandings.size)standings=espnStandings;
+      }
+
+      // 3) API-Football, solo se anche i primi due non hanno dato nulla.
+      if(!fixtures.length&&!standings.size){
         const fb=await tryApiFootballFallback(code,cfg,date,diagnostics,apiFootballCircuitBreaker);
         if(fb.fixtures.length) fixtures=fb.fixtures;
         if(fb.standings.size) standings=fb.standings;
@@ -314,6 +325,74 @@ async function logModelPredictions(url,key,date,picks){
     // Non deve mai bloccare la risposta principale: il tracking è "best effort".
     console.error('AI DEL PALLONE log model_predictions error',e?.message||e);
   }
+}
+
+// football-data.org: fonte GRATUITA (nessuna carta richiesta) con dati della stagione
+// corrente per 12 competizioni. La usiamo come fonte PRIMARIA per i campionati che copre
+// (più affidabile di ESPN, che dai test risulta bloccato per IP dai server cloud). Per
+// tutto il resto (Belgio, Europa League, Conference League, Nations League, qualificazioni)
+// restano ESPN e API-Football come prima.
+const FOOTBALL_DATA_CODES={SA:'SA',PL:'PL',PD:'PD',BL1:'BL1',FL1:'FL1',PPL:'PPL',DED:'DED',CL:'CL',EURO:'EC'};
+// Non copre: BEL1, EL, ECL, NL, WCQ, EUROQ — per questi si passa direttamente a ESPN/API-Football.
+
+async function footballData(path,key){
+  for(let attempt=0;attempt<2;attempt++){
+    try{
+      const r=await fetch(`https://api.football-data.org/v4${path}`,{headers:{'X-Auth-Token':key,Accept:'application/json'},cache:'no-store'});
+      const text=await r.text();let body={};try{body=text?JSON.parse(text):{};}catch{body={};}
+      if(r.ok)return body;
+      if(r.status===429&&attempt===0){await sleep(6500);continue;} // 10 richieste/minuto sul piano free
+      return {...body,__error:`HTTP ${r.status}`};
+    }catch(e){return {__error:e?.message||String(e)};}
+  }
+  return {__error:'football-data.org non disponibile'};
+}
+
+function adaptFootballDataMatch(m,code,cfg){
+  const home=m?.homeTeam?.name, away=m?.awayTeam?.name;
+  if(!home||!away||!m?.utcDate) return null;
+  const st=String(m?.status||'').toUpperCase();
+  let status='SCHEDULED';
+  if(['IN_PLAY','PAUSED','LIVE'].includes(st))status='LIVE';
+  else if(['FINISHED','POSTPONED','SUSPENDED','CANCELLED','AWARDED'].includes(st))status=st==='FINISHED'?'FINISHED':'POST';
+  return {
+    id:`fd-${m.id}`,date:m.utcDate,status,home,away,
+    homeId:m.homeTeam?.id,awayId:m.awayTeam?.id,homeLogo:m.homeTeam?.crest||null,awayLogo:m.awayTeam?.crest||null,
+    score:{home:Number(m?.score?.fullTime?.home),away:Number(m?.score?.fullTime?.away)},
+    league:cfg.name,leagueCode:code
+  };
+}
+
+function parseFootballDataStandings(payload,code){
+  const groups=Array.isArray(payload?.standings)?payload.standings:[];
+  const total=groups.find(g=>g.type==='TOTAL')||groups[0];
+  const rows=Array.isArray(total?.table)?total.table:[];
+  const map=new Map();
+  for(const e of rows){
+    const name=e?.team?.name; if(!name) continue;
+    const form=String(e?.form||'').replace(/[^WDL]/gi,'').toUpperCase();
+    map.set(teamKey(name),{
+      teamId:e.team?.id,teamName:name,position:Number.isFinite(Number(e.position))?Number(e.position):null,
+      totalTeams:rows.length,points:Number.isFinite(Number(e.points))?Number(e.points):null,
+      playedGames:Number.isFinite(Number(e.playedGames))?Number(e.playedGames):null,
+      form,last3:form.slice(-3),form3Points:formPoints(form.slice(-3))
+    });
+  }
+  return map;
+}
+
+async function tryFootballData(code,cfg,date,daysBackArg,daysForwardArg,diagnostics,key){
+  const fdCode=FOOTBALL_DATA_CODES[code];
+  if(!fdCode||!key) return null; // non coperto o chiave assente: si passa oltre senza segnare errore
+  const from=shiftDate(date,-daysBackArg), to=shiftDate(date,daysForwardArg);
+  const [mx,st]=await Promise.all([
+    footballData(`/competitions/${fdCode}/matches?dateFrom=${from}&dateTo=${to}`,key),
+    footballData(`/competitions/${fdCode}/standings`,key)
+  ]);
+  const fixtures=(Array.isArray(mx?.matches)?mx.matches:[]).map(m=>adaptFootballDataMatch(m,code,cfg)).filter(Boolean);
+  const standings=Array.isArray(st?.standings)?parseFootballDataStandings(st,code):new Map();
+  diagnostics.push({provider:'football-data-org',league:cfg.name,code,fdCode,fixtures:fixtures.length,standings:standings.size,matchesError:mx.__error||null,standingsError:st.__error||null,role:'fonte primaria per i campionati coperti dal piano gratuito'});
+  return {fixtures,standings};
 }
 
 async function espn(path){
