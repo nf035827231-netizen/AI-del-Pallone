@@ -1,5 +1,5 @@
-// V155: liquida i pronostici passati salvati in model_predictions e calcola
-// le statistiche reali del modello (win rate, ROI, calibrazione edge).
+// V160: liquida i pronostici passati salvati in model_predictions e calcola
+// le statistiche reali del modello (win rate, ROI e risultati per mercato).
 // Nessun numero qui è deciso a tavolino: viene tutto dai risultati reali ESPN.
 import { evaluateMarket } from './settle-bet.mjs';
 
@@ -79,10 +79,6 @@ function computeStats(rows){
   const settled=rows.filter(r=>r.settled&&(r.result==='win'||r.result==='loss'));
   const pending=rows.length-settled.length;
   const overall=summarize(settled);
-  const byEdgeSign=[
-    {label:'Edge positivo (modello sopra la quota)',...summarize(settled.filter(r=>Number(r.edge_percent)>0))},
-    {label:'Edge negativo o nullo',...summarize(settled.filter(r=>!(Number(r.edge_percent)>0)))}
-  ];
   const byMarketMap=new Map();
   for(const r of settled){
     const k=String(r.market||'—');
@@ -90,7 +86,7 @@ function computeStats(rows){
     byMarketMap.get(k).push(r);
   }
   const byMarket=[...byMarketMap.entries()].map(([market,items])=>({market,...summarize(items)})).sort((a,b)=>b.count-a.count);
-  return {pendingSettlement:pending,settledCount:settled.length,overall,byEdgeSign,byMarket};
+  return {pendingSettlement:pending,settledCount:settled.length,overall,byMarket};
 }
 
 function summarize(rows){
