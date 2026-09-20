@@ -59,23 +59,33 @@ async function handler(req,res){
   const usingDefaultPool=!raw||raw==='EUROPE';
   const from=shiftDate(date,-HISTORY_DAYS);
   const to=shiftDate(date,1);
-
-  // FASE 1: un solo scoreboard ESPN per campionato. Contiene la giornata scelta
-  // e le gare recenti necessarie per le ultime 3. Nessun Football-Data e nessun API-Football.
+  const targetYear=date.slice(0,4);
+  const targetMonth=date.slice(0,7).replace('-', '');
+  
+  // ESPN ha ritirato il formato scoreboard dates=YYYYMMDD-YYYYMMDD: dal 18/09/2026
+  // restituisce HTTP 400 'Failed to get events endpoint'. Per il calendario usiamo
+  // la singola giornata; per la forma recente usiamo il mese corrente e, solo se
+  // serve, il mese precedente. In questo modo niente range deprecati e poche chiamate.
   async function fetchFixtures(codeList){
     const codes=[...new Set(codeList)].filter(c=>ESPN_LEAGUES[c]);
     const unknown=codeList.filter(c=>!ESPN_LEAGUES[c]);
     if(unknown.length) diagnostics.push({provider:'espn-config',unsupported:unknown});
     return await mapLimit(codes,5,async code=>{
       const cfg=ESPN_LEAGUES[code];
-      const path=`/apis/site/v2/sports/soccer/${cfg.slug}/scoreboard?dates=${from.replaceAll('-','')}-${to.replaceAll('-','')}`;
-      const score=await espn(path);
-      requests++; requestBreakdown.espnScoreboards++;
-      const fixtures=Array.isArray(score?.events)?score.events.map(e=>adaptEspnEvent(e,code,cfg)).filter(Boolean):[];
-      diagnostics.push({provider:'espn-scoreboard',league:cfg.name,code,slug:cfg.slug,fixtures:fixtures.length,error:score?.__error||null});
+      const dailyPath=`/apis/site/v2/sports/soccer/${cfg.slug}/scoreboard?dates=${date.replaceAll('-','')}&limit=1000`;
+      const monthPath=`/apis/site/v2/sports/soccer/${cfg.slug}/scoreboard?dates=${targetMonth}&limit=1000`;
+      const [daily,month]=await Promise.all([espn(dailyPath),espn(monthPath)]);
+      requests+=2; requestBreakdown.espnScoreboards+=2;
+      const dailyRows=Array.isArray(daily?.events)?daily.events.map(e=>adaptEspnEvent(e,code,cfg)).filter(Boolean):[];
+      const monthRows=Array.isArray(month?.events)?month.events.map(e=>adaptEspnEvent(e,code,cfg)).filter(Boolean):[];
+      const merged=new Map();
+      for(const f of [...monthRows,...dailyRows]) merged.set(f.id,f);
+      const fixtures=[...merged.values()].filter(f=>localDate(f.date)>=from&&localDate(f.date)<=to);
+      diagnostics.push({provider:'espn-scoreboard',league:cfg.name,code,slug:cfg.slug,dailyEvents:dailyRows.length,monthEvents:monthRows.length,fixtures:fixtures.length,dailyError:daily?.__error||null,monthError:month?.__error||null});
       return {code,cfg,fixtures,standings:new Map()};
     });
   }
+
 
   let sourceResults=await fetchFixtures(requestedCodes);
   let {allFixtures,liveFixtures,fixtures}=assembleFixtures(sourceResults,requestedCodes,date,timeWindow);
@@ -126,7 +136,7 @@ async function handler(req,res){
       scenarios.push({
         home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),
         analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),
-        probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V160-CLEAN',
+        probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V161-ESPN-FIX',
         homeStanding:hs||null,awayStanding:as||null,standingNote:standingNote(f.home,hs,f.away,as),
         recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},
         reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),
@@ -179,7 +189,7 @@ async function handler(req,res){
   }
 
   const finalPicks=candidates.slice(0,TARGET_PICKS);
-  diagnostics.push({provider:'v160-model',scenarios:scenarios.length,quotedFixtures:quoted.length,candidates:candidates.length,returned:finalPicks.length,maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],rule:'Un solo scenario per partita; TOP 3 ordinato esclusivamente per probabilità; Betfair solo per quota BACK'});
+  diagnostics.push({provider:'v161-model',scenarios:scenarios.length,quotedFixtures:quoted.length,candidates:candidates.length,returned:finalPicks.length,maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],rule:'Un solo scenario per partita; TOP 3 ordinato esclusivamente per probabilità; Betfair solo per quota BACK'});
   diagnostics.push({provider:'betfair-matching',matched:quoted.length,unmatched:unmatched.slice(0,30),unmatchedCount:unmatched.length});
 
   if(!finalPicks.length){
@@ -198,7 +208,7 @@ async function handler(req,res){
 function makeScenario(f,o,p,hs,as,recent){
   return {
     home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),
-    analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V160-CLEAN',homeStanding:hs||null,awayStanding:as||null,
+    analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V161-ESPN-FIX',homeStanding:hs||null,awayStanding:as||null,
     standingNote:standingNote(f.home,hs,f.away,as),recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),oddsSource:'Betfair Exchange',statsSource:'ESPN',fixtureId:`espn-${f.id}`,eventId:f.id,kickoff:f.date,league:f.league,leagueCode:f.leagueCode,priorityLeague:PRIORITY_CODES.includes(f.leagueCode),homeLogo:f.homeLogo||null,awayLogo:f.awayLogo||null,riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value'
   };
 }
