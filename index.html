@@ -1127,7 +1127,8 @@ async function run(){
   }else{
    const liveText=live.length?` · 🟠 ${live.length} live`:"";
    const quoteText=d.fixtures>0&&d.analyzed===0?' · ⚠️ 0 con quota Betfair riconosciuta':'';
-   status(`🟢 ${d.fixtures} partite · ${d.analyzed} quotate${quoteText}${liveText} · ${d.requests} chiamate API${d.cached ? " · cache" : ""}`,d.fixtures>0&&d.analyzed===0?'warn':'ok');
+   const espnErr=(d.diagnostics||[]).find(x=>x.provider==='espn-scoreboard'&&(x.dailyError||x.monthError));
+   status(`${espnErr?'🟠':'🟢'} ${d.fixtures} partite · ${d.analyzed} quotate${quoteText}${liveText} · ${d.requests} chiamate API${espnErr?' · errore ESPN':''}${d.cached ? " · cache" : ""}`,d.fixtures>0&&d.analyzed===0?'warn':'ok');
   }
   renderLive(live);
   const cs=(d.candidates||[]).map(scoreCandidate).sort((a,b)=>Number(b.prob||0)-Number(a.prob||0));
