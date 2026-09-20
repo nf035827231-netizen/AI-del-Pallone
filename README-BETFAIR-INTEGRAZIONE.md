@@ -44,10 +44,10 @@ Inserire:
 
 Il bridge:
 - fa login su Betfair Italia;
-- cerca i mercati calcio MATCH_ODDS + OVER_UNDER_25 + OVER_UNDER_35 delle prossime 48 ore;
+- cerca i mercati calcio MATCH_ODDS delle prossime 48 ore;
 - invia il catalogo a Vercel;
 - legge i migliori prezzi Exchange BACK/LAY (3 livelli) e EX_TRADED;
-- invia i MarketBook a Vercel/Supabase a blocchi da 40 marketId;
+- invia i MarketBook a Vercel/Supabase;
 - NON piazza scommesse.
 
 La sincronizzazione è volutamente manuale in questa prima integrazione: esegui il bridge quando vuoi aggiornare i dati. Questo evita di lasciare processi attivi sul Mac 24/7.
