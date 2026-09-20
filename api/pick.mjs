@@ -10,13 +10,15 @@ const ODDS_BASE = 'https://api.odds-api.io/v3';
 const FD_BASE = 'https://api.football-data.org/v4';
 const SOCCER_TO_FD = {
   'italy-serie-a':'SA','italy-serie-b':'SB','england-premier-league':'PL','spain-la-liga':'PD','germany-bundesliga':'BL1','france-ligue-1':'FL1',
-  'portugal-primeira-liga':'PPL','netherlands-eredivisie':'DED','belgium-first-division-a':'BEL1','scotland-premiership':'SCO1','austria-bundesliga':'AUT1',
-  'switzerland-super-league':'SUI1','turkey-super-lig':'TUR1','greece-super-league':'GRE1','denmark-superliga':'DEN1','sweden-allsvenskan':'SWE1',
-  'norway-eliteserien':'NOR1','poland-ekstraklasa':'POL1','czech-republic-first-league':'CZE1','croatia-hnl':'CRO1','serbia-superliga':'SRB1',
-  'romania-liga-1':'ROU1','ukraine-premier-league':'UKR1','hungary-nb-i':'HUN1','slovakia-super-liga':'SVK1',
-  'uefa-champions-league':'CL','uefa-europa-league':'EL','uefa-europa-conference-league':'ECL'
+  'portugal-primeira-liga':'PPL','netherlands-eredivisie':'DED','belgium-first-division-a':'BJL','scotland-premiership':'SPL','austria-bundesliga':'ABL',
+  'switzerland-super-league':'SSL','turkey-super-lig':'TSL','greece-super-league':'GSL','denmark-superliga':'DSU','sweden-allsvenskan':'ALL',
+  'norway-eliteserien':'TIP','poland-ekstraklasa':null,'czech-republic-first-league':null,'croatia-hnl':'PRVA','serbia-superliga':null,
+  'romania-liga-1':'RL1','ukraine-premier-league':'UPL','hungary-nb-i':'HNB','slovakia-super-liga':null,
+  'uefa-champions-league':'CL','uefa-europa-league':'EL','uefa-europa-conference-league':'UCL'
 };
 const FD_TO_ODDS = Object.fromEntries(Object.entries(SOCCER_TO_FD).map(([slug,code])=>[code,slug]));
+// Codici ufficiali football-data.org v4: usiamo solo codici presenti nella lookup table ufficiale.
+// Le leghe senza codice supportato restano null e vengono scartate, evitando 404 inutili.
 const ALLOWED_MARKETS = new Set(['1','X','2','Over 1.5','Under 1.5','Over 2.5','Under 2.5','Over 3.5','Under 3.5','Goal','No Goal']);
 
 export default async function safeHandler(req,res){
@@ -39,7 +41,7 @@ async function handler(req,res){
   const fdToken=process.env.FOOTBALL_DATA_TOKEN||'';
   const supaUrl=process.env.SUPABASE_URL||'';
   const serviceKey=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
-  const cacheKey=`v180-3h-oddsapiio-footballdata|${date}|${requestedCodes?.join(',')||'ALL'}|${timeWindow}|${market}`;
+  const cacheKey=`v181-3h-oddsapiio-footballdata|${date}|${requestedCodes?.join(',')||'ALL'}|${timeWindow}|${market}`;
   const cached=RESPONSE_CACHE.get(cacheKey);
   if(cached&&cached.expires>Date.now())return res.status(200).json({...cached.data,cached:true});
 
@@ -186,7 +188,7 @@ async function handler(req,res){
   for(const s of scenarios){const k=normalizePair(s.home,s.away);const old=bestByMatch.get(k);if(!old||s.prob>old.prob)bestByMatch.set(k,s);}
   const candidates=[...bestByMatch.values()].sort((a,b)=>b.prob-a.prob);
   const finalPicks=candidates.slice(0,TARGET_PICKS);
-  diagnostics.push({provider:'v179-model',scenarios:scenarios.length,quotedFixtures:quoted.length,candidates:candidates.length,returned:finalPicks.length,maxOdds:MAX_ODDS,rule:'un solo scenario per partita; TOP 3 solo per probabilità; la quota non entra nel calcolo'});
+  diagnostics.push({provider:'v181-model',scenarios:scenarios.length,quotedFixtures:quoted.length,candidates:candidates.length,returned:finalPicks.length,maxOdds:MAX_ODDS,rule:'un solo scenario per partita; TOP 3 solo per probabilità; la quota non entra nel calcolo'});
   diagnostics.push({provider:'football-data.org-validation',matched:quoted.length,unmatchedCount:unmatched.length,unmatched:unmatched.slice(0,30)});
   if(!finalPicks.length)diagnostics.push({provider:'no-candidates-debug',reason:buildNoCandidateReason(events,unmatched,diagnostics),events:events.length,unmatched:unmatched.slice(0,20)});
 
