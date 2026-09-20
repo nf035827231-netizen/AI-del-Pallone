@@ -49,7 +49,7 @@ async function handler(req,res){
   if(!date) return res.status(400).json({error:'Data mancante'});
   if(!supaUrl||!serviceKey) return res.status(500).json({error:'SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY non configurata'});
 
-  const cacheKey=`v162-clean|${date}|${requestedCodes.join(',')}|${timeWindow}|${market}`;
+  const cacheKey=`v163-betfair-fix|${date}|${requestedCodes.join(',')}|${timeWindow}|${market}`;
   const cached=RESPONSE_CACHE.get(cacheKey);
   if(cached&&cached.expires>Date.now()) return res.status(200).json({...cached.data,cached:true});
 
@@ -110,7 +110,7 @@ async function handler(req,res){
   // sincronizzati e l'ultimo book disponibile per ogni marketId.
   const bf=await loadBetfairSnapshot(supaUrl,serviceKey);
   requests++; requestBreakdown.betfairSnapshot++;
-  diagnostics.push({provider:'betfair-exchange',catalogueRows:bf.catalogueRows,catalogueMarkets:bf.catalogueMarkets,bookMarkets:bf.bookMarkets,events:bf.events,error:bf.error||null,role:'unica fonte delle quote BACK'});
+  diagnostics.push({provider:'betfair-exchange',catalogueRows:bf.catalogueRows,catalogueMarkets:bf.catalogueMarkets,bookMarkets:bf.bookMarkets,marketsWithBook:bf.marketsWithBook||0,eventCount:bf.eventCount||bf.events.size,events:bf.events.size,sample:bf.sample||[],error:bf.error||null,role:'unica fonte delle quote BACK'});
 
   const standingsByCode=new Map(sourceResults.map(x=>[x.code,x.standings]));
   const quoted=[];
@@ -119,7 +119,11 @@ async function handler(req,res){
 
   for(const f of fixtures){
     const match=findBestBetfairFixture(f.home,f.away,bf.events,f.date);
-    if(!match){unmatched.push({fixture:`${f.home} - ${f.away}`,league:f.league,reason:'evento Betfair non riconosciuto'});continue;}
+    if(!match){
+      const nearest=findNearestBetfairEvents(f.home,f.away,bf.events,f.date,3);
+      unmatched.push({fixture:`${f.home} - ${f.away}`,league:f.league,reason:'evento Betfair non riconosciuto',nearest});
+      continue;
+    }
     const odds=extractBetfairOdds(match.markets,market,f.home,f.away).filter(o=>o.odd>1&&o.odd<=MAX_ODDS&&ALLOWED_MARKETS.has(o.value));
     if(!odds.length){unmatched.push({fixture:`${f.home} - ${f.away}`,league:f.league,reason:'Betfair presente ma nessuna quota BACK ≤ 3,70 nei mercati richiesti'});continue;}
     quoted.push({f,match,odds});
@@ -136,7 +140,7 @@ async function handler(req,res){
       scenarios.push({
         home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),
         analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),
-        probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V162-FORM-FIX',
+        probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V163-BETFAIR-FIX',
         homeStanding:hs||null,awayStanding:as||null,standingNote:standingNote(f.home,hs,f.away,as),
         recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},
         reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),
@@ -208,7 +212,7 @@ async function handler(req,res){
 function makeScenario(f,o,p,hs,as,recent){
   return {
     home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),
-    analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V162-FORM-FIX',homeStanding:hs||null,awayStanding:as||null,
+    analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V163-BETFAIR-FIX',homeStanding:hs||null,awayStanding:as||null,
     standingNote:standingNote(f.home,hs,f.away,as),recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),oddsSource:'Betfair Exchange',statsSource:'ESPN',fixtureId:`espn-${f.id}`,eventId:f.id,kickoff:f.date,league:f.league,leagueCode:f.leagueCode,priorityLeague:PRIORITY_CODES.includes(f.leagueCode),homeLogo:f.homeLogo||null,awayLogo:f.awayLogo||null,riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value'
   };
 }
@@ -271,11 +275,75 @@ function pointsFromTeamRows(rows,name){let p=0;for(const m of rows){const hg=Num
 function standingNote(home,hs,away,as){const x=[];if(hs?.position&&hs?.totalTeams)x.push(`${home} è ${hs.position}ª su ${hs.totalTeams}`);if(as?.position&&as?.totalTeams)x.push(`${away} è ${as.position}º su ${as.totalTeams}`);return x.length?x.join('; '):null;}
 function standingStrength(s){const p=Number(s?.position),n=Number(s?.totalTeams);return Number.isFinite(p)&&Number.isFinite(n)&&n>1?clamp((n-p)/(n-1),0,1):.5;}
 
-function findBestBetfairFixture(home,away,events,kickoff){let best=null,bestScore=0;const target=normalizePair(home,away);for(const [key,entry] of events){if(key===target){const x=bestTimedEvent(entry,kickoff,1);if(x)return x;}}
-  for(const [,entry] of events){const e=entry[0];const teams=parseEventTeams(e?.event?.name||'');if(!teams)continue;const direct=(teamSimilarity(home,teams.home)+teamSimilarity(away,teams.away))/2;const reverse=(teamSimilarity(home,teams.away)+teamSimilarity(away,teams.home))/2;const score=Math.max(direct,reverse);if(score<.60)continue;const timed=bestTimedEvent(entry,kickoff,score);if(timed&&(!best||score>bestScore)){best=timed;bestScore=score;}}
-  return best;}
-function bestTimedEvent(markets,kickoff,score){if(!Array.isArray(markets)||!markets.length)return null;const valid=markets.filter(m=>m?.marketId);const groups=new Map();for(const m of valid){const eventKey=String(m.event?.id||m.event?.name||m.marketId);if(!groups.has(eventKey))groups.set(eventKey,[]);groups.get(eventKey).push(m);}let best=null,bestDist=Infinity;for(const ms of groups.values()){const dt=eventTime(ms[0]);const dist=kickoff&&dt?Math.abs(new Date(kickoff)-dt):0;if(dist<bestDist){bestDist=dist;best={markets:ms,score};}}return best;}
-function eventTime(m){const v=m?.marketStartTime||m?.event?.openDate||m?.event?.timezone;const d=v?new Date(v):null;return d&&!Number.isNaN(d.getTime())?d:null;}
+function findBestBetfairFixture(home,away,events,kickoff){
+  let best=null,bestScore=0,bestDist=Infinity;
+  const target=normalizePair(home,away);
+  for(const [key,entry] of events){
+    if(key===target){
+      const x=bestTimedEvent(entry,kickoff,1);
+      if(x)return x;
+    }
+  }
+  for(const [,entry] of events){
+    for(const e of entry){
+      const teams=e?.eventTeams||parseEventTeams(e?.event?.name||'');
+      if(!teams)continue;
+      const direct=(teamSimilarity(home,teams.home)+teamSimilarity(away,teams.away))/2;
+      const reverse=(teamSimilarity(home,teams.away)+teamSimilarity(away,teams.home))/2;
+      const score=Math.max(direct,reverse);
+      if(score<.50)continue;
+      const dt=eventTime(e);
+      const dist=kickoff&&dt?Math.abs(new Date(kickoff).getTime()-dt.getTime()):0;
+      // Squad names are the primary signal. Kickoff proximity breaks ties and
+      // prevents a same-team fixture from another round being selected.
+      if(!best || score>bestScore+.015 || (Math.abs(score-bestScore)<=.015 && dist<bestDist)){
+        best=e;bestScore=score;bestDist=dist;
+      }
+    }
+  }
+  if(!best)return null;
+  const eventKey=String(best.event?.id||best.event?.name||best.marketId);
+  const group=[];
+  for(const [,entry] of events)for(const m of entry){
+    const k=String(m.event?.id||m.event?.name||m.marketId);
+    if(k===eventKey)group.push(m);
+  }
+  return {markets:group.length?group:[best],score:bestScore,eventTeams:best.eventTeams||parseEventTeams(best.event?.name||'')};
+}
+function bestTimedEvent(markets,kickoff,score){
+  if(!Array.isArray(markets)||!markets.length)return null;
+  let best=null,bestDist=Infinity;
+  for(const m of markets){
+    if(!m?.marketId)continue;
+    const dt=eventTime(m);
+    const dist=kickoff&&dt?Math.abs(new Date(kickoff).getTime()-dt.getTime()):0;
+    if(!best||dist<bestDist){best=m;bestDist=dist;}
+  }
+  if(!best)return null;
+  const eventKey=String(best.event?.id||best.event?.name||best.marketId);
+  const group=markets.filter(m=>String(m.event?.id||m.event?.name||m.marketId)===eventKey);
+  return {markets:group,score,eventTeams:best.eventTeams||parseEventTeams(best.event?.name||'')};
+}
+function eventTime(m){
+  const v=m?.marketStartTime||m?.event?.openDate;
+  const d=v?new Date(v):null;
+  return d&&!Number.isNaN(d.getTime())?d:null;
+}
+
+function findNearestBetfairEvents(home,away,events,kickoff,limit=3){
+  const rows=[];
+  for(const [,entry] of events){
+    for(const e of entry){
+      const teams=e?.eventTeams||parseEventTeams(e?.event?.name||''); if(!teams)continue;
+      const direct=(teamSimilarity(home,teams.home)+teamSimilarity(away,teams.away))/2;
+      const reverse=(teamSimilarity(home,teams.away)+teamSimilarity(away,teams.home))/2;
+      const score=Math.max(direct,reverse); const dt=eventTime(e);
+      const dist=kickoff&&dt?Math.round(Math.abs(new Date(kickoff)-dt)/60000):null;
+      rows.push({event:e.event?.name||'',score:round(score),minutesFromKickoff:dist,hasBook:Boolean(e.hasBook)});
+    }
+  }
+  return rows.sort((a,b)=>Number(b.score)-Number(a.score)||(a.minutesFromKickoff??999999)-(b.minutesFromKickoff??999999)).slice(0,limit);
+}
 
 function extractBetfairOdds(match,requestedMarket,home,away){const out=[];const totals=requestedMarket==='all'||requestedMarket==='totals',one=requestedMarket==='all'||requestedMarket==='1x2';for(const m of(match?.markets||[])){const name=String(m.marketName||'');const isMatch=/match odds|1x2|esito finale/i.test(name);const lm=name.match(/(?:under\s*\/\s*over|over\s*\/\s*under|under.*over|over.*under).*?(1\.5|2\.5|3\.5|4\.5)/i);const line=lm?Number(lm[1]):null;if(isMatch&&!one)continue;if(!isMatch&&!(totals&&line&&[2.5,3.5].includes(line)))continue;for(const r of(Array.isArray(m.runners)?m.runners:[])){const odd=Number(r.backPrice);if(!(odd>1&&Number.isFinite(odd)))continue;let value=null;const label=normalize(r.name);if(isMatch){if(label==='the draw'||label==='draw'||label==='x'||label==='pareggio')value='X';else if(teamSimilarity(r.name,home)>=.72)value='1';else if(teamSimilarity(r.name,away)>=.72)value='2';}else{if(/^over\b/i.test(String(r.name)))value=`Over ${line.toFixed(1)}`;else if(/^under\b/i.test(String(r.name)))value=`Under ${line.toFixed(1)}`;}if(value)out.push({value,odd,quoteAgeMin:r.quoteAgeMin??m.quoteAgeMin??null,liquidity:r.backSize??null});}}
   const best=new Map();for(const x of out){const old=best.get(x.value);if(!old||x.odd>old.odd)best.set(x.value,x);}return [...best.values()];}
@@ -283,16 +351,54 @@ function extractBetfairOdds(match,requestedMarket,home,away){const out=[];const 
 async function loadBetfairSnapshot(url,key){try{
   const catRows=await supaRead(url,key,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=20');
   const bookRows=await supaRead(url,key,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=5000');
-  const latestBook=new Map();for(const r of bookRows){if(r?.market_id&&!latestBook.has(String(r.market_id)))latestBook.set(String(r.market_id),r);}
-  const events=new Map();let catalogueMarkets=0;
-  for(const row of catRows){for(const m of unwrapCatalogue(row?.payload)){catalogueMarkets++;const book=latestBook.get(String(m.marketId));if(!book)continue;const runners=(unwrapBooks(book.payload)).map(r=>({selectionId:r.selectionId,status:r.status,backPrice:bestBack(r),backSize:bestBackSize(r),name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName:null)||String(r.selectionId),quoteAgeMin:ageMin(book.received_at)}));const item={marketId:String(m.marketId),marketName:String(m.marketName||''),event:m.event||null,competition:m.competition||null,marketStartTime:m.marketStartTime||null,receivedAt:book.received_at||row.received_at,runners};const teams=parseEventTeams(item.event?.name||'');if(!teams)continue;const k=normalizePair(teams.home,teams.away);if(!events.has(k))events.set(k,[]);events.get(k).push(item);}}
-  return {events,catalogueRows:catRows.length,catalogueMarkets,bookMarkets:latestBook.size,error:null};
- }catch(e){return {events:new Map(),catalogueRows:0,catalogueMarkets:0,bookMarkets:0,error:e?.message||String(e)};}}
+  const latestBook=new Map();
+  for(const r of bookRows){
+    if(r?.market_id&&!latestBook.has(String(r.market_id)))latestBook.set(String(r.market_id),r);
+  }
+  const events=new Map(); let catalogueMarkets=0; let marketsWithBook=0; let eventCount=0;
+  const seenMarkets=new Set();
+  for(const row of catRows){
+    for(const m of unwrapCatalogue(row?.payload)){
+      const mid=String(m.marketId||'');
+      if(!mid||seenMarkets.has(mid))continue;
+      seenMarkets.add(mid); catalogueMarkets++;
+      const book=latestBook.get(mid);
+      if(book)marketsWithBook++;
+      const bookRowsForMarket=book?unwrapBooks(book.payload):[];
+      const runners=bookRowsForMarket.map(r=>({
+        selectionId:r.selectionId,status:r.status,backPrice:bestBack(r),backSize:bestBackSize(r),
+        name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName:null)||String(r.selectionId),
+        quoteAgeMin:ageMin(book.received_at)
+      }));
+      const eventTeams=parseEventTeams(m?.event?.name||'');
+      if(!eventTeams)continue;
+      const item={
+        marketId:mid,marketName:String(m.marketName||''),event:m.event||null,competition:m.competition||null,
+        marketStartTime:m.marketStartTime||null,receivedAt:book?.received_at||row.received_at,
+        runners,eventTeams,hasBook:Boolean(book)
+      };
+      const k=normalizePair(eventTeams.home,eventTeams.away);
+      if(!events.has(k)){events.set(k,[]);eventCount++;}
+      events.get(k).push(item);
+    }
+  }
+  const sample=[...events.values()].flat().slice(0,20).map(m=>({
+    name:m.event?.name||'',market:m.marketName,hasBook:m.hasBook,marketId:m.marketId
+  }));
+  return {events,catalogueRows:catRows.length,catalogueMarkets,bookMarkets:latestBook.size,marketsWithBook,eventCount,sample,error:null};
+ }catch(e){return {events:new Map(),catalogueRows:0,catalogueMarkets:0,bookMarkets:0,marketsWithBook:0,eventCount:0,sample:[],error:e?.message||String(e)};}}
+
 function unwrapCatalogue(payload){const out=[];walk(payload,v=>{if(v?.marketId&&v?.marketName)out.push(v);});return out;}
 function unwrapBooks(payload){const out=[];walk(payload,v=>{if(v&&v.selectionId!=null&&('status' in v||v.ex))out.push(v);});return out;}
 function bestBack(r){const direct=Number(r?.backPrice);if(direct>1&&Number.isFinite(direct))return direct;const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];return xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x)).sort((a,b)=>b-a)[0]??null;}
 function bestBackSize(r){const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];return xs.length?Number(xs[0]?.size)||null:null;}
-function parseEventTeams(name){const p=String(name||'').split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);return p.length>=2?{home:p[0].trim(),away:p.slice(1).join(' ').trim()}:null;}
+function parseEventTeams(name){
+  const s=String(name||'').replace(/\s+/g,' ').trim();
+  if(!s)return null;
+  const p=s.split(/\s+(?:v|vs|versus|@)\s+|\s+[-–—]\s+/i);
+  if(p.length>=2)return {home:p[0].trim(),away:p.slice(1).join(' ').trim()};
+  return null;
+}
 
 async function supaRead(url,key,path){const r=await fetch(`${url}/rest/v1/${path}`,{headers:{apikey:key,Authorization:`Bearer ${key}`}});const text=await r.text();if(!r.ok)throw new Error(`Supabase ${r.status}: ${text.slice(0,400)}`);return text?JSON.parse(text):[];}
 function ageMin(ts){if(!ts)return null;const d=new Date(ts).getTime();return Number.isFinite(d)?Math.max(0,(Date.now()-d)/60000):null;}
@@ -302,7 +408,24 @@ function normalize(s){return String(s||'').toLowerCase().normalize('NFD').replac
 function teamKey(s){let n=normalize(s);const aliases={inter:'internazionale', 'inter milan':'internazionale', 'internazionale milano':'internazionale', 'ac milan':'milan', 'hellas verona':'verona', 'as roma':'roma', 'ss lazio':'lazio', 'ssc napoli':'napoli', 'juventus fc':'juventus'};n=aliases[n]||n;return n.replace(/\b(fc|cf|sc|ac|afc|fk|sk|club|calcio|football|futbol|the|ss|as|ssc|cfc|bk|sv)\b/g,' ').replace(/\s+/g,' ').trim();}
 function clean(s){return teamKey(s).replace(/\b\d{2,4}\b/g,'').replace(/[^a-z0-9]+/g,'').trim();}
 function normalizePair(a,b){return `${clean(a)}|${clean(b)}`;}
-function teamSimilarity(a,b){const aa=teamKey(a),bb=teamKey(b);if(!aa||!bb)return 0;if(aa===bb)return 1;if(aa.includes(bb)||bb.includes(aa))return .95;const A=new Set(aa.split(' ').filter(x=>x.length>2)),B=new Set(bb.split(' ').filter(x=>x.length>2));let c=0;for(const x of A)if(B.has(x))c++;if(!c)return 0;return Math.max(c/(A.size+B.size-c),(c/Math.min(A.size,B.size))*.93);}
+function levenshtein(a,b){
+  const x=String(a||''),y=String(b||''); if(x===y)return 0;
+  const prev=Array.from({length:y.length+1},(_,i)=>i);
+  for(let i=1;i<=x.length;i++){let cur=[i];for(let j=1;j<=y.length;j++)cur[j]=Math.min(cur[j-1]+1,prev[j]+1,prev[j-1]+(x[i-1]===y[j-1]?0:1));for(let j=0;j<=y.length;j++)prev[j]=cur[j];}
+  return prev[y.length];
+}
+function teamSimilarity(a,b){
+  const aa=teamKey(a),bb=teamKey(b); if(!aa||!bb)return 0;
+  if(aa===bb)return 1;
+  if(aa.includes(bb)||bb.includes(aa))return .96;
+  const ca=clean(a),cb=clean(b);
+  if(ca&&cb&&(ca.includes(cb)||cb.includes(ca)))return .94;
+  const A=new Set(aa.split(' ').filter(x=>x.length>2)),B=new Set(bb.split(' ').filter(x=>x.length>2));
+  let c=0;for(const x of A)if(B.has(x))c++;
+  const j=c/(A.size+B.size-c||1);
+  const lev=1-levenshtein(ca,cb)/Math.max(ca.length,cb.length,1);
+  return Math.max(j,(c/Math.max(1,Math.min(A.size,B.size)))*.93,lev*.88);
+}
 function isLiveStatus(s){return String(s||'').toUpperCase()==='LIVE';}
 function localDate(iso){try{return new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Rome',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(iso));}catch{return String(iso||'').slice(0,10);}}
 function localTodayRome(){return localDate(new Date().toISOString());}
