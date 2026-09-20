@@ -23,13 +23,14 @@ const ESPN_LEAGUES = {
   EUROQ:{slug:'uefa.euroq',name:'Qualificazioni Europei'}
 };
 
-// "Migliori 8" campionati europei + le 3 coppe UEFA + le competizioni delle nazionali:
-// questo è il perimetro privilegiato di default. Gli altri campionati (elenco sotto)
-// vengono usati solo come seconda scelta, e solo se serve, per completare le 5 proposte.
+// "Migliori 8" campionati europei + Serie B + le 3 coppe UEFA: questo è il perimetro
+// privilegiato di default, su richiesta esplicita (niente più nazionali: erano comunque la
+// parte con gli slug ESPN meno certi). Gli altri campionati (elenco sotto) restano come
+// riserva finale, usati solo se questo perimetro non basta per arrivare a 5 proposte.
 const TOP8=['SA','PL','PD','BL1','FL1','PPL','DED','BEL1'];
 const EURO_CUPS=['CL','EL','ECL'];
-const NATIONAL_CODES=['WCQ','NL','EURO','EUROQ'];
-const PRIORITY_CODES=[...TOP8,...EURO_CUPS,...NATIONAL_CODES];
+const NATIONAL_CODES=['WCQ','NL','EURO','EUROQ']; // non più nel pool privilegiato; restano come riserva finale
+const PRIORITY_CODES=[...TOP8,'SB',...EURO_CUPS];
 const FALLBACK_CODES=Object.keys(ESPN_LEAGUES).filter(c=>!PRIORITY_CODES.includes(c));
 const DEFAULT_CODES=PRIORITY_CODES;
 
@@ -143,7 +144,7 @@ async function handler(req,res){
   }
 
   let {allFixtures,liveFixtures,fixtures}=assembleFixtures(sourceResults,tier1Codes);
-  diagnostics.push({provider:'prematch-gate',pool:'priorità (top8+coppe+nazionali)',before:allFixtures.filter(f=>localDate(f.date)===date).length,remaining:fixtures.length,rule:'ESPN data + kickoff futuro; Betfair non decide se una gara è già iniziata'});
+  diagnostics.push({provider:'prematch-gate',pool:'priorità (top8+serieB+coppe)',before:allFixtures.filter(f=>localDate(f.date)===date).length,remaining:fixtures.length,rule:'ESPN data + kickoff futuro; Betfair non decide se una gara è già iniziata'});
 
   const bf=await loadBetfairSnapshot(supaUrl,serviceKey);
   requests++; requestBreakdown.betfairSnapshot++;
@@ -218,7 +219,7 @@ async function handler(req,res){
         });
       }
     }
-    // Priorità ai migliori 8 campionati + coppe UEFA + nazionali: a parità circa di valore
+    // Priorità ai migliori 8 campionati + Serie B + coppe UEFA: a parità circa di valore
     // atteso, un incontro "prioritario" passa avanti a uno del pool di riserva.
     scenarios.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.edge)-Number(a.edge))||(Number(b.prob)-Number(a.prob)));
     return {quoted,scenarios};
@@ -250,7 +251,7 @@ async function handler(req,res){
 
   // Sempre 5 incontri quando i dati lo permettono, ma senza mai superare quota 4.00 e
   // restando sui mercati 1X2 / Over-Under 2.5-3.5. Prima si prova col pool "privilegiato"
-  // (migliori 8 campionati + coppe UEFA + nazionali); solo se non basta si allarga a tutti
+  // (migliori 8 campionati + Serie B + coppe UEFA); solo se non basta si allarga a tutti
   // i campionati disponibili (pool di riserva), rifacendo lo stesso identico procedimento.
   const TARGET_PICKS=5;
   function pickCandidates(){
@@ -294,7 +295,7 @@ async function handler(req,res){
   // pickCandidates() ha già provato a completare con mercati alternativi sullo stesso incontro,
   // etichettati chiaramente (alternateMarketNote). Qui restano solo se davvero non bastano i dati.
 
-  diagnostics.push({provider:'v157-model',scenarios:scenarios.length,returned:candidates.length,pool:usedFallbackPool?'esteso (tutti i campionati)':'privilegiato (top8+coppe+nazionali)',maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],riskMix:candidates.reduce((acc,c)=>{acc[c.riskTier]=(acc[c.riskTier]||0)+1;return acc;},{}),rule:`TOP ${TARGET_PICKS} diversificate per fascia di rischio (≈40% sicure ≤1.80, 40% equilibrate 1.80-2.60, 20% value 2.60-4.00), a parità di fascia per valore atteso (Poisson con forma casa/trasferta + H2H, blended con quota Betfair reale); pool esteso solo se il perimetro privilegiato non basta per ${TARGET_PICKS} proposte`});
+  diagnostics.push({provider:'v157-model',scenarios:scenarios.length,returned:candidates.length,pool:usedFallbackPool?'esteso (tutti i campionati)':'privilegiato (top8+serieB+coppe)',maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],riskMix:candidates.reduce((acc,c)=>{acc[c.riskTier]=(acc[c.riskTier]||0)+1;return acc;},{}),rule:`TOP ${TARGET_PICKS} diversificate per fascia di rischio (≈40% sicure ≤1.80, 40% equilibrate 1.80-2.60, 20% value 2.60-4.00), a parità di fascia per valore atteso (Poisson con forma casa/trasferta + H2H, blended con quota Betfair reale); pool esteso solo se il perimetro privilegiato non basta per ${TARGET_PICKS} proposte`});
 
   const disclaimer=`Le probabilità e il "valore atteso" sono stime statistiche basate su gol recenti, classifica e quote di mercato (max ${MAX_ODDS.toFixed(2)}, mercati 1X2 e Over/Under 2.5-3.5). Non sono garanzie di vincita: nessun modello può assicurare un esito. Se in una giornata non ci sono abbastanza partite reali quotate nel pool privilegiato o in quello esteso, il sistema non ne inventa: completa con mercati alternativi sugli stessi incontri o restituisce meno di ${TARGET_PICKS} proposte.`;
   const finalPicks=candidates.slice(0,TARGET_PICKS);
