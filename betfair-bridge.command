@@ -26,7 +26,7 @@ trap 'rm -f "$TMP_LOGIN" "$TMP_CAT" "$TMP_IDS"; rm -rf "$TMP_CHUNK_DIR"' EXIT
 FROM=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 TO=$(date -u -v+48H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '+48 hours' +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
 
-PAYLOAD='[{"jsonrpc":"2.0","method":"SportsAPING/v1.0/listMarketCatalogue","params":{"filter":{"eventTypeIds":["1"],"marketTypeCodes":["MATCH_ODDS","OVER_UNDER_25","OVER_UNDER_35"],"marketStartTime":{"from":"'"$FROM"'","to":"'"$TO"'"}},"marketProjection":["EVENT","COMPETITION","MARKET_START_TIME","RUNNER_DESCRIPTION"],"maxResults":"200"},"id":1}]'
+PAYLOAD='[{"jsonrpc":"2.0","method":"SportsAPING/v1.0/listMarketCatalogue","params":{"filter":{"eventTypeIds":["1"],"marketTypeCodes":["MATCH_ODDS","OVER_UNDER_25","OVER_UNDER_35"],"marketStartTime":{"from":"'"$FROM"'","to":"'"$TO"'"}},"marketProjection":["EVENT","COMPETITION","MARKET_START_TIME","RUNNER_DESCRIPTION"],"maxResults":"1000"},"id":1}]'
 
 echo
 echo "[1/4] Login Betfair..."
@@ -57,19 +57,20 @@ if [ "$HTTP" != "200" ]; then echo "❌ Vercel ha rifiutato il catalogo. HTTP $H
 echo "✅ Catalogo salvato."
 
 echo
-echo "[3/4] Recupero quote BACK/LAY per tutti i mercati trovati..."
-grep -o '"marketId"[[:space:]]*:[[:space:]]*"1\.[0-9]*"' "$TMP_CAT" | sed -E 's/.*"(1\.[0-9]+)"/\1/' | sort -u | head -200 > "$TMP_IDS"
+echo "[3/4] Recupero quote BACK per tutti i mercati trovati..."
+grep -o '"marketId"[[:space:]]*:[[:space:]]*"1\.[0-9]*"' "$TMP_CAT" | sed -E 's/.*"(1\.[0-9]+)"/\1/' | sort -u | head -1000 > "$TMP_IDS"
 COUNT=$(wc -l < "$TMP_IDS" | tr -d ' ')
 if [ "$COUNT" -eq 0 ]; then echo "⚠️ Nessun marketId trovato."; read -r -p "Invio per chiudere..."; exit 13; fi
 
-echo "Mercati trovati: $COUNT. Betfair consente massimo 40 marketId per richiesta: li sincronizzo a blocchi."
+echo "Mercati trovati: $COUNT. Con EX_BEST_OFFERS il limite dati consente 40 marketId per richiesta: li sincronizzo a blocchi."
 
 split -l 40 "$TMP_IDS" "$TMP_CHUNK_DIR/chunk-" >/dev/null 2>&1 || true
 CHUNKS=0
 for FILE in "$TMP_CHUNK_DIR"/chunk-*; do
   [ -f "$FILE" ] || continue
   IDS=$(paste -sd, "$FILE")
-  BOOK_PAYLOAD='[{"jsonrpc":"2.0","method":"SportsAPING/v1.0/listMarketBook","params":{"marketIds":['"$(printf '"%s"' ${IDS//,/ } | sed 's/ /,/g')"'],"priceProjection":{"priceData":["EX_BEST_OFFERS","EX_TRADED"],"exBestOffersOverrides":{"bestPricesDepth":3,"rollupModel":"STAKE","rollupLimit":0.0}}},"id":1}]'
+  JSON_IDS=$(printf '"%s",' ${IDS//,/ } | sed 's/,$//')
+  BOOK_PAYLOAD='[{"jsonrpc":"2.0","method":"SportsAPING/v1.0/listMarketBook","params":{"marketIds":['"$JSON_IDS"'],"priceProjection":{"priceData":["EX_BEST_OFFERS"]}},"id":1}]'
   curl -sS --max-time 40 \
     -H "X-Application: $APPKEY" -H "X-Authentication: $SESSION" -H "Content-Type: application/json" \
     --data "$BOOK_PAYLOAD" "https://api.betfair.com/exchange/betting/json-rpc/v1" > "$TMP_CHUNK_DIR/book.json"
@@ -88,7 +89,8 @@ done
 echo
 echo "[4/4] Bridge completato."
 echo "Catalogo: MATCH_ODDS + OVER_UNDER_25 + OVER_UNDER_35."
-echo "Mercati sincronizzati: fino a 200, quote richieste a blocchi da 40."
+echo "Quote: EX_BEST_OFFERS (BACK), senza EX_TRADED."
+echo "Mercati sincronizzati: fino a 1000, quote EX_BEST_OFFERS a blocchi da 40."
 echo "Il servizio è in sola lettura: NON piazza scommesse."
 echo
 echo "Riesegui questo file prima dell'analisi se vuoi una fotografia aggiornata delle quote."
