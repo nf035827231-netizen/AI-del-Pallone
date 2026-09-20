@@ -11,7 +11,7 @@ function teams(name){const p=String(name||'').split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+
 function walk(v,cb){if(v==null||typeof v!=='object')return;cb(v);if(Array.isArray(v))for(const x of v)walk(x,cb);else for(const x of Object.values(v))walk(x,cb);}
 function catalogue(payload){const out=[];walk(payload,v=>{if(v?.marketId&&v?.marketName)out.push(v);});return out;}
 function books(payload){const out=[];walk(payload,v=>{if(v&&v.selectionId!=null&&('status' in v||v.ex))out.push(v);});return out;}
-function bestBack(r){const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];return xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x)).sort((a,b)=>b-a)[0]??null;}
+function bestBack(r){const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];const p=xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x));return p.length?Math.max(...p):null;}
 function matchEvent(home,away,markets){const target=pair(home,away);let best=[];let score=0;for(const m of markets){const t=teams(m?.event?.name);if(!t)continue;const k=pair(t.home,t.away);if(k===target)return [m];const direct=(sim(home,t.home)+sim(away,t.away))/2;const reverse=(sim(home,t.away)+sim(away,t.home))/2;const s=Math.max(direct,reverse);if(s>=.60&&s>score){score=s;best=[m];}else if(s>=.60&&Math.abs(s-score)<.001)best.push(m);}return best;}
 
 export default async function handler(req,res){
@@ -22,7 +22,7 @@ export default async function handler(req,res){
   if(!SUPA_URL||!SERVICE_KEY)return res.status(500).json({ok:false,error:'Supabase service key non configurata'});
   try{
     const [catRows,bookRows]=await Promise.all([
-      supa('betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=20'),
+      supa('betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1'),
       supa('betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=5000')
     ]);
     const latest=new Map();for(const r of bookRows){if(r?.market_id&&!latest.has(String(r.market_id)))latest.set(String(r.market_id),r);}
@@ -31,10 +31,10 @@ export default async function handler(req,res){
     if(!matched.length)return res.status(404).json({ok:false,error:'Mercato Betfair non trovato',home,away});
     const output=[];
     for(const m of matched){
-      const name=String(m.marketName||'');const isMatch=/match odds|1x2|esito finale/i.test(name);const line=name.match(/(?:under\s*\/\s*over|over\s*\/\s*under|under.*over|over.*under).*?(1\.5|2\.5|3\.5|4\.5)/i)?.[1];
-      if(!isMatch&&!['2.5','3.5'].includes(line))continue;
+      const name=String(m.marketName||'');const type=String(m.marketType||'').toUpperCase();const isMatch=type==='MATCH_ODDS'||/match odds|1x2|esito finale/i.test(name);const isBtts=type==='BOTH_TEAMS_TO_SCORE'||/both teams to score|goal\s*\/\s*no goal|goal no goal/i.test(name);const line=(type.match(/OVER_UNDER_(1[.]5|2[.]5|3[.]5)/)||name.match(/(?:under\s*\/\s*over|over\s*\/\s*under|under|over)[^0-9]*(1[.]5|2[.]5|3[.]5)/i))?.[1];
+      if(!isMatch&&!isBtts&&!['1.5','2.5','3.5'].includes(line))continue;
       const cr=Array.isArray(m.runners)?m.runners:[];const br=books(m._book);const rows=br.map(r=>({selectionId:r.selectionId,name:cr.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName||String(r.selectionId),status:r.status,backPrice:bestBack(r),backSize:Array.isArray(r?.ex?.availableToBack)?Number(r.ex.availableToBack[0]?.size)||null:null}));
-      output.push({marketId:m.marketId,marketName:name,event:m.event,competition:m.competition,runners:rows,receivedAt:m._receivedAt});
+      output.push({marketId:m.marketId,marketName:name,marketType:type,event:m.event,competition:m.competition,runners:rows,receivedAt:m._receivedAt});
     }
     return res.status(200).json({ok:true,event:matched[0].event,competition:matched[0].competition,markets:output,matchScore:1});
   }catch(e){return res.status(500).json({ok:false,error:String(e?.message||e)});}

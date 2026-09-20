@@ -49,7 +49,7 @@ async function handler(req,res){
   if(!date) return res.status(400).json({error:'Data mancante'});
   if(!supaUrl||!serviceKey) return res.status(500).json({error:'SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY non configurata'});
 
-  const cacheKey=`v165-betfair-direct|${date}|${requestedCodes.join(',')}|${timeWindow}|${market}`;
+  const cacheKey=`v166-betfair-normalized|${date}|${requestedCodes.join(',')}|${timeWindow}|${market}`;
   const cached=RESPONSE_CACHE.get(cacheKey);
   if(cached&&cached.expires>Date.now()) return res.status(200).json({...cached.data,cached:true});
 
@@ -110,7 +110,7 @@ async function handler(req,res){
   // sincronizzati e l'ultimo book disponibile per ogni marketId.
   const bf=await loadBetfairSnapshot(supaUrl,serviceKey);
   requests++; requestBreakdown.betfairSnapshot++;
-  diagnostics.push({provider:'betfair-exchange',catalogueRows:bf.catalogueRows,catalogueMarkets:bf.catalogueMarkets,bookMarkets:bf.bookMarkets,marketsWithBook:bf.marketsWithBook||0,matchOddsMarkets:bf.matchOddsMarkets||0,matchOddsWithBack:bf.matchOddsWithBack||0,totalMarketsWithBack:bf.totalMarketsWithBack||0,totalBackRunners:bf.totalBackRunners||0,eventCount:bf.eventCount||bf.events.size,events:bf.events.size,sample:bf.sample||[],error:bf.error||null,role:'unica fonte delle quote BACK'});
+  diagnostics.push({provider:'betfair-exchange',catalogueRows:bf.catalogueRows,catalogueMarkets:bf.catalogueMarkets,bookMarkets:bf.bookMarkets,marketsWithBook:bf.marketsWithBook||0,matchOddsMarkets:bf.matchOddsMarkets||0,matchOddsWithBack:bf.matchOddsWithBack||0,totalMarketsWithBack:bf.totalMarketsWithBack||0,totalBackRunners:bf.totalBackRunners||0,bttsMarkets:bf.bttsMarkets||0,totalMarkets:bf.totalMarkets||0,eventCount:bf.eventCount||bf.events.size,events:bf.events.size,sample:bf.sample||[],error:bf.error||null,role:'unica fonte delle quote BACK'});
 
   const standingsByCode=new Map(sourceResults.map(x=>[x.code,x.standings]));
   const quoted=[];
@@ -140,7 +140,7 @@ async function handler(req,res){
       scenarios.push({
         home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),
         analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),
-        probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V165-BETFAIR-DIRECT',
+        probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V166-BETFAIR-DIRECT',
         homeStanding:hs||null,awayStanding:as||null,standingNote:standingNote(f.home,hs,f.away,as),
         recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},
         reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),
@@ -212,7 +212,7 @@ async function handler(req,res){
 function makeScenario(f,o,p,hs,as,recent){
   return {
     home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,prob:round(p),pStat:round(p),pMarket:null,pFair:round(p),edge:null,score:round(p),topSelectionScore:round(p),confidence:round(p),
-    analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V165-BETFAIR-DIRECT',homeStanding:hs||null,awayStanding:as||null,
+    analysisSupport:analysisSupport(hs,as,recent.home,recent.away),modelReady:true,topEligible:true,modelSample:Math.min(recent.home.length,3),probabilitySource:'Classifica + ultime 3 partite',modelVersion:'V166-BETFAIR-DIRECT',homeStanding:hs||null,awayStanding:as||null,
     standingNote:standingNote(f.home,hs,f.away,as),recentForm:{home:recent.home,away:recent.away,homeMatches:recent.home.length,awayMatches:recent.away.length},reason:buildReason(p,f.home,f.away,hs,as,recent.home,recent.away),oddsSource:'Betfair Exchange',statsSource:'ESPN',fixtureId:`espn-${f.id}`,eventId:f.id,kickoff:f.date,league:f.league,leagueCode:f.leagueCode,priorityLeague:PRIORITY_CODES.includes(f.leagueCode),homeLogo:f.homeLogo||null,awayLogo:f.awayLogo||null,riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value'
   };
 }
@@ -373,6 +373,18 @@ function findNearestBetfairEvents(home,away,events,kickoff,limit=3){
   return rows.sort((a,b)=>Number(b.score)-Number(a.score)||(a.minutesFromKickoff??999999)-(b.minutesFromKickoff??999999)).slice(0,limit);
 }
 
+function deriveBetfairMarketType(m={}){
+  const type=String(m.marketType||m.description?.marketType||'').toUpperCase().trim();
+  if(type) return type;
+  const name=String(m.marketName||'').toLowerCase();
+  if(/match\s*odds|1x2|esito\s*finale/.test(name)) return 'MATCH_ODDS';
+  if(/both\s*teams\s*to\s*score|goal\s*\/\s*no\s*goal|goal\s*no\s*goal/.test(name)) return 'BOTH_TEAMS_TO_SCORE';
+  const n=name.replace(',', '.');
+  const line=n.match(/(?:over|under|over\s*\/\s*under|under\s*\/\s*over)[^0-9]*(1\.5|2\.5|3\.5)/);
+  if(line) return `OVER_UNDER_${line[1].replace('.','_')}`;
+  return '';
+}
+
 function extractBetfairOdds(match,requestedMarket,home,away){
   const out=[];
   const allowAll=requestedMarket==='all';
@@ -381,24 +393,29 @@ function extractBetfairOdds(match,requestedMarket,home,away){
   const allowBtts=allowAll||requestedMarket==='btts';
 
   for(const m of (match?.markets||[])){
-    const type=String(m.marketType||'').toUpperCase();
+    const type=deriveBetfairMarketType(m);
     const name=String(m.marketName||'');
-    const isMatch=type==='MATCH_ODDS'||/match odds|1x2|esito finale/i.test(name);
-    const isBtts=type==='BOTH_TEAMS_TO_SCORE'||/both teams to score|goal\s*\/\s*no goal|goal no goal/i.test(name);
-    const typeLine=type.match(/OVER_UNDER_(1[.]5|2[.]5|3[.]5)/);
-    const nameLine=name.match(/(?:over\s*\/\s*under|under\s*\/\s*over|over|under)[^0-9]*(1[.]5|2[.]5|3[.]5)/i);
-    const line=typeLine?Number(typeLine[1]):(nameLine?Number(nameLine[1]):null);
+    const low=name.toLowerCase().replace(',', '.');
+    const isMatch=type==='MATCH_ODDS';
+    const isBtts=type==='BOTH_TEAMS_TO_SCORE';
+    let line=null;
+    const tm=type.match(/^OVER_UNDER_(1_5|2_5|3_5)$/);
+    if(tm) line=Number(tm[1].replace('_','.'));
+    if(!line){
+      const nm=low.match(/(?:over|under|over\s*\/\s*under|under\s*\/\s*over)[^0-9]*(1\.5|2\.5|3\.5)/);
+      if(nm) line=Number(nm[1]);
+    }
     const isTotal=Boolean(line&&[1.5,2.5,3.5].includes(line));
 
     if(isMatch&&!allowOne)continue;
-    if(isTotal&& !allowTotals)continue;
+    if(isTotal&&!allowTotals)continue;
     if(isBtts&&!allowBtts)continue;
     if(!isMatch&&!isTotal&&!isBtts)continue;
 
     for(const r of (Array.isArray(m.runners)?m.runners:[])){
-      const odd=Number(r.backPrice);
+      const odd=bestBack(r);
       if(!(odd>1&&Number.isFinite(odd)))continue;
-      const raw=String(r.name||'').trim();
+      const raw=String(r.name||r.runnerName||'').trim();
       const label=normalize(raw);
       let value=null;
 
@@ -412,11 +429,11 @@ function extractBetfairOdds(match,requestedMarket,home,away){
         if(/^(yes|si|sì|goal|gg|both teams to score)$/.test(label)) value='Goal';
         else if(/^(no|ng|no goal|both teams not to score)$/.test(label)) value='No Goal';
       }else if(isTotal){
-        if(/^over\b/i.test(raw)) value=`Over ${line.toFixed(1)}`;
-        else if(/^under\b/i.test(raw)) value=`Under ${line.toFixed(1)}`;
+        if(/^over\b/i.test(raw)||label.startsWith('over ')) value=`Over ${line.toFixed(1)}`;
+        else if(/^under\b/i.test(raw)||label.startsWith('under ')) value=`Under ${line.toFixed(1)}`;
       }
 
-      if(value)out.push({value,odd,quoteAgeMin:r.quoteAgeMin??m.quoteAgeMin??null,liquidity:r.backSize??null,marketId:m.marketId,marketName:name,marketType:type,runnerName:raw});
+      if(value)out.push({value,odd,quoteAgeMin:r.quoteAgeMin??m.quoteAgeMin??null,liquidity:r.backSize??null,marketId:m.marketId,marketName:name,marketType:type,runnerName:raw,selectionId:r.selectionId});
     }
   }
   const best=new Map();
@@ -425,15 +442,13 @@ function extractBetfairOdds(match,requestedMarket,home,away){
 }
 
 async function loadBetfairSnapshot(url,key){try{
-  // Il bridge 6H salva un catalogue nuovo ad ogni lancio. Usiamo SOLO l'ultimo
-  // catalogue: niente contaminazione con mercati vecchi di giorni precedenti.
   const catRows=await supaRead(url,key,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');
   const bookRows=await supaRead(url,key,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=5000');
   const latestBook=new Map();
   for(const r of bookRows){if(r?.market_id&&!latestBook.has(String(r.market_id)))latestBook.set(String(r.market_id),r);}
 
   const events=new Map();
-  let catalogueMarkets=0,marketsWithBook=0,eventCount=0,matchOddsMarkets=0,matchOddsWithBack=0,totalMarketsWithBack=0,totalBackRunners=0;
+  let catalogueMarkets=0,marketsWithBook=0,eventCount=0,matchOddsMarkets=0,matchOddsWithBack=0,totalMarketsWithBack=0,totalBackRunners=0,bttsMarkets=0,totalMarkets=0;
   const seenMarkets=new Set();
 
   for(const row of catRows){
@@ -444,30 +459,38 @@ async function loadBetfairSnapshot(url,key){try{
       const book=latestBook.get(mid);
       if(book)marketsWithBook++;
       const bookRunners=book?unwrapBooks(book.payload):[];
+      const catRunners=Array.isArray(m.runners)?m.runners:[];
       const runners=bookRunners.map(r=>({
-        selectionId:r.selectionId,status:r.status,backPrice:bestBack(r),backSize:bestBackSize(r),
-        name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName:null)||String(r.selectionId),
+        selectionId:r.selectionId,
+        status:r.status,
+        backPrice:bestBack(r),
+        backSize:bestBackSize(r),
+        name:(catRunners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName)||r.runnerName||String(r.selectionId),
         quoteAgeMin:ageMin(book?.received_at)
       }));
       const eventTeams=parseEventTeams(m?.event?.name||'');
       if(!eventTeams)continue;
       const marketName=String(m.marketName||'');
-      const marketType=String(m.marketType||'').toUpperCase();
-      const isMatchOdds=marketType==='MATCH_ODDS'||/match odds|1x2|esito finale/i.test(marketName);
+      const marketType=deriveBetfairMarketType(m);
+      const isMatchOdds=marketType==='MATCH_ODDS';
+      const isBtts=marketType==='BOTH_TEAMS_TO_SCORE';
+      const isTotal=/^OVER_UNDER_(1_5|2_5|3_5)$/.test(marketType);
       const hasBack=runners.some(r=>Number.isFinite(r.backPrice)&&r.backPrice>1);
       const backRunnerCount=runners.filter(r=>Number.isFinite(r.backPrice)&&r.backPrice>1).length;
       if(isMatchOdds)matchOddsMarkets++;
       if(isMatchOdds&&hasBack)matchOddsWithBack++;
+      if(isBtts)bttsMarkets++;
+      if(isTotal)totalMarkets++;
       if(hasBack){totalMarketsWithBack++;totalBackRunners+=backRunnerCount;}
-      const item={marketId:mid,marketName,marketType,event:m.event||null,competition:m.competition||null,marketStartTime:m.marketStartTime||null,receivedAt:book?.received_at||row.received_at,runners,eventTeams,hasBook:Boolean(book),hasBack,backRunnerCount};
+      const item={marketId:mid,marketName,marketType,event:m.event||null,competition:m.competition||null,marketStartTime:m.marketStartTime||m.event?.openDate||null,receivedAt:book?.received_at||row.received_at,runners,eventTeams,hasBook:Boolean(book),hasBack,backRunnerCount};
       const k=normalizePair(eventTeams.home,eventTeams.away);
       if(!events.has(k)){events.set(k,[]);eventCount++;}
       events.get(k).push(item);
     }
   }
-  const sample=[...events.values()].flat().slice(0,30).map(m=>({name:m.event?.name||'',market:m.marketName,marketType:m.marketType,hasBook:m.hasBook,hasBack:m.hasBack,backRunnerCount:m.backRunnerCount,marketId:m.marketId,runners:m.runners.map(r=>({name:r.name,back:r.backPrice}))}));
-  return {events,catalogueRows:catRows.length,catalogueMarkets,bookMarkets:latestBook.size,marketsWithBook,matchOddsMarkets,matchOddsWithBack,totalMarketsWithBack,totalBackRunners,eventCount,sample,error:null};
- }catch(e){return {events:new Map(),catalogueRows:0,catalogueMarkets:0,bookMarkets:0,marketsWithBook:0,matchOddsMarkets:0,matchOddsWithBack:0,totalMarketsWithBack:0,totalBackRunners:0,eventCount:0,sample:[],error:e?.message||String(e)};}}
+  const sample=[...events.values()].flat().slice(0,50).map(m=>({name:m.event?.name||'',market:m.marketName,marketType:m.marketType,hasBook:m.hasBook,hasBack:m.hasBack,backRunnerCount:m.backRunnerCount,marketId:m.marketId,runners:m.runners.map(r=>({selectionId:r.selectionId,name:r.name,back:r.backPrice}))}));
+  return {events,catalogueRows:catRows.length,catalogueMarkets,bookMarkets:latestBook.size,marketsWithBook,matchOddsMarkets,matchOddsWithBack,totalMarketsWithBack,totalBackRunners,bttsMarkets,totalMarkets,eventCount,sample,error:null};
+ }catch(e){return {events:new Map(),catalogueRows:0,catalogueMarkets:0,bookMarkets:0,marketsWithBook:0,matchOddsMarkets:0,matchOddsWithBack:0,totalMarketsWithBack:0,totalBackRunners:0,bttsMarkets:0,totalMarkets:0,eventCount:0,sample:[],error:e?.message||String(e)};}}
 
 function unwrapCatalogue(payload){const out=[];walk(payload,v=>{if(v?.marketId&&v?.marketName)out.push(v);});return out;}
 function unwrapBooks(payload){const out=[];walk(payload,v=>{if(v&&v.selectionId!=null&&('status' in v||v.ex))out.push(v);});return out;}
