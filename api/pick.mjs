@@ -69,11 +69,13 @@ async function handler(req,res){
   // ESPN sostituisce API-Football come fonte dati primaria. Non richiede API key.
   // Una chiamata scoreboard per campionato copre oggi + storico recente; una chiamata
   // standings per campionato fornisce classifica. Nessuna chiamata per squadra.
-  // 400 giorni indietro invece di 60: stessa 1 chiamata ESPN per campionato (il range è un
-  // parametro della singola richiesta), ma copre anche la stagione precedente, utile per
-  // trovare precedenti diretti (H2H) tra le due squadre quando quest'anno non si sono ancora
-  // incontrate.
-  const daysBack=400, daysForward=7;
+  // 60 giorni indietro: range sicuro (il limite documentato di ESPN per "dates=" è 13 mesi,
+  // circa 396 giorni — un valore troppo vicino a quel limite rischia di far fallire la
+  // richiesta per TUTTI i campionati insieme, come è successo con 400 giorni). Gli scontri
+  // diretti (H2H) quindi troveranno solo incontri avvenuti negli ultimi 60 giorni: per
+  // trovarne anche di più vecchi (stagione scorsa) servirebbe una chiamata dedicata più
+  // piccola, solo quando serve — non ancora implementata, vedi nota in fondo alla risposta.
+  const daysBack=60, daysForward=7;
   const from=shiftDate(date,-daysBack), to=shiftDate(date,daysForward);
 
   async function fetchPool(codeList){
