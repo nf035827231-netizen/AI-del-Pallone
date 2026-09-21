@@ -616,59 +616,6 @@ body[data-theme="light"] .archive-item .bet-match-card{background:#f7f9fc!import
 
 <section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="timeWindow" aria-label="Finestra oraria"><option value="all">🕐 Tutto il giorno · 11:00–22:00</option><option value="afternoon1">☀️ Primo pomeriggio · 13:00–16:00</option><option value="afternoon2">🌤️ Tardo pomeriggio · 16:01–19:00</option><option value="evening">🌙 Sera · 19:01–22:00</option></select><select id="market"><option value="all">Tutti i mercati (1X2 + Under/Over 2.5-3.5 + Goal/No Goal)</option><option value="totals">Under / Over 2.5 · 3.5 + Goal/No Goal</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Il modello usa football-data.org come fonte primaria (calendario, classifica, forma casa/trasferta, scontri diretti sugli ultimi 60 giorni), con ESPN e API-Football come riserva automatica se una fonte non copre un campionato. Betfair Exchange è l'unica fonte delle quote. Mercati: 1X2, Under/Over 2.5-3.5 e Goal/No Goal, quota massima 4.00. Le 5 proposte sono scelte per valore atteso (stima del modello confrontata con la quota reale) e diversificate per fascia di rischio: ~2 sicure, ~2 equilibrate, ~1 value. Si privilegiano i migliori 8 campionati europei + Serie B + coppe UEFA; solo se non bastano per arrivare a 5 si allarga agli altri campionati. I risultati restano in cache.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
-<section class="card tab-section active" data-section="today">
-  <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="toggleManualPanel()">
-    <h2 style="margin-bottom:0">🖊️ Analisi manuale</h2>
-    <span id="manualToggleIcon" style="font-size:20px;color:#8b98ab">▾</span>
-  </div>
-  <p class="small" style="margin-top:6px">Per qualunque partita che il sistema non riesce ad analizzare da solo — nazionali durante le pause internazionali, ma anche campionati di club non coperti (Belgio, Europa League, Conference League, Serie B finché non tornano disponibili): scrivi tu squadre, quota e i dati che conosci — il motore fa lo stesso identico calcolo statistico che farebbe in automatico.</p>
-  <div id="manualPanelBody" style="display:none;margin-top:14px">
-    <div class="row">
-      <input id="mpHome" type="text" placeholder="Squadra di casa">
-      <input id="mpAway" type="text" placeholder="Squadra in trasferta">
-    </div>
-    <div class="row">
-      <select id="mpMarket">
-        <option value="1">1 (Vittoria casa)</option>
-        <option value="X">X (Pareggio)</option>
-        <option value="2">2 (Vittoria trasferta)</option>
-        <option value="Over 2.5">Over 2.5</option>
-        <option value="Under 2.5">Under 2.5</option>
-        <option value="Over 3.5">Over 3.5</option>
-        <option value="Under 3.5">Under 3.5</option>
-        <option value="Goal">Goal (BTTS Sì)</option>
-        <option value="No Goal">No Goal (BTTS No)</option>
-      </select>
-      <input id="mpOdds" type="number" step="0.01" min="1.01" placeholder="Quota (es. 1.85)">
-    </div>
-    <p class="small" style="margin:12px 0 4px"><b>Forma recente (opzionale ma consigliata)</b> — gol fatti/subiti in media nelle ultime partite nel ruolo (casa per la prima squadra, trasferta per la seconda). Se non li hai, lascia vuoto: userà la media di lega.</p>
-    <div class="row">
-      <input id="mpHomeGF" type="number" step="0.1" min="0" placeholder="Gol fatti/partita (casa)">
-      <input id="mpHomeGA" type="number" step="0.1" min="0" placeholder="Gol subiti/partita (casa)">
-    </div>
-    <div class="row">
-      <input id="mpAwayGF" type="number" step="0.1" min="0" placeholder="Gol fatti/partita (trasferta)">
-      <input id="mpAwayGA" type="number" step="0.1" min="0" placeholder="Gol subiti/partita (trasferta)">
-    </div>
-    <p class="small" style="margin:12px 0 4px"><b>Classifica o ranking (opzionale)</b> — es. posizione FIFA/UEFA, o posizione in girone.</p>
-    <div class="row">
-      <input id="mpHomePos" type="number" min="1" placeholder="Posizione casa">
-      <input id="mpHomeTotal" type="number" min="2" placeholder="Su quante squadre/nazioni">
-    </div>
-    <div class="row">
-      <input id="mpAwayPos" type="number" min="1" placeholder="Posizione trasferta">
-      <input id="mpAwayTotal" type="number" min="2" placeholder="Su quante squadre/nazioni">
-    </div>
-    <p class="small" style="margin:12px 0 4px"><b>Precedenti diretti (opzionale)</b> — se conosci l'ultimo risultato o gli ultimi scontri.</p>
-    <div class="row">
-      <input id="mpH2hCount" type="number" min="0" max="5" placeholder="Quanti precedenti conosci (0-5)">
-      <input id="mpH2hDiff" type="number" step="0.1" placeholder="Differenza reti media (casa - trasferta)">
-    </div>
-    <button id="mpRun" type="button" onclick="runManualPick()">🧮 Calcola</button>
-    <div id="mpResult" style="margin-top:14px"></div>
-  </div>
-</section>
-
 <section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le migliori disponibili del giorno</h2><p class="small top3-subtitle">Classifica + ultime 3 partite: il TOP ordina gli scenari esclusivamente in base alla probabilità stimata. Betfair serve solo per mostrare la quota (massimo 3,70).</p></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">🏆</span><div><b>Classifica</b><small>Posizione attuale delle due squadre</small></div></div><div class="top3-method-item"><span class="method-icon">📈</span><div><b>Ultime 3</b><small>Punti e risultati più recenti</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>Quota</b><small>Solo quota Betfair BACK ≤ 3,70</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🎯</span><div><b>Probabilità</b><small>Classifica + ultime 3</small></div></div></div></section>
 
 <section class="card tab-section active" data-section="today"><h2>📊 Classifica candidati</h2><div id="candidates" class="empty">Nessun candidato.</div></section>
@@ -1815,52 +1762,6 @@ function exportArchiveCSV(){
  const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-giocate-${new Date().toISOString().slice(0,10)}.csv`;
  document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
 }
-
-function toggleManualPanel(){
-  const body=$('manualPanelBody'), icon=$('manualToggleIcon');
-  const open=body.style.display!=='none';
-  body.style.display=open?'none':'block';
-  icon.textContent=open?'▾':'▴';
-}
-
-async function runManualPick(){
-  const btn=$('mpRun'), resultBox=$('mpResult');
-  const payload={
-    home:$('mpHome').value.trim(), away:$('mpAway').value.trim(),
-    market:$('mpMarket').value, odds:$('mpOdds').value,
-    homeGoalsFor:$('mpHomeGF').value, homeGoalsAgainst:$('mpHomeGA').value,
-    awayGoalsFor:$('mpAwayGF').value, awayGoalsAgainst:$('mpAwayGA').value,
-    homePosition:$('mpHomePos').value, homeTotalTeams:$('mpHomeTotal').value,
-    awayPosition:$('mpAwayPos').value, awayTotalTeams:$('mpAwayTotal').value,
-    h2hCount:$('mpH2hCount').value, h2hAvgGoalDiff:$('mpH2hDiff').value
-  };
-  if(!payload.home||!payload.away){resultBox.innerHTML='<div class="warning-box">Inserisci il nome di entrambe le squadre.</div>';return}
-  if(!(Number(payload.odds)>1)){resultBox.innerHTML='<div class="warning-box">Inserisci una quota valida (maggiore di 1.00).</div>';return}
-  btn.disabled=true; btn.textContent='⏳ Calcolo…';
-  resultBox.innerHTML='';
-  try{
-    const r=await fetch('/api/manual-pick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    const data=await r.json();
-    if(!r.ok||data.error){resultBox.innerHTML=`<div class="warning-box">${esc(data.error||'Errore nel calcolo')}</div>`;return}
-    const strength=data.confidenceLabel;
-    const edgeColor=data.edge>=0?'#43d17b':'#f87171';
-    resultBox.innerHTML=`
-      <div class="pick" style="margin-top:0">
-        <div class="pick-head"><span class="tag">🖊️ Manuale</span><span class="confidence-badge ${strength.toLowerCase()}">${strength}</span></div>
-        <div class="matchup"><div class="team"><b>${esc(data.home)}</b></div><div class="vs">VS</div><div class="team"><b>${esc(data.away)}</b></div></div>
-        <div class="market-row"><div class="market">${esc(data.market)}</div><div class="odds-big">${Number(data.odds).toFixed(2)}</div></div>
-        <div class="metrics"><div class="metric"><span>Probabilità</span><b>${data.prob.toFixed(1)}%</b></div><div class="metric"><span>Valore atteso</span><b style="color:${edgeColor}">${data.edge>=0?'+':''}${data.edge}%</b></div><div class="metric"><span>Gol attesi</span><b>${data.expectedGoals.home} - ${data.expectedGoals.away}</b></div></div>
-        ${data.warnings.length?`<div class="warning-box" style="margin-top:10px"><div class="field-title">⚠️ Nota</div>${data.warnings.map(w=>`<div>${esc(w)}</div>`).join('')}</div>`:''}
-        <div class="small" style="margin-top:10px">${esc(data.disclaimer)}</div>
-        <div class="bet-actions" style="margin-top:12px"><button onclick='selectCandidate(${JSON.stringify({...data,fixtureId:null,eventId:null,kickoff:null,leagueCode:null,league:'Manuale',homeLogo:null,awayLogo:null,reason:`Analisi manuale: ${data.warnings.join(' ')}`,riskTier:data.odds<=1.8?'sicura':data.odds<=2.6?'equilibrata':'value',score:data.edge,topSelectionScore:data.prob,oddsSource:'Inserita manualmente'}).replace(/'/g,"&#39;")})'>➕ Aggiungi alle giocate</button></div>
-      </div>`;
-  }catch(e){
-    resultBox.innerHTML=`<div class="warning-box">Errore di rete: ${esc(e?.message||String(e))}</div>`;
-  }finally{
-    btn.disabled=false; btn.textContent='🧮 Calcola';
-  }
-}
-
 function normalizeLeague(value){
  const x=String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
  if(x==='sa'||x.includes('serie a'))return 'Serie A';
