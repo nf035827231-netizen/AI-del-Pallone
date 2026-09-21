@@ -79,6 +79,7 @@ async function handler(req,res){
   const daysBack=60, daysForward=7;
   const from=shiftDate(date,-daysBack), to=shiftDate(date,daysForward);
   const apiFootballCircuitBreaker={disabled:false}; // per questa sola richiesta
+  const espnCircuitBreaker={disabled:false,checked:false}; // per questa sola richiesta
 
   async function fetchPool(codeList){
     const codes=[...new Set(codeList)].filter(c=>ESPN_LEAGUES[c]);
@@ -101,13 +102,24 @@ async function handler(req,res){
 
       // 2) ESPN, per completare quello che manca (non solo se ENTRAMBE le cose mancano: se
       //    football-data.org ha dato le partite ma non la classifica, proviamo comunque a
-      //    recuperare la classifica da ESPN, e viceversa).
-      if(!fixtures.length||!standings.size){
+      //    recuperare la classifica da ESPN, e viceversa). Interruttore automatico: se ESPN
+      //    fallisce (403/errore) alla prima chiamata di questa richiesta, non lo riproviamo
+      //    più per il resto della richiesta — risparmia tempo prezioso quando serve
+      //    allargarsi a molti campionati insieme (es. pausa nazionali). Se in futuro ESPN
+      //    torna a rispondere, il controllo lo rileva da solo alla richiesta successiva.
+      if((!fixtures.length||!standings.size)&&!espnCircuitBreaker.disabled){
         const [score,table]=await Promise.all([
           espn(`/apis/site/v2/sports/soccer/${cfg.slug}/scoreboard?dates=${from.replaceAll('-','')}-${to.replaceAll('-','')}`),
           espn(`/apis/v2/sports/soccer/${cfg.slug}/standings`)
         ]);
         requests+=2; requestBreakdown.espnScoreboards++; requestBreakdown.espnStandings++;
+        if(!espnCircuitBreaker.checked){
+          espnCircuitBreaker.checked=true;
+          if(score?.__error&&table?.__error){
+            espnCircuitBreaker.disabled=true;
+            diagnostics.push({provider:'espn-circuit-breaker',note:`ESPN disattivato per il resto di questa richiesta dopo il primo fallimento (${score.__error}).`});
+          }
+        }
         const events=Array.isArray(score?.events)?score.events:[];
         const espnFixtures=events.map(e=>adaptEspnEvent(e,code,cfg)).filter(Boolean);
         const espnStandings=parseEspnStandings(table,code);
@@ -217,6 +229,11 @@ async function handler(req,res){
           oddsSource:'Betfair Exchange',statsSource:'ESPN',fixtureId:(String(f.id).startsWith('fd-')||String(f.id).startsWith('af-'))?String(f.id):`espn-${f.id}`,eventId:f.id,kickoff:f.date,
           league:f.league,leagueCode:f.leagueCode,priorityLeague:PRIORITY_CODES.includes(f.leagueCode),homeLogo:f.homeLogo||null,awayLogo:f.awayLogo||null,
           riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',
+          // Edge "scontato" per l'ordinamento: un valore atteso alto calcolato su pochissimi
+          // dati (poco supporto) conta meno di uno leggermente più basso ma ben supportato.
+          // L'edge mostrato all'utente (sopra) resta quello vero e non cambia: cambia solo
+          // come le proposte vengono messe in ordine tra loro.
+          qualityAdjustedEdge:edge*(0.5+0.5*clamp(support/100,0,1)),
           _homeMatches:hm,_awayMatches:am,
           fieldAnalysis:{reason,confidence:round(blended),confidenceLabel:blended>=70?'Alta':blended>=55?'Media':'Bassa',warnings}
         });
@@ -224,7 +241,7 @@ async function handler(req,res){
     }
     // Priorità ai migliori 8 campionati + Serie B + coppe UEFA: a parità circa di valore
     // atteso, un incontro "prioritario" passa avanti a uno del pool di riserva.
-    scenarios.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.edge)-Number(a.edge))||(Number(b.prob)-Number(a.prob)));
+    scenarios.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.qualityAdjustedEdge)-Number(a.qualityAdjustedEdge))||(Number(b.prob)-Number(a.prob)));
     return {quoted,scenarios};
   }
 
@@ -249,7 +266,7 @@ async function handler(req,res){
         selected.push(c);
       }
     }
-    return selected.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.edge)-Number(a.edge)));
+    return selected.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.qualityAdjustedEdge)-Number(a.qualityAdjustedEdge)));
   }
 
   // Sempre 5 incontri quando i dati lo permettono, ma senza mai superare quota 4.00 e
