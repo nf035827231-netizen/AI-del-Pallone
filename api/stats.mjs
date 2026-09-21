@@ -1,9 +1,9 @@
 // V155: liquida i pronostici passati salvati in model_predictions e calcola
 // le statistiche reali del modello (win rate, ROI, calibrazione edge).
 // Nessun numero qui è deciso a tavolino: viene tutto dai risultati reali ESPN.
-import { evaluateMarket } from './settle-bet.mjs';
+import { evaluateMarket, resolveMatchScore } from './settle-bet.mjs';
 
-const LEAGUES={SA:'ita.1',SB:'ita.2',PL:'eng.1',PD:'esp.1',BL1:'ger.1',FL1:'fra.1',PPL:'por.1',DED:'ned.1',BEL1:'bel.1',SCO1:'sco.1',AUT1:'aut.1',TUR1:'tur.1',DEN1:'den.1',SWE1:'swe.1',NOR1:'nor.1',POL1:'pol.1',GRE1:'gre.1',ROU1:'rou.1',UKR1:'ukr.1',SUI1:'sui.1',CL:'uefa.champions',EL:'uefa.europa',ECL:'uefa.europa.conference',BRA1:'bra.1',MLS1:'usa.1',JPN1:'jpn.1'};
+// (mappa campionati->slug ESPN non più necessaria qui: la usa resolveMatchScore in settle-bet.mjs)
 
 export default async function handler(req,res){
   res.setHeader('Cache-Control','no-store');
@@ -53,26 +53,13 @@ async function settlePending(url,key){
 }
 
 async function settleOne(row){
-  const id=String(row.event_id||'').replace(/^espn-/,'');
-  if(!/^\d+$/.test(id)) return null;
-  const slugs=row.league_code&&LEAGUES[row.league_code]?[LEAGUES[row.league_code]]:Object.values(LEAGUES);
-  for(const slug of slugs){
-    try{
-      const r=await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/summary?event=${encodeURIComponent(id)}`,{headers:{Accept:'application/json','User-Agent':'AI-del-Pallone/155'}});
-      if(!r.ok) continue;
-      const m=await r.json();
-      const c=Array.isArray(m?.header?.competitions)?m.header.competitions[0]:null;
-      const comps=Array.isArray(c?.competitors)?c.competitors:[];
-      const home=comps.find(x=>x.homeAway==='home'), away=comps.find(x=>x.homeAway==='away');
-      if(!home||!away) continue;
-      const completed=Boolean(c?.status?.type?.completed);
-      if(!completed) return null; // non ancora conclusa, riprovare più avanti
-      const hg=Number(home.score), ag=Number(away.score);
-      if(!Number.isFinite(hg)||!Number.isFinite(ag)) return null;
-      return evaluateMarket(row.market,hg,ag);
-    }catch{ /* prova il prossimo slug/campionato */ }
-  }
-  return null;
+  const fixtureId=String(row.event_id||'');
+  if(!fixtureId) return null;
+  const score=await resolveMatchScore(fixtureId,row.league_code||'');
+  if(score.error||!score.completed) return null; // non trovata o non ancora conclusa: si riprova più avanti
+  const {homeGoals:hg,awayGoals:ag}=score;
+  if(!Number.isFinite(hg)||!Number.isFinite(ag)) return null;
+  return evaluateMarket(row.market,hg,ag);
 }
 
 function computeStats(rows){

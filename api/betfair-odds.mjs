@@ -44,6 +44,12 @@ function teamSimilarity(a,b){
   return Math.max(jaccard,containment*0.92);
 }
 
+// Chiave "esatta" nello stesso identico formato di pick.mjs: toglie i suffissi comuni
+// (FC/AC/Calcio/ecc.) prima di concatenare, così due nomi scritti in modo leggermente
+// diverso dalla stessa fonte continuano a combaciare come chiave esatta.
+function clean(s){return norm(s).replace(/\b(fc|cf|afc|calcio|ac|as|ssc|cfc|fk|sk|sv|bk|sc|club)\b/g,'').replace(/[^a-z0-9]+/g,'').trim();}
+function normalizePair(a,b){return `${clean(a)}|${clean(b)}`;}
+
 function eventTeams(name){
   const parts=String(name||'').split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
   if(parts.length<2)return null;
@@ -56,7 +62,10 @@ function sameEvent(home,away,eventName){
   const hs=teamSimilarity(home,teams.home), as=teamSimilarity(away,teams.away);
   const revhs=teamSimilarity(home,teams.away), revas=teamSimilarity(away,teams.home);
   const direct=(hs+as)/2, reverse=(revhs+revas)/2;
-  return {ok:Math.max(hs,revhs)>=0.68 && Math.max(as,revas)>=0.68,score:Math.max(direct,reverse)};
+  // Soglia 0.50 per lato: stessa identica soglia di pick.mjs (findBestBetfairFixture).
+  // Prima qui era 0.68, più severa — poteva rifiutare un abbinamento che il motore
+  // principale aveva già accettato con sicurezza sufficiente per costruire il pick.
+  return {ok:Math.max(hs,revhs)>=0.50 && Math.max(as,revas)>=0.50,score:Math.max(direct,reverse)};
 }
 
 function unwrapResults(payload){
@@ -97,8 +106,13 @@ export default async function handler(req,res){
     return res.status(500).json({ok:false,error:'Supabase service key non configurata'});
 
   try{
+    // Stessa identica fonte del motore principale (pick.mjs): SOLO l'ultima sincronizzazione
+    // del bridge (limit=1), non un mix delle ultime 50. Prima qui si mescolavano più run del
+    // bridge insieme, rischiando di mostrare mercati di una sincronizzazione vecchia/scaduta
+    // mai vista dal motore che ha generato il pick — causa di mismatch come "pick trovato,
+    // pannello live vuoto" sulla stessa identica partita.
     const rows=await supa(
-      'betfair_quotes?select=id,data_type,payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=50'
+      'betfair_quotes?select=id,data_type,payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1'
     );
 
     const markets=[];
@@ -112,11 +126,16 @@ export default async function handler(req,res){
     // matching fuzzy. In questo modo il pannello mostra la quota quando
     // l'algoritmo TOP l'ha già trovata, anche se i provider scrivono i nomi
     // in modo diverso (es. Wisła/ Wisla, WKS Śląsk/Slask, FC/Club, ecc.).
-    const exactKey=norm(home)+'|'+norm(away);
+    // Prima prova con la stessa identica chiave "pulita" di pick.mjs (normalizePair/clean),
+    // poi con lo stesso matching fuzzy a soglia 0.50. Così il pannello mostra la quota
+    // ogni volta che il motore principale l'ha già trovata, anche quando i provider
+    // scrivono i nomi squadra in modo leggermente diverso tra loro.
+    const exactKeyDirect=normalizePair(home,away), exactKeyRev=normalizePair(away,home);
     let matching=markets.filter(m=>{
       const t=eventTeams(m.event?.name);
-      return t && ((norm(t.home)===norm(home)&&norm(t.away)===norm(away)) ||
-                   (norm(t.home)===norm(away)&&norm(t.away)===norm(home)));
+      if(!t)return false;
+      const k=normalizePair(t.home,t.away);
+      return k===exactKeyDirect||k===exactKeyRev;
     });
     let matchScore=1;
     if(!matching.length){

@@ -87,7 +87,10 @@ async function handler(req,res){
     // Leggo entrambi i nomi: FOOTBALL_DATA_TOKEN è quello che avevi già impostato su Vercel,
     // FOOTBALL_DATA_KEY resta come alias di riserva se in futuro la rinomini.
     const footballDataKey=process.env.FOOTBALL_DATA_TOKEN||process.env.FOOTBALL_DATA_KEY||'';
-    const results=await mapLimit(codes,4,async code=>{
+    // Concorrenza 6 invece di 4: durante le pause nazionali il pool privilegiato è vuoto e
+    // si allarga a tutti i campionati insieme, quindi più campionati vengono provati in
+    // parallelo — aiuta a restare sotto i tempi limite del server.
+    const results=await mapLimit(codes,6,async code=>{
       const cfg=ESPN_LEAGUES[code];
       let fixtures=[],standings=new Map();
 
@@ -211,7 +214,7 @@ async function handler(req,res){
           headToHead:h2h.count?{count:h2h.count,record:h2h.record,recent:h2h.meetings}:null,
           recentForm:{home:hf,away:af,homeMatches:hm.length,awayMatches:am.length,homeVenueSpecific:hVenue.venueOnly,awayVenueSpecific:aVenue.venueOnly,homeVenueSample:hVenue.sample,awayVenueSample:aVenue.sample},
           expectedGoals:{home:round(expHome),away:round(expAway)},reason,
-          oddsSource:'Betfair Exchange',statsSource:'ESPN',fixtureId:`espn-${f.id}`,eventId:f.id,kickoff:f.date,
+          oddsSource:'Betfair Exchange',statsSource:'ESPN',fixtureId:(String(f.id).startsWith('fd-')||String(f.id).startsWith('af-'))?String(f.id):`espn-${f.id}`,eventId:f.id,kickoff:f.date,
           league:f.league,leagueCode:f.leagueCode,priorityLeague:PRIORITY_CODES.includes(f.leagueCode),homeLogo:f.homeLogo||null,awayLogo:f.awayLogo||null,
           riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',
           _homeMatches:hm,_awayMatches:am,
@@ -344,7 +347,7 @@ const FOOTBALL_DATA_CODES={SA:'SA',PL:'PL',PD:'PD',BL1:'BL1',FL1:'FL1',PPL:'PPL'
 async function footballData(path,key){
   for(let attempt=0;attempt<2;attempt++){
     try{
-      const r=await fetch(`https://api.football-data.org/v4${path}`,{headers:{'X-Auth-Token':key,Accept:'application/json'},cache:'no-store'});
+      const r=await fetchTimeout(`https://api.football-data.org/v4${path}`,{headers:{'X-Auth-Token':key,Accept:'application/json'},cache:'no-store'});
       const text=await r.text();let body={};try{body=text?JSON.parse(text):{};}catch{body={};}
       if(r.ok)return body;
       if(r.status===429&&attempt===0){await sleep(6500);continue;} // 10 richieste/minuto sul piano free
@@ -416,10 +419,15 @@ async function espn(path){
   };
   for(let attempt=0;attempt<3;attempt++){
     try{
-      const r=await fetch(base+path,{headers,cache:'no-store'});
+      const r=await fetchTimeout(base+path,{headers,cache:'no-store'});
       const text=await r.text();let body={};try{body=text?JSON.parse(text):{};}catch{body={};}
       if(r.ok)return body;
-      if((r.status===429||r.status===403)&&attempt<2){await sleep(700*(attempt+1));continue;}
+      // 429 = "troppe richieste", ha senso aspettare e ritentare. 403 invece è quasi sempre
+      // un blocco persistente (IP), non un limite temporaneo: ritentarlo triplica solo
+      // l'attesa senza cambiare l'esito, ed è quello che stava causando i timeout durante
+      // la pausa nazionali (tante leghe minori tentate in fallback, ognuna con 3 tentativi
+      // inutili). Sul 403 si fallisce subito.
+      if(r.status===429&&attempt<2){await sleep(700*(attempt+1));continue;}
       return {...body,__error:`HTTP ${r.status}`};
     }catch(e){if(attempt===2)return{__error:e?.message||String(e)};await sleep(300*(attempt+1));}
   }
@@ -452,7 +460,7 @@ async function apiFootball(path,params){
   if(!key) return {__error:'API_FOOTBALL_KEY non configurata',__skip:true};
   const qs=new URLSearchParams(params).toString();
   try{
-    const r=await fetch(`https://v3.football.api-sports.io${path}?${qs}`,{
+    const r=await fetchTimeout(`https://v3.football.api-sports.io${path}?${qs}`,{
       headers:{'x-apisports-key':key,Accept:'application/json'},cache:'no-store'
     });
     const text=await r.text();let body={};try{body=text?JSON.parse(text):{};}catch{body={};}
@@ -687,6 +695,14 @@ function localTodayRome(){return localDate(new Date().toISOString());}
 function timeWindowAllows(iso,w){try{const p=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Rome',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date(iso));const m=Number(p.find(x=>x.type==='hour')?.value)*60+Number(p.find(x=>x.type==='minute')?.value);if(w==='afternoon1')return m>=780&&m<=960;if(w==='afternoon2')return m>=961&&m<=1140;if(w==='evening')return m>=1141&&m<=1320;return m>=660&&m<=1320;}catch{return false;}}
 function shiftDate(iso,delta){const d=new Date(`${iso}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+delta);return d.toISOString().slice(0,10);}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+// Timeout massimo per singola chiamata esterna: evita che una richiesta lenta/appesa
+// (rete instabile, provider che non risponde) blocchi tutta l'analisi fino al timeout
+// generale del server. 6 secondi per chiamata è abbondante per un endpoint JSON normale.
+function fetchTimeout(url,opts={},ms=6000){
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),ms);
+  return fetch(url,{...opts,signal:ctrl.signal}).finally(()=>clearTimeout(timer));
+}
 async function mapLimit(items,limit,fn){const out=new Array(items.length);let next=0;async function worker(){while(true){const i=next++;if(i>=items.length)return;out[i]=await fn(items[i],i);}}await Promise.all(Array.from({length:Math.min(limit,items.length)},worker));return out;}
 function walk(v,cb){if(!v||typeof v!=='object')return;cb(v);if(Array.isArray(v)){for(const x of v)walk(x,cb);}else{for(const x of Object.values(v))walk(x,cb);}}
 
