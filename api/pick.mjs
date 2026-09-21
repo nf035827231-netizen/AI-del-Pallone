@@ -278,29 +278,13 @@ async function handler(req,res){
     const built=buildScenarios(MAX_ODDS);
     const uniqueByMatch=[]; const usedMatches=new Set();
     for(const s of built.scenarios){const key=normalizePair(s.home,s.away);if(usedMatches.has(key))continue;usedMatches.add(key);uniqueByMatch.push(s);}
-    let candidates=diversifySelection(uniqueByMatch,TARGET_PICKS);
+    const candidates=diversifySelection(uniqueByMatch,TARGET_PICKS);
     if(candidates.length<TARGET_PICKS && built.scenarios.length>candidates.length){
       for(const s of built.scenarios){
         if(candidates.length>=TARGET_PICKS) break;
         if(candidates.includes(s)) continue;
         candidates.push({...s,alternateMarketNote:`Mercato alternativo sullo stesso incontro (${s.home} - ${s.away}): oggi non ci sono abbastanza partite distinte quotate nel pool selezionato.`});
       }
-    }
-    // Filtro di qualità finale: se una delle proposte scelte ha zero dati recenti nel ruolo
-    // (modelSample=0) e classifica non disponibile — il caso peggiore possibile — provo a
-    // sostituirla con la migliore alternativa rimasta che abbia più dati, purché non tocchi
-    // una partita già presente tra le altre proposte. Se non c'è niente di meglio disponibile,
-    // resta lei: meglio 5 proposte con un warning chiaro che scendere sotto 5.
-    const isThin=c=>c.modelSample===0 && !(c.homeStanding&&c.awayStanding);
-    if(candidates.some(isThin)){
-      const usedKeys=new Set(candidates.map(c=>normalizePair(c.home,c.away)));
-      const betterPool=built.scenarios.filter(c=>!isThin(c)&&!usedKeys.has(normalizePair(c.home,c.away)));
-      candidates=candidates.map(c=>{
-        if(!isThin(c)||!betterPool.length) return c;
-        const replacement=betterPool.shift();
-        usedKeys.add(normalizePair(replacement.home,replacement.away));
-        return {...replacement,qualityFloorNote:`Sostituita una proposta con dati troppo scarsi (nessuna partita recente nel ruolo, classifica non disponibile) con una alternativa meglio supportata.`};
-      });
     }
     return {quoted:built.quoted,scenarios:built.scenarios,candidates};
   }
