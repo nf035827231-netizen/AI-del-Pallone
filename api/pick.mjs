@@ -80,6 +80,15 @@ async function handler(req,res){
   const from=shiftDate(date,-daysBack), to=shiftDate(date,daysForward);
   const apiFootballCircuitBreaker={disabled:false}; // per questa sola richiesta
   const espnCircuitBreaker={disabled:false,checked:false}; // per questa sola richiesta
+  // Fattore di calibrazione (calcolato da /api/stats sulle giocate reali passate, quando
+  // ce ne sono abbastanza): 1.0 = nessuna correzione (default prudente se non c'è ancora
+  // storico, o se Supabase non risponde). Una sola lettura leggera per richiesta.
+  let calibrationFactor=1;
+  try{
+    const calRows=await supaRead(supaUrl,serviceKey,'model_calibration?select=factor&id=eq.global');
+    const f=Number(calRows?.[0]?.factor);
+    if(Number.isFinite(f)) calibrationFactor=clamp(f,0.6,1.3);
+  }catch{ /* nessuno storico ancora, o Supabase momentaneamente irraggiungibile: resta 1.0 */ }
 
   async function fetchPool(codeList){
     const codes=[...new Set(codeList)].filter(c=>ESPN_LEAGUES[c]);
@@ -130,7 +139,7 @@ async function handler(req,res){
 
       // 3) API-Football, per completare quello che manca ancora dopo i primi due.
       if(!fixtures.length||!standings.size){
-        const fb=await tryApiFootballFallback(code,cfg,date,diagnostics,apiFootballCircuitBreaker);
+        const fb=await tryApiFootballFallback(code,cfg,date,diagnostics,apiFootballCircuitBreaker,supaUrl,serviceKey);
         if(!fixtures.length&&fb.fixtures.length) fixtures=fb.fixtures;
         if(!standings.size&&fb.standings.size) standings=fb.standings;
       }
@@ -202,7 +211,10 @@ async function handler(req,res){
       const probMap=matchProbabilities(expHome,expAway);
       const modelSample=Math.min(hmv.length>=3?3:(hs?.last3?.length||0),amv.length>=3?3:(as?.last3?.length||0));
       const sampleWeight=clamp((hmv.length+amv.length)/6,0,1);
-      const modelWeight=0.35+0.35*sampleWeight;
+      // Il peso base dipende da quanti dati abbiamo per QUESTA partita; il fattore di
+      // calibrazione corregge in base a quanto il modello si è dimostrato affidabile in
+      // generale, storicamente, su tutte le giocate passate.
+      const modelWeight=clamp((0.35+0.35*sampleWeight)*calibrationFactor,0.15,0.65);
       for(const o of q.odds){
         if(!ALLOWED_MARKETS.has(o.value)) continue; // solo 1X2 e Over/Under 2.5-3.5
         const modelProb=probMap[o.value];
@@ -226,9 +238,9 @@ async function handler(req,res){
           headToHead:h2h.count?{count:h2h.count,record:h2h.record,recent:h2h.meetings}:null,
           recentForm:{home:hf,away:af,homeMatches:hm.length,awayMatches:am.length,homeVenueSpecific:hVenue.venueOnly,awayVenueSpecific:aVenue.venueOnly,homeVenueSample:hVenue.sample,awayVenueSample:aVenue.sample},
           expectedGoals:{home:round(expHome),away:round(expAway)},reason,
-          oddsSource:'Betfair Exchange',statsSource:'ESPN',fixtureId:(String(f.id).startsWith('fd-')||String(f.id).startsWith('af-'))?String(f.id):`espn-${f.id}`,eventId:f.id,kickoff:f.date,
+          oddsSource:'Betfair Exchange',statsSource:String(f.id).startsWith('fd-')?'football-data.org':String(f.id).startsWith('af-')?'API-Football':'ESPN',fixtureId:(String(f.id).startsWith('fd-')||String(f.id).startsWith('af-'))?String(f.id):`espn-${f.id}`,eventId:f.id,kickoff:f.date,
           league:f.league,leagueCode:f.leagueCode,priorityLeague:PRIORITY_CODES.includes(f.leagueCode),homeLogo:f.homeLogo||null,awayLogo:f.awayLogo||null,
-          riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',
+          riskTier:o.odd<=1.5?'moltoSicura':o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',
           // Edge "scontato" per l'ordinamento: un valore atteso alto calcolato su pochissimi
           // dati (poco supporto) conta meno di uno leggermente più basso ma ben supportato.
           // L'edge mostrato all'utente (sopra) resta quello vero e non cambia: cambia solo
@@ -250,11 +262,20 @@ async function handler(req,res){
   // dentro ogni fascia scelgo comunque sempre le migliori per valore atteso.
   function diversifySelection(pool,target){
     if(pool.length<=target) return [...pool];
-    const lowQ=Math.round(target*0.4), midQ=Math.round(target*0.4), highQ=target-lowQ-midQ;
-    const byTier={sicura:pool.filter(c=>c.riskTier==='sicura'),equilibrata:pool.filter(c=>c.riskTier==='equilibrata'),value:pool.filter(c=>c.riskTier==='value')};
-    const quotas={sicura:lowQ,equilibrata:midQ,value:highQ};
+    // Per target=5 (il caso normale) uso quote fisse: 1 molto sicura, 1 sicura, 2
+    // equilibrate, 1 value. Per qualunque altro target (di sicurezza, se in futuro
+    // cambiasse) torno al calcolo proporzionale su 3 fasce come prima.
+    const quotas=target===5
+      ? {moltoSicura:1,sicura:1,equilibrata:2,value:1}
+      : (()=>{const lowQ=Math.round(target*0.4),midQ=Math.round(target*0.4);return {moltoSicura:0,sicura:lowQ,equilibrata:midQ,value:target-lowQ-midQ};})();
+    const byTier={
+      moltoSicura:pool.filter(c=>c.riskTier==='moltoSicura'),
+      sicura:pool.filter(c=>c.riskTier==='sicura'),
+      equilibrata:pool.filter(c=>c.riskTier==='equilibrata'),
+      value:pool.filter(c=>c.riskTier==='value')
+    };
     const selected=[];
-    for(const tier of ['sicura','equilibrata','value']){
+    for(const tier of ['moltoSicura','sicura','equilibrata','value']){
       for(const c of byTier[tier].slice(0,quotas[tier])) selected.push(c);
     }
     // Se una fascia non aveva abbastanza candidati, riempio gli slot avanzati con i migliori
@@ -278,13 +299,29 @@ async function handler(req,res){
     const built=buildScenarios(MAX_ODDS);
     const uniqueByMatch=[]; const usedMatches=new Set();
     for(const s of built.scenarios){const key=normalizePair(s.home,s.away);if(usedMatches.has(key))continue;usedMatches.add(key);uniqueByMatch.push(s);}
-    const candidates=diversifySelection(uniqueByMatch,TARGET_PICKS);
+    let candidates=diversifySelection(uniqueByMatch,TARGET_PICKS);
     if(candidates.length<TARGET_PICKS && built.scenarios.length>candidates.length){
       for(const s of built.scenarios){
         if(candidates.length>=TARGET_PICKS) break;
         if(candidates.includes(s)) continue;
         candidates.push({...s,alternateMarketNote:`Mercato alternativo sullo stesso incontro (${s.home} - ${s.away}): oggi non ci sono abbastanza partite distinte quotate nel pool selezionato.`});
       }
+    }
+    // Filtro di qualità finale: se una delle proposte scelte ha zero dati recenti nel ruolo
+    // (modelSample=0) e classifica non disponibile — il caso peggiore possibile — provo a
+    // sostituirla con la migliore alternativa rimasta che abbia più dati, purché non tocchi
+    // una partita già presente tra le altre proposte. Se non c'è niente di meglio disponibile,
+    // resta lei: meglio 5 proposte con un warning chiaro che scendere sotto 5.
+    const isThin=c=>c.modelSample===0 && !(c.homeStanding&&c.awayStanding);
+    if(candidates.some(isThin)){
+      const usedKeys=new Set(candidates.map(c=>normalizePair(c.home,c.away)));
+      const betterPool=built.scenarios.filter(c=>!isThin(c)&&!usedKeys.has(normalizePair(c.home,c.away)));
+      candidates=candidates.map(c=>{
+        if(!isThin(c)||!betterPool.length) return c;
+        const replacement=betterPool.shift();
+        usedKeys.add(normalizePair(replacement.home,replacement.away));
+        return {...replacement,qualityFloorNote:`Sostituita una proposta con dati troppo scarsi (nessuna partita recente nel ruolo, classifica non disponibile) con una alternativa meglio supportata.`};
+      });
     }
     return {quoted:built.quoted,scenarios:built.scenarios,candidates};
   }
@@ -315,7 +352,7 @@ async function handler(req,res){
   // pickCandidates() ha già provato a completare con mercati alternativi sullo stesso incontro,
   // etichettati chiaramente (alternateMarketNote). Qui restano solo se davvero non bastano i dati.
 
-  diagnostics.push({provider:'v157-model',scenarios:scenarios.length,returned:candidates.length,pool:usedFallbackPool?'esteso (tutti i campionati)':'privilegiato (top8+serieB+coppe)',maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],riskMix:candidates.reduce((acc,c)=>{acc[c.riskTier]=(acc[c.riskTier]||0)+1;return acc;},{}),rule:`TOP ${TARGET_PICKS} diversificate per fascia di rischio (≈40% sicure ≤1.80, 40% equilibrate 1.80-2.60, 20% value 2.60-4.00), a parità di fascia per valore atteso (Poisson con forma casa/trasferta + H2H, blended con quota Betfair reale); pool esteso solo se il perimetro privilegiato non basta per ${TARGET_PICKS} proposte`});
+  diagnostics.push({provider:'v157-model',scenarios:scenarios.length,returned:candidates.length,pool:usedFallbackPool?'esteso (tutti i campionati)':'privilegiato (top8+serieB+coppe)',maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],calibrationFactor:Math.round(calibrationFactor*1000)/1000,riskMix:candidates.reduce((acc,c)=>{acc[c.riskTier]=(acc[c.riskTier]||0)+1;return acc;},{}),rule:`TOP ${TARGET_PICKS} diversificate per fascia di rischio (1 molto sicura ≤1.50, 1 sicura 1.50-1.80, 2 equilibrate 1.80-2.60, 1 value 2.60-4.00), a parità di fascia per valore atteso (Poisson con forma casa/trasferta + H2H, blended con quota Betfair reale e con il fattore di calibrazione storico); pool esteso solo se il perimetro privilegiato non basta per ${TARGET_PICKS} proposte`});
 
   const disclaimer=`Le probabilità e il "valore atteso" sono stime statistiche basate su gol recenti, classifica e quote di mercato (max ${MAX_ODDS.toFixed(2)}, mercati 1X2 e Over/Under 2.5-3.5). Non sono garanzie di vincita: nessun modello può assicurare un esito. Se in una giornata non ci sono abbastanza partite reali quotate nel pool privilegiato o in quello esteso, il sistema non ne inventa: completa con mercati alternativi sugli stessi incontri o restituisce meno di ${TARGET_PICKS} proposte.`;
   const finalPicks=candidates.slice(0,TARGET_PICKS);
@@ -463,7 +500,26 @@ const API_FOOTBALL_LEAGUE_IDS={
   WCQ:32,  // World Cup - Qualification Europe
   NL:5,    // UEFA Nations League
   EURO:4,  // Euro Championship
-  EUROQ:960 // Euro Championship - Qualification (meno certo: verificare in diagnostics)
+  EUROQ:960, // Euro Championship - Qualification (meno certo: verificare in diagnostics)
+  // Campionati "minori" (pool di riserva finale): ID dedotti dalla documentazione generale
+  // della community API-Football, MAI verificati dal vivo da qui. Grazie alla cache+budget
+  // appena introdotta, un ID sbagliato costa al massimo 2 chiamate sprecate una volta al
+  // giorno (non ripetute) — controlla i diagnostics per vedere quali funzionano davvero.
+  SB:136,     // Serie B (Italia)
+  SCO1:179,   // Scottish Premiership
+  AUT1:218,   // Austrian Bundesliga
+  TUR1:203,   // Turkish Süper Lig
+  DEN1:119,   // Danish Superliga
+  SWE1:113,   // Allsvenskan
+  NOR1:103,   // Eliteserien
+  POL1:106,   // Ekstraklasa
+  GRE1:197,   // Greek Super League
+  ROU1:283,   // Liga I (Romania)
+  UKR1:333,   // Ukrainian Premier League
+  SUI1:207,   // Swiss Super League
+  BRA1:71,    // Brasileirão Série A
+  MLS1:253,   // MLS
+  JPN1:98     // J1 League
 };
 
 function apiFootballSeason(dateIso){
@@ -532,15 +588,71 @@ function parseApiFootballStandings(payload,code){
 // di utilizzabile. Non blocca mai: se manca la chiave, se il campionato non è mappato,
 // o se la chiamata fallisce (rete, quota esaurita), ritorna fixtures/standings vuoti e
 // si continua semplicemente senza quel campionato per oggi.
-// Se il piano API-Football in uso non copre la stagione corrente (o siamo a corto di
-// chiamate/minuto), non ha senso ritentare per ogni singolo campionato nella stessa
-// richiesta: dopo il primo errore di questo tipo, la riserva si disattiva per il resto
-// di QUESTA richiesta (il flag arriva da fuori, non è globale: su un container "a caldo"
-// riusato tra richieste diverse, un module-level flag resterebbe true per sempre).
-async function tryApiFootballFallback(code,cfg,date,diagnostics,circuitBreaker){
+//
+// Uso "furbo" per restare dentro un budget di chiamate/giorno molto stretto (es. piano
+// da 100/giorno):
+// 1) CACHE: se per questo campionato+data abbiamo già chiamato API-Football oggi, il
+//    risultato è salvato su Supabase (tabella api_football_cache) — lo riuso, zero nuove
+//    chiamate, anche se l'utente rilancia l'analisi venti volte nello stesso giorno.
+// 2) BUDGET: un contatore giornaliero (tabella api_football_daily) tiene traccia di
+//    quante chiamate sono state fatte oggi. Sotto una soglia di sicurezza (lasciamo un
+//    margine, non arriviamo al limite esatto del piano) si procede; sopra, si salta
+//    del tutto senza nemmeno provare — meglio niente dati che sforare il piano.
+const API_FOOTBALL_DAILY_BUDGET=85; // margine di sicurezza sotto un piano da 100/giorno
+const apiFootballDayState={date:null,used:null}; // cache in memoria per questa sola richiesta
+
+async function apiFootballDailyUsed(supaUrl,serviceKey,date){
+  if(!supaUrl||!serviceKey) return null; // senza Supabase non possiamo contare: meglio non rischiare (vedi chiamante)
+  if(apiFootballDayState.date===date) return apiFootballDayState.used;
+  try{
+    const rows=await supaRead(supaUrl,serviceKey,`api_football_daily?select=calls_used&usage_date=eq.${date}`);
+    const used=rows?.[0]?.calls_used??0;
+    apiFootballDayState.date=date; apiFootballDayState.used=used;
+    return used;
+  }catch{ return null; }
+}
+
+async function apiFootballRecordCalls(supaUrl,serviceKey,date,n){
+  if(!supaUrl||!serviceKey||!n) return;
+  const current=(apiFootballDayState.date===date?apiFootballDayState.used:0)||0;
+  const next=current+n;
+  apiFootballDayState.date=date; apiFootballDayState.used=next;
+  try{ await supaWrite(supaUrl,serviceKey,'api_football_daily?on_conflict=usage_date',[{usage_date:date,calls_used:next}]); }catch{ /* non blocca: il conteggio in memoria di questa richiesta resta comunque corretto */ }
+}
+
+async function apiFootballCacheGet(supaUrl,serviceKey,cacheKey){
+  if(!supaUrl||!serviceKey) return null;
+  try{
+    const rows=await supaRead(supaUrl,serviceKey,`api_football_cache?select=payload&cache_key=eq.${encodeURIComponent(cacheKey)}`);
+    return rows?.[0]?.payload||null;
+  }catch{ return null; }
+}
+
+async function apiFootballCacheSet(supaUrl,serviceKey,cacheKey,payload){
+  if(!supaUrl||!serviceKey) return;
+  try{ await supaWrite(supaUrl,serviceKey,'api_football_cache?on_conflict=cache_key',[{cache_key:cacheKey,payload}]); }catch{ /* cache mancata non blocca nulla */ }
+}
+
+async function tryApiFootballFallback(code,cfg,date,diagnostics,circuitBreaker,supaUrl,serviceKey){
   if(circuitBreaker.disabled) return {fixtures:[],standings:new Map()};
   const leagueId=API_FOOTBALL_LEAGUE_IDS[code];
   if(!leagueId) return {fixtures:[],standings:new Map()};
+
+  const cacheKey=`${code}-${date}`;
+  const cached=await apiFootballCacheGet(supaUrl,serviceKey,cacheKey);
+  if(cached){
+    diagnostics.push({provider:'api-football-fallback',league:cfg.name,code,fromCache:true,fixtures:Array.isArray(cached.fixtures)?cached.fixtures.length:0,standingsFound:Array.isArray(cached.standings)&&cached.standings.length>0,role:'riuso della cache di oggi, nessuna nuova chiamata'});
+    const fixtures=(Array.isArray(cached.fixtures)?cached.fixtures:[]).map(x=>adaptApiFootballFixture(x,code,cfg)).filter(Boolean);
+    const standings=Array.isArray(cached.standings)&&cached.standings.length?parseApiFootballStandings({response:[{league:{standings:[cached.standings]}}]},code):new Map();
+    return {fixtures,standings};
+  }
+
+  const used=await apiFootballDailyUsed(supaUrl,serviceKey,date);
+  if(used==null || used+2>API_FOOTBALL_DAILY_BUDGET){
+    diagnostics.push({provider:'api-football-fallback',league:cfg.name,code,skipped:true,reason:used==null?'Impossibile leggere il contatore giornaliero (Supabase non raggiungibile): salto per prudenza.':`Budget giornaliero quasi esaurito (${used}/${API_FOOTBALL_DAILY_BUDGET} usate): salto per restare dentro il piano.`});
+    return {fixtures:[],standings:new Map()};
+  }
+
   const season=apiFootballSeason(date);
   const from=shiftDate(date,-21), to=shiftDate(date,7);
   const [fx,st]=await Promise.all([
@@ -548,13 +660,21 @@ async function tryApiFootballFallback(code,cfg,date,diagnostics,circuitBreaker){
     apiFootball('/standings',{league:leagueId,season})
   ]);
   const skip=fx.__skip||st.__skip;
+  if(!skip) await apiFootballRecordCalls(supaUrl,serviceKey,date,2); // le due chiamate sono state fatte comunque, anche se falliscono per errore
   const planOrRateIssue=[fx,st].some(r=>/plan|rateLimit/i.test(r?.__error||''));
   if(planOrRateIssue){
     circuitBreaker.disabled=true;
     if(!skip) diagnostics.push({provider:'api-football-fallback',note:'Disattivata per il resto di questa richiesta: piano non compatibile con la stagione corrente o limite chiamate/minuto raggiunto.'});
   }
   if(!skip) diagnostics.push({provider:'api-football-fallback',league:cfg.name,code,leagueId,season,fixtures:Array.isArray(fx?.response)?fx.response.length:0,standingsFound:!!st?.response?.[0],fixturesError:fx.__error||null,standingsError:st.__error||null,quotaLikely:Boolean(fx.__quotaLikely||st.__quotaLikely),role:'fallback quando ESPN non risponde'});
-  const fixtures=(Array.isArray(fx?.response)?fx.response:[]).map(x=>adaptApiFootballFixture(x,code,cfg)).filter(Boolean);
+
+  const rawFixtures=Array.isArray(fx?.response)?fx.response:[];
+  const rawStandingsTable=st?.response?.[0]?.league?.standings?.flat?.()||[];
+  if(!skip&&(rawFixtures.length||rawStandingsTable.length)){
+    await apiFootballCacheSet(supaUrl,serviceKey,cacheKey,{fixtures:rawFixtures,standings:rawStandingsTable});
+  }
+
+  const fixtures=rawFixtures.map(x=>adaptApiFootballFixture(x,code,cfg)).filter(Boolean);
   const standings=st?.response?.[0]?parseApiFootballStandings(st,code):new Map();
   return {fixtures,standings};
 }
@@ -671,25 +791,39 @@ function expectedGoals(homeGS,awayGS,hs,as){
   return {expHome:clamp(expHome,0.2,4.5),expAway:clamp(expAway,0.2,4.5)};
 }
 
+// Correzione Dixon-Coles (1997): il Poisson puro assume che i gol di casa e trasferta
+// siano completamente indipendenti, ma nella realtà i risultati bassi (0-0, 1-0, 0-1, 1-1)
+// sono leggermente più o meno frequenti di quanto il Poisson da solo prevederebbe. Questa
+// correzione standard nel betting quantitativo aggiusta solo queste 4 caselle. Rho è il
+// parametro di correlazione: uso il valore storico del paper originale (-0.13), non avendo
+// dati sufficienti nostri per stimarlo da zero.
+const DIXON_COLES_RHO=-0.13;
+function dixonColesTau(hg,ag,expHome,expAway,rho){
+  if(hg===0&&ag===0) return 1-expHome*expAway*rho;
+  if(hg===0&&ag===1) return 1+expHome*rho;
+  if(hg===1&&ag===0) return 1+expAway*rho;
+  if(hg===1&&ag===1) return 1-rho;
+  return 1;
+}
 function matchProbabilities(expHome,expAway){
   let pHome=0,pDraw=0,pAway=0,over15=0,over25=0,over35=0,over45=0,btts=0;
   for(let hg=0;hg<=MAX_GOALS_GRID;hg++){
     for(let ag=0;ag<=MAX_GOALS_GRID;ag++){
-      const p=poissonPMF(hg,expHome)*poissonPMF(ag,expAway);
+      const p=poissonPMF(hg,expHome)*poissonPMF(ag,expAway)*dixonColesTau(hg,ag,expHome,expAway,DIXON_COLES_RHO);
       if(hg>ag)pHome+=p;else if(hg===ag)pDraw+=p;else pAway+=p;
       const total=hg+ag;
       if(total>1.5)over15+=p; if(total>2.5)over25+=p; if(total>3.5)over35+=p; if(total>4.5)over45+=p;
       if(hg>0&&ag>0)btts+=p;
     }
   }
-  const sum1x2=pHome+pDraw+pAway||1; // normalizza la coda troncata oltre MAX_GOALS_GRID
+  const sum1x2=pHome+pDraw+pAway||1; // normalizza la coda troncata oltre MAX_GOALS_GRID e la correzione Dixon-Coles
   return {
     '1':pHome/sum1x2*100,'X':pDraw/sum1x2*100,'2':pAway/sum1x2*100,
-    'Over 1.5':over15*100,'Under 1.5':(1-over15)*100,
-    'Over 2.5':over25*100,'Under 2.5':(1-over25)*100,
-    'Over 3.5':over35*100,'Under 3.5':(1-over35)*100,
-    'Over 4.5':over45*100,'Under 4.5':(1-over45)*100,
-    'Goal':btts*100,'No Goal':(1-btts)*100
+    'Over 1.5':over15/sum1x2*100,'Under 1.5':(1-over15/sum1x2)*100,
+    'Over 2.5':over25/sum1x2*100,'Under 2.5':(1-over25/sum1x2)*100,
+    'Over 3.5':over35/sum1x2*100,'Under 3.5':(1-over35/sum1x2)*100,
+    'Over 4.5':over45/sum1x2*100,'Under 4.5':(1-over45/sum1x2)*100,
+    'Goal':btts/sum1x2*100,'No Goal':(1-btts/sum1x2)*100
   };
 }
 function standingNote(home,hs,away,as){const x=[];if(hs?.position&&hs?.totalTeams)x.push(`${home} è ${hs.position}ª su ${hs.totalTeams}`);if(as?.position&&as?.totalTeams)x.push(`${away} è ${as.position}º su ${as.totalTeams}`);return x.length?x.join('; '):null;}

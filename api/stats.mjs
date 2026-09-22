@@ -19,7 +19,9 @@ export default async function handler(req,res){
 
     const rows=await supaRead(supaUrl,serviceKey,`model_predictions?select=*&match_date=gte.${since}&order=match_date.desc&limit=5000`);
     const stats=computeStats(rows);
-    return res.status(200).json({sinceDate:since,justSettled:settledCount,totalLogged:rows.length,...stats,disclaimer:'Statistiche calcolate sui pronostici realmente mostrati in passato dal modello. Le performance passate non garantiscono risultati futuri.'});
+    const settledRows=rows.filter(r=>r.settled&&(r.result==='win'||r.result==='loss'));
+    const calibration=await updateCalibration(supaUrl,serviceKey,settledRows);
+    return res.status(200).json({sinceDate:since,justSettled:settledCount,totalLogged:rows.length,...stats,calibration,disclaimer:'Statistiche calcolate sui pronostici realmente mostrati in passato dal modello. Le performance passate non garantiscono risultati futuri.'});
   }catch(e){
     return res.status(500).json({error:e?.message||String(e)});
   }
@@ -35,6 +37,40 @@ async function supaRead(url,key,path){
 async function supaPatch(url,key,path,body){
   const r=await fetch(`${url}/rest/v1/${path}`,{method:'PATCH',headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify(body)});
   if(!r.ok){const t=await r.text();throw new Error(`Supabase patch ${r.status}: ${t.slice(0,300)}`);}
+}
+
+async function supaWrite(url,key,path,rows){
+  const r=await fetch(`${url}/rest/v1/${path}`,{method:'POST',headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(rows)});
+  if(!r.ok){const t=await r.text();throw new Error(`Supabase write ${r.status}: ${t.slice(0,300)}`);}
+}
+
+// Sotto questa soglia di giocate liquidate, un aggiustamento della calibrazione sarebbe
+// rumore statistico, non un segnale reale: si resta sul fattore neutro (1.0, nessuna
+// correzione) finché non si raggiunge un campione minimamente affidabile.
+const MIN_SETTLED_FOR_CALIBRATION=30;
+
+// Calcola quanto il modello (la sua stima pura, prob_model, non quella già mescolata col
+// mercato) si è storicamente discostato dalla realtà, e salva un fattore correttivo che
+// pick.mjs userà per fidarsi un po' di più o un po' meno di se stesso in futuro. Il fattore
+// resta sempre dentro un range prudente (0.6-1.3): non deve mai poter ribaltare da solo
+// il comportamento del modello, solo affinarlo gradualmente.
+async function updateCalibration(url,key,settled){
+  const withModelProb=settled.filter(r=>Number.isFinite(Number(r.prob_model)));
+  if(withModelProb.length<MIN_SETTLED_FOR_CALIBRATION){
+    return {applied:false,settledCount:withModelProb.length,minRequired:MIN_SETTLED_FOR_CALIBRATION,factor:1};
+  }
+  const wins=withModelProb.filter(r=>r.result==='win').length;
+  const actualWinRate=wins/withModelProb.length;
+  const avgPredicted=withModelProb.reduce((s,r)=>s+Number(r.prob_model)/100,0)/withModelProb.length;
+  const rawFactor=avgPredicted>0?actualWinRate/avgPredicted:1;
+  const factor=Math.max(0.6,Math.min(1.3,rawFactor));
+  try{
+    await supaWrite(url,key,'model_calibration?on_conflict=id',[{
+      id:'global',factor,settled_count:withModelProb.length,actual_win_rate:Math.round(actualWinRate*1000)/10,
+      avg_predicted_prob:Math.round(avgPredicted*1000)/10,updated_at:new Date().toISOString()
+    }]);
+  }catch{ /* se il salvataggio fallisce, pick.mjs userà il fattore neutro salvato in precedenza (o 1.0) */ }
+  return {applied:true,settledCount:withModelProb.length,factor:Math.round(factor*1000)/1000,actualWinRate:Math.round(actualWinRate*1000)/10,avgPredictedProb:Math.round(avgPredicted*1000)/10};
 }
 
 // Liquida al massimo 60 pronostici non ancora chiusi per chiamata, per restare veloci;
