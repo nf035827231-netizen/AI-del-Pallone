@@ -46,7 +46,7 @@ select{background:#0b1220!important;color:#eef3fa!important;border-color:#2a3850
 .pick:first-child{border-color:#b99a4a;box-shadow:0 14px 38px #b99a4a22}
 .pick:first-child:before{content:"";position:absolute;inset:0 0 auto;height:3px;background:linear-gradient(90deg,#b99a4a,#f0d58b,#b99a4a)}
 .tag{background:#fff;color:#111827;display:inline-block;border-radius:99px;padding:5px 9px;font-size:13px;font-weight:800}
-.tabbar{position:sticky;top:0;z-index:30;display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:0 0 14px;padding:7px;background:#0d1524ef;border:1px solid #26344b;border-radius:16px;backdrop-filter:blur(12px);box-shadow:0 10px 25px #0003}
+.tabbar{position:static;z-index:30;display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:0 0 14px;padding:7px;background:#0d1524ef;border:1px solid #26344b;border-radius:16px;backdrop-filter:blur(12px);box-shadow:0 10px 25px #0003}
 .tab{min-height:44px;padding:7px 5px;background:transparent;color:#aebbd0;border:0;border-radius:11px;font-size:18px;font-weight:800;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:transform .08s ease,background .15s ease,color .15s ease}
 .tab:active{transform:scale(.95)}
 .tab span{font-size:12px;font-weight:750}
@@ -182,6 +182,7 @@ body[data-theme="light"] .balance-chart p{color:#66758a}
 .confidence-badge.bassa{background:#45242a;color:#f0c4ca}
 .risk-badge{font-size:10px;font-weight:850;padding:5px 8px;border-radius:999px;display:inline-flex;align-items:center;gap:4px}
 .risk-badge.sicura{background:#173b27;color:#bfe9cb}
+.risk-badge.moltoSicura{background:#0f2e20;color:#9fe6b8;border:1px solid #1f5c3d}
 .risk-badge.equilibrata{background:#1a3344;color:#a9d8f0}
 .risk-badge.value{background:#442a17;color:#f3c793}
 .archive-filters{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 14px}
@@ -200,6 +201,7 @@ body[data-theme="light"] .bet-note-preview{color:#6f7d90}
 textarea[id^="notes-"]{width:100%;min-height:56px;resize:vertical;border-radius:10px;border:1px solid #26344b;background:#0c1420;color:#e5ebf5;padding:8px 10px;font:inherit;font-size:13px}
 body[data-theme="light"] textarea[id^="notes-"]{background:#fff;border-color:#dfe6ef;color:#182230}
 body[data-theme="light"] .risk-badge.sicura{background:#e3f6e9;color:#1f7a41}
+body[data-theme="light"] .risk-badge.moltoSicura{background:#d6f3e0;color:#166534;border:1px solid #86d9a8}
 body[data-theme="light"] .risk-badge.equilibrata{background:#e3f0f9;color:#1f5c85}
 body[data-theme="light"] .risk-badge.value{background:#faeade;color:#8a4a17}
 .matchup{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:9px;margin:14px 0 11px}
@@ -616,7 +618,8 @@ body[data-theme="light"] .archive-item .bet-match-card{background:#f7f9fc!import
 
 <section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="timeWindow" aria-label="Finestra oraria"><option value="all">🕐 Tutto il giorno · 11:00–22:00</option><option value="afternoon1">☀️ Primo pomeriggio · 13:00–16:00</option><option value="afternoon2">🌤️ Tardo pomeriggio · 16:01–19:00</option><option value="evening">🌙 Sera · 19:01–22:00</option></select><select id="market"><option value="all">Tutti i mercati (1X2 + Under/Over 2.5-3.5 + Goal/No Goal)</option><option value="totals">Under / Over 2.5 · 3.5 + Goal/No Goal</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Il modello usa football-data.org come fonte primaria (calendario, classifica, forma casa/trasferta, scontri diretti sugli ultimi 60 giorni), con ESPN e API-Football come riserva automatica se una fonte non copre un campionato. Betfair Exchange è l'unica fonte delle quote. Mercati: 1X2, Under/Over 2.5-3.5 e Goal/No Goal, quota massima 4.00. Le 5 proposte sono scelte per valore atteso (stima del modello confrontata con la quota reale) e diversificate per fascia di rischio: ~2 sicure, ~2 equilibrate, ~1 value. Si privilegiano i migliori 8 campionati europei + Serie B + coppe UEFA; solo se non bastano per arrivare a 5 si allarga agli altri campionati. I risultati restano in cache.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
 
-<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le migliori disponibili del giorno</h2><p class="small top3-subtitle">Classifica + ultime 3 partite: il TOP ordina gli scenari esclusivamente in base alla probabilità stimata. Betfair serve solo per mostrare la quota (massimo 3,70).</p></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">🏆</span><div><b>Classifica</b><small>Posizione attuale delle due squadre</small></div></div><div class="top3-method-item"><span class="method-icon">📈</span><div><b>Ultime 3</b><small>Punti e risultati più recenti</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>Quota</b><small>Solo quota Betfair BACK ≤ 3,70</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🎯</span><div><b>Probabilità</b><small>Classifica + ultime 3</small></div></div></div></section>
+
+<section class="card tab-section active" data-section="today"><div class="top3-section-head"><div><div class="top3-kicker">🏆 SELEZIONE DEL MODELLO</div><h2>Le migliori disponibili del giorno</h2><p class="small top3-subtitle">Modello Poisson (gol recenti, forma casa/trasferta, precedenti diretti) confrontato con la quota Betfair reale per stimare il valore atteso. Le 5 proposte sono diversificate per fascia di rischio, non solo ordinate per probabilità grezza.</p></div></div><div id="live" class="empty" style="display:none"></div><div id="pick" class="empty">Avvia l'analisi.</div><div class="top3-method-strip"><div class="top3-method-item"><span class="method-icon">🏆</span><div><b>Classifica</b><small>Posizione attuale delle due squadre</small></div></div><div class="top3-method-item"><span class="method-icon">📈</span><div><b>Gol e forma</b><small>Gol fatti/subiti nel ruolo, casa o trasferta</small></div></div><div class="top3-method-item"><span class="method-icon">💎</span><div><b>Quota</b><small>Betfair BACK, massimo 4,00</small></div></div><div class="top3-method-item top3-rule"><span class="method-icon">🎯</span><div><b>Valore atteso</b><small>Modello confrontato con la quota reale</small></div></div></div></section>
 
 <section class="card tab-section active" data-section="today"><h2>📊 Classifica candidati</h2><div id="candidates" class="empty">Nessun candidato.</div></section>
 
@@ -663,393 +666,6 @@ let currentTab='today';
 let lastDiagnostics=[];
 let lastPicks=[];
 
-// --- Immagine condivisibile del pronostico (9:16, per TikTok/Reels/Stories) --
-function roundRect(ctx,x,y,w,h,r){
- ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();
-}
-function wrapCanvasText(ctx,text,x,y,maxWidth,lineHeight,maxLines){
- const words=String(text||'').split(' ');let line='',curY=y,lines=[];
- for(const w of words){const test=line?line+' '+w:w;if(ctx.measureText(test).width>maxWidth&&line){lines.push(line);line=w;}else line=test;}
- if(line)lines.push(line);
- if(maxLines&&lines.length>maxLines){lines=lines.slice(0,maxLines);lines[maxLines-1]=lines[maxLines-1].replace(/\s*\S*$/,'')+'…';}
- for(const l of lines){ctx.fillText(l,x,curY);curY+=lineHeight;}
- return curY;
-}
-// Gli stemmi delle partite arrivano dalla fonte dati primaria; se assenti usiamo le iniziali.
-// Se quel sito non concede il permesso CORS, disegnarlo sul canvas lo
-// "sporcherebbe" impedendo poi di esportare l'immagine: per questo lo
-// carico con crossOrigin e, se fallisce o va in timeout, uso un cerchio con
-// le iniziali invece di far fallire tutto il salvataggio.
-function loadImageSafe(url,timeoutMs){
- return new Promise(resolve=>{
-   if(!url)return resolve(null);
-   const img=new Image();let done=false;
-   img.crossOrigin='anonymous';
-   img.onload=()=>{if(!done){done=true;resolve(img);}};
-   img.onerror=()=>{if(!done){done=true;resolve(null);}};
-   img.src=url;
-   setTimeout(()=>{if(!done){done=true;resolve(null);}},timeoutMs||3000);
- });
-}
-function drawTeamBadge(ctx,img,name,cx,cy,r){
- ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.closePath();ctx.clip();
- if(img){ctx.fillStyle='#0d1526';ctx.fillRect(cx-r,cy-r,r*2,r*2);ctx.drawImage(img,cx-r,cy-r,r*2,r*2);}
- else{ctx.fillStyle='#1a2338';ctx.fillRect(cx-r,cy-r,r*2,r*2);}
- ctx.restore();
- ctx.strokeStyle='#26344b';ctx.lineWidth=4;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();
- if(!img){ctx.fillStyle='#e0b84a';ctx.font=`700 ${Math.round(r*0.7)}px -apple-system,sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText((name||'?').slice(0,2).toUpperCase(),cx,cy+4);}
-}
-function imageDateForPick(x){
- const raw=x?.kickoff || x?.date || document.getElementById('date')?.value || '';
- if(/^\d{4}-\d{2}-\d{2}$/.test(String(raw))) return String(raw);
- if(raw){ const d=new Date(raw); if(!Number.isNaN(d.getTime())) return d.toISOString().slice(0,10); }
- return new Date().toISOString().slice(0,10);
-}
-function safeImageFilePart(value){
- return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/gi,'-').replace(/^-+|-+$/g,'').toLowerCase() || 'match';
-}
-
-async function shareDailySummaryImage(){
- if(!lastPicks||!lastPicks.length){alert('Esegui prima l’analisi per avere dei pronostici da riassumere.');return;}
- try{
-   const canvas=document.createElement('canvas');canvas.width=1080;canvas.height=1920;
-   const ctx=canvas.getContext('2d');
-   ctx.fillStyle='#070b14';ctx.fillRect(0,0,1080,1920);
-
-   const appLogo=await loadImageSafe(location.origin+'/logo-social.png');
-   if(appLogo)ctx.drawImage(appLogo,80,70,84,84);
-   ctx.fillStyle='#f2f4f8';ctx.textAlign='left';ctx.textBaseline='alphabetic';
-   ctx.font='700 40px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',appLogo?182:80,118);
-   ctx.fillStyle='#8b93a7';ctx.font='400 24px -apple-system,sans-serif';ctx.fillText('Analisi calcistica quotidiana',appLogo?182:80,152);
-
-   ctx.textAlign='center';ctx.fillStyle='#e0b84a';ctx.font='700 46px -apple-system,sans-serif';
-   ctx.fillText('OGGI L\'AI CONSIGLIA',540,260);
-   ctx.fillStyle='#5a6478';ctx.font='400 26px -apple-system,sans-serif';
-   const dateStr=new Date().toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'});
-   ctx.fillText(dateStr.charAt(0).toUpperCase()+dateStr.slice(1),540,300);
-
-   const picks=lastPicks.slice(0,3);
-   const blockH=480,gap=16,startY=340;
-   for(let i=0;i<picks.length;i++){
-     const x=picks[i];
-     const by=startY+i*(blockH+gap);
-     ctx.fillStyle='#111a2b';roundRect(ctx,80,by,920,blockH,24);ctx.fill();
-
-     ctx.textAlign='left';ctx.fillStyle='#e0b84a';ctx.font='700 30px -apple-system,sans-serif';
-     ctx.fillText(`TOP ${i+1}`,120,by+56);
-     ctx.textAlign='right';ctx.fillStyle='#8b93a7';ctx.font='400 26px -apple-system,sans-serif';
-     ctx.fillText(String(x.fieldAnalysis?.confidenceLabel||'Media')+' fiducia',920,by+56);
-
-     const homeImg=await loadImageSafe(x.homeLogo);
-     const awayImg=await loadImageSafe(x.awayLogo);
-     drawTeamBadge(ctx,homeImg,x.home,260,by+150,55);
-     drawTeamBadge(ctx,awayImg,x.away,780,by+150,55);
-     ctx.fillStyle='#5a6478';ctx.font='700 26px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText('VS',520,by+158);
-
-     ctx.fillStyle='#f2f4f8';ctx.font='700 28px -apple-system,sans-serif';ctx.textAlign='center';
-     wrapCanvasText(ctx,x.home,260,by+235,300,32,1);
-     wrapCanvasText(ctx,x.away,780,by+235,300,32,1);
-
-     ctx.fillStyle='#e6ecf5';ctx.font='700 32px -apple-system,sans-serif';ctx.textAlign='left';
-     ctx.fillText(x.market,120,by+300);
-     ctx.textAlign='right';ctx.fillStyle='#e0b84a';ctx.font='700 40px -apple-system,sans-serif';
-     ctx.fillText(Number(x.odds).toFixed(2),920,by+300);
-
-     ctx.fillStyle='#c3cad9';ctx.font='400 26px -apple-system,sans-serif';ctx.textAlign='left';
-     wrapCanvasText(ctx,x.reason||'',120,by+345,800,32,3);
-   }
-
-   ctx.textAlign='center';ctx.fillStyle='#5a6478';ctx.font='400 24px -apple-system,sans-serif';
-   ctx.fillText('Analisi generata da AI del Pallone · gioco responsabile, vietato ai minori',540,1885);
-
-   canvas.toBlob(blob=>{
-     if(!blob){alert('Non sono riuscito a generare l’immagine. Riprova.');return;}
-     const url=URL.createObjectURL(blob);
-     const a=document.createElement('a');
-     a.href=url;a.download=`ai-del-pallone-riepilogo-${imageDateForPick(lastPicks[0])}.png`;
-     document.body.appendChild(a);a.click();a.remove();
-     URL.revokeObjectURL(url);
-   },'image/png');
- }catch(e){
-   alert('Non sono riuscito a generare l’immagine, probabilmente uno stemma non permette il salvataggio. Riprova tra poco.');
- }
-}
-async function shareDailyResultsImage(){
- const items=visibleArchive().filter(b=>settled(b)&&b.placed!==false);
- if(!items.length){alert('Non hai ancora giocate chiuse da riassumere.');return;}
- const recapDate=items.map(b=>b.date).sort().slice(-1)[0];
- const dayItems=items.filter(b=>b.date===recapDate).sort((a,b)=>Number(a.updatedAt||a.createdAt)-Number(b.updatedAt||b.createdAt));
- const shown=dayItems.slice(0,5);
- const totalBalance=dayItems.reduce((s,b)=>s+(actualNet(b)||0),0);
- const wins=dayItems.filter(b=>b.status==='win').length, losses=dayItems.filter(b=>b.status==='loss').length, cashouts=dayItems.filter(b=>b.status==='cashout').length;
- const decided=wins+losses, winRate=decided?Math.round(wins/decided*100):0;
- try{
-   // Layout interna 4:5 nativa: nessuna scala verticale e nessun elemento deformato.
-   const W=1080,H=1350,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');
-   const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#061321');bg.addColorStop(.55,'#12243a');bg.addColorStop(1,'#07111f');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
-   ctx.fillStyle='rgba(245,196,70,.10)';ctx.beginPath();ctx.arc(540,1150,430,0,Math.PI*2);ctx.fill();
-   const logo=await loadImageSafe(location.origin+'/logo-dritta-512.png');if(logo)ctx.drawImage(logo,55,38,76,76);
-   ctx.textAlign='left';ctx.fillStyle='#f7f9fc';ctx.font='900 40px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',145,70);ctx.fillStyle='#aebbd0';ctx.font='500 19px -apple-system,sans-serif';ctx.fillText('BILANCIO INTERNO · DATI REALI',145,101);
-   ctx.textAlign='right';ctx.fillStyle='#f5c446';ctx.font='italic 700 22px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',1025,68);
-   const d=new Date(recapDate+'T12:00:00');let dateLabel=d.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long'});dateLabel=dateLabel.replace(/^./,c=>c.toUpperCase());
-   ctx.textAlign='left';ctx.fillStyle='#f5c446';ctx.font='900 42px -apple-system,sans-serif';ctx.fillText('BILANCIO DEL GIORNO',55,165);ctx.fillStyle='#d8e2ee';ctx.font='500 22px -apple-system,sans-serif';ctx.fillText(dateLabel,55,198);
-   function box(x,y,w,h,label,value,accent){ctx.fillStyle='#0b1727';ctx.strokeStyle='#2a3b55';ctx.lineWidth=2;roundRect(ctx,x,y,w,h,18);ctx.fill();ctx.stroke();ctx.fillStyle='#9eabc0';ctx.font='700 17px -apple-system,sans-serif';ctx.textAlign='left';ctx.fillText(label,x+18,y+30);ctx.fillStyle=accent||'#f7f9fc';ctx.font='900 31px -apple-system,sans-serif';ctx.fillText(value,x+18,y+69);}
-   box(55,235,300,105,'GIOCATE',String(dayItems.length));box(390,235,300,105,'VITTORIE',String(wins),'#43d17b');box(725,235,300,105,'% VITTORIE',`${winRate}%`,'#ff80ab');
-   const balColor=totalBalance>=0?'#43d17b':'#ff6b72';box(55,360,465,110,'BILANCIO NETTO',`${totalBalance>=0?'+':''}${totalBalance.toFixed(2).replace('.',',')} €`,balColor);box(555,360,470,110,'CASH OUT',String(cashouts),'#f5c446');
-   ctx.fillStyle='#0b1727';ctx.strokeStyle='#2a3b55';roundRect(ctx,55,495,970,570,24);ctx.fill();ctx.stroke();ctx.fillStyle='#ff80ab';ctx.font='900 24px -apple-system,sans-serif';ctx.textAlign='left';ctx.fillText('RISULTATI DELLE GIOCATE',80,535);
-   const leagueMap={SA:'SERIE A',SB:'SERIE B',PL:'PREMIER LEAGUE',PD:'LA LIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
-   shown.forEach((b,i)=>{const y=560+i*95;const win=b.status==='win',loss=b.status==='loss',accent=win?'#43d17b':loss?'#ff6b72':'#f5c446';ctx.fillStyle='rgba(255,255,255,.035)';roundRect(ctx,75,y,930,80,15);ctx.fill();ctx.textAlign='left';ctx.fillStyle=accent;ctx.font='900 18px -apple-system,sans-serif';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',92,y+27);ctx.fillStyle='#f7f9fc';ctx.font='800 20px -apple-system,sans-serif';ctx.fillText(`${b.home||'Casa'} – ${b.away||'Trasferta'}`,92,y+57);ctx.textAlign='right';ctx.fillStyle='#aebbd0';ctx.font='600 17px -apple-system,sans-serif';ctx.fillText(`${leagueMap[b.leagueCode]||b.leagueName||b.league||'CALCIO'} · Quota ${Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2)}`,988,y+26);const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?` · ${b.finalScoreHome}-${b.finalScoreAway}`:'';ctx.fillText(String(b.market||'Giocata')+score,988,y+55);});
-   if(dayItems.length>5){ctx.textAlign='left';ctx.fillStyle='#7f91a8';ctx.font='600 16px -apple-system,sans-serif';ctx.fillText(`+ ${dayItems.length-5} altri eventi`,80,1038);}
-   const m=socialMetrics(dayItems);ctx.textAlign='left';ctx.fillStyle='#d8e2ee';ctx.font='700 19px -apple-system,sans-serif';ctx.fillText(`Serie vincente max: ${m.longWin} · serie perdente max: ${m.longLoss}`,80,1100);ctx.fillText(`CLV medio: ${m.avgCLV==null?'—':(m.avgCLV>=0?'+':'')+m.avgCLV.toFixed(1)+'%'}`,80,1132);
-   ctx.textAlign='center';ctx.fillStyle='#fff';ctx.font='italic 800 27px -apple-system,sans-serif';ctx.fillText('Analizza. Sperimenta. Misura.',540,1205);ctx.fillStyle='#f5c446';ctx.font='800 20px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',540,1240);ctx.fillStyle='#9aa9bd';ctx.font='500 15px -apple-system,sans-serif';ctx.fillText('Bilancio interno · commissioni Exchange incluse',540,1275);
-   canvas.toBlob(blob=>{if(!blob){alert('Non sono riuscito a generare l’immagine. Riprova.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-bilancio-${recapDate}-4x5.png`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)},'image/png');
- }catch(e){console.error(e);alert('Non sono riuscito a generare l’immagine. Riprova tra poco.');}
-}
-
-async function shareSocialPeriodImage(type){
- const items=visibleArchive().filter(b=>settled(b)&&b.placed!==false);
- if(!items.length){alert('Non hai ancora eventi chiusi da riassumere.');return;}
- const now=new Date();
- let start,end,title,subtitle;
- if(type==='week'){
-   start=mondayStart(now); end=sundayEnd(now); title='STATISTICHE SETTIMANALI';
-   subtitle=`Da lunedì a domenica · ${start.toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit'})} – ${end.toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
- }else{
-   start=new Date(now.getFullYear(),now.getMonth(),1); end=new Date(now.getFullYear(),now.getMonth()+1,0,23,59,59,999); title='STATISTICHE MENSILI';
-   subtitle=now.toLocaleDateString('it-IT',{month:'long',year:'numeric'}).replace(/^./,c=>c.toUpperCase());
- }
- const period=calcPeriodStats(items,start,end); const m=period.social;
- if(!m.events){alert('Nessun evento chiuso nel periodo selezionato.');return;}
- const W=1080,H=1350,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');
- const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#061321');bg.addColorStop(.55,'#10213a');bg.addColorStop(1,'#07111f');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
- ctx.fillStyle='rgba(255,128,171,.10)';ctx.beginPath();ctx.arc(540,1180,430,0,Math.PI*2);ctx.fill();
- const logo=await loadImageSafe(location.origin+'/logo-social.png');if(logo)ctx.drawImage(logo,55,42,82,82);
- ctx.textAlign='left';ctx.fillStyle='#f7f9fc';ctx.font='900 42px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',160,82);ctx.fillStyle='#aebbd0';ctx.font='500 20px -apple-system,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',160,113);
- ctx.textAlign='right';ctx.fillStyle='#ff80ab';ctx.font='italic 700 25px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',1015,78);
- ctx.textAlign='left';ctx.fillStyle='#ff80ab';ctx.font='900 42px -apple-system,sans-serif';ctx.fillText(title,55,185);ctx.fillStyle='#d8e2ee';ctx.font='500 23px -apple-system,sans-serif';ctx.fillText(subtitle,55,222);
- function box(x,y,w,h,label,value,accent){ctx.fillStyle='#0b1727';ctx.strokeStyle='#2a3b55';ctx.lineWidth=2;roundRect(ctx,x,y,w,h,20);ctx.fill();ctx.stroke();ctx.fillStyle='#9eabc0';ctx.font='700 18px -apple-system,sans-serif';ctx.fillText(label,x+18,y+34);ctx.fillStyle=accent||'#f7f9fc';ctx.font='900 34px -apple-system,sans-serif';ctx.fillText(value,x+18,y+78)}
- box(55,260,300,120,'EVENTI GIOCATI',String(m.events)); box(390,260,300,120,'VITTORIE',String(m.wins),'#43d17b'); box(725,260,300,120,'% VITTORIE',`${m.winRate.toFixed(1)}%`,'#ff80ab');
- box(55,405,300,120,'QUOTA MEDIA',m.avgOdds?m.avgOdds.toFixed(2):'—','#f5c446'); box(390,405,300,120,'SERIE VINCENTE MAX',String(m.longWin),'#43d17b'); box(725,405,300,120,'SERIE PERDENTE MAX',String(m.longLoss),'#ff6b72');
- ctx.fillStyle='#0b1727';ctx.strokeStyle='#2a3b55';roundRect(ctx,55,555,970,420,24);ctx.fill();ctx.stroke();ctx.fillStyle='#ff80ab';ctx.font='900 26px -apple-system,sans-serif';ctx.fillText('ANDAMENTO STATISTICO',80,600);
- if(type==='week'){
-   const days=['Lun','Mar','Mer','Gio','Ven','Sab','Dom']; const ds=days.map((label,i)=>{const d=new Date(start);d.setDate(start.getDate()+i);const key=d.toISOString().slice(0,10);const bs=period.bets.filter(b=>b.date===key);return {label,n:bs.length,w:bs.filter(b=>b.status==='win').length};});
-   const max=Math.max(1,...ds.map(x=>x.n)),base=890; ds.forEach((d,i)=>{const x=105+i*130,h=d.n/max*210;ctx.fillStyle='#ff80ab';roundRect(ctx,x,base-h,70,h,10);ctx.fill();ctx.fillStyle='#d8e2ee';ctx.font='700 18px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(d.label,x+35,920);ctx.fillText(String(d.n),x+35,base-h-12);ctx.fillStyle='#43d17b';ctx.font='600 15px -apple-system,sans-serif';ctx.fillText(`${d.w}V`,x+35,base-h-34);});
- }else{
-   const decided=Math.max(1,m.decided),cx=300,cy=760,r=145;ctx.strokeStyle='#ff6b72';ctx.lineWidth=58;ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();ctx.strokeStyle='#43d17b';ctx.beginPath();ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+Math.PI*2*(m.wins/decided));ctx.stroke();ctx.fillStyle='#f7f9fc';ctx.font='900 38px -apple-system,sans-serif';ctx.textAlign='center';ctx.fillText(`${m.winRate.toFixed(0)}%`,cx,cy+12);
-   [['EVENTI',m.events],['VITTORIE',m.wins],['PERSE',m.losses],['CASH OUT',m.cashouts]].forEach((it,i)=>{const x=540+(i%2)*220,y=650+Math.floor(i/2)*120;ctx.textAlign='left';ctx.fillStyle='#9eabc0';ctx.font='700 18px -apple-system,sans-serif';ctx.fillText(it[0],x,y);ctx.fillStyle=i===1?'#43d17b':i===2?'#ff6b72':'#f7f9fc';ctx.font='900 34px -apple-system,sans-serif';ctx.fillText(String(it[1]),x,y+42);});
- }
- ctx.textAlign='left';ctx.fillStyle='#d8e2ee';ctx.font='700 20px -apple-system,sans-serif';ctx.fillText(`🔥 Serie attuale: ${m.currentType==='win'?m.current+' vittorie consecutive':m.currentType==='loss'?m.current+' sconfitte consecutive':'nessuna serie'}`,80,1015);ctx.fillText(`📈 CLV medio: ${m.avgCLV==null?'—':(m.avgCLV>=0?'+':'')+m.avgCLV.toFixed(1)+'%'}`,80,1055);
- ctx.textAlign='center';ctx.fillStyle='#ffffff';ctx.font='italic 800 30px -apple-system,sans-serif';ctx.fillText('Piccoli dati. Grandi intuizioni.',540,1160);ctx.fillStyle='#ff80ab';ctx.font='800 21px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',540,1200);ctx.fillStyle='#aebbd0';ctx.font='500 17px -apple-system,sans-serif';ctx.fillText('Statistiche del periodo · nessun importo economico',540,1240);
- canvas.toBlob(blob=>{if(!blob){alert('Non sono riuscito a generare l’immagine.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-statistiche-social-${type}-${now.toISOString().slice(0,10)}-4x5.png`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)},'image/png');
-}
-async function sharePreviousDaySocialImage(){
- const items=visibleArchive().filter(b=>settled(b)&&b.placed!==false);
- const now=new Date();
- const d=new Date(now);d.setDate(d.getDate()-1);
- const recapDate=d.toISOString().slice(0,10);
- const dayItems=items.filter(b=>b.date===recapDate).sort((a,b)=>Number(a.updatedAt||a.createdAt)-Number(b.updatedAt||b.createdAt));
- if(!dayItems.length){alert('Non ci sono eventi chiusi del giorno precedente da pubblicare.');return;}
- const wins=dayItems.filter(b=>b.status==='win').length;
- const losses=dayItems.filter(b=>b.status==='loss').length;
- const cashouts=dayItems.filter(b=>b.status==='cashout').length;
- const decided=wins+losses;
- const dateLabel=d.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long',year:'numeric'}).replace(/^./,c=>c.toUpperCase());
- const W=1080,H=1920,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');
- // Sfondo chiaro, molto vicino al mockup 9:16.
- const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#ffffff');bg.addColorStop(.62,'#fffafd');bg.addColorStop(1,'#fde7f1');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
- ctx.fillStyle='rgba(240,79,146,.08)';ctx.beginPath();ctx.arc(30,1260,300,0,Math.PI*2);ctx.fill();
- ctx.fillStyle='rgba(240,79,146,.10)';ctx.beginPath();ctx.arc(1030,1630,570,0,Math.PI*2);ctx.fill();
- // Fascia/stadio decorativa in fondo.
- ctx.fillStyle='rgba(240,79,146,.055)';ctx.fillRect(0,1735,W,185);
- for(let i=0;i<18;i++){ctx.fillStyle='rgba(23,35,52,.08)';ctx.beginPath();ctx.arc(35+i*64,1765+(i%3)*8,7,0,Math.PI*2);ctx.fill();}
- // Logo e testata.
- const logo=await loadImageSafe(location.origin+'/logo-social.png');
- if(logo)ctx.drawImage(logo,55,45,122,122);
- ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 47px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('AI DEL PALLONE',205,86);
- ctx.fillStyle='#65748a';ctx.font='700 22px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',205,121);
- ctx.textAlign='right';ctx.fillStyle='#f04f92';ctx.font='italic 800 30px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('Numeri, non emozioni.',1025,78);
- // Titolo.
- ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 82px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('RIEPILOGO',48,258);
- ctx.fillStyle='#f04f92';ctx.fillText('DI IERI',48,338);
- ctx.fillStyle='#65748a';ctx.font='800 31px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(dateLabel,48,400);
- // Esito generale.
- const overall=wins===dayItems.length?'VINTA!':losses===dayItems.length?'PERSA!':'GIORNATA MISTA';
- const overallBg=wins===dayItems.length?'#d5f6e3':losses===dayItems.length?'#ffe0e5':'#fff0cf';
- const overallFg=wins===dayItems.length?'#12633a':losses===dayItems.length?'#b32636':'#8a5a00';
- ctx.fillStyle=overallBg;roundRect(ctx,48,470,984,185,42);ctx.fill();
- ctx.textAlign='center';
- // Icona esito nello stile del mockup.
- ctx.save();ctx.translate(245,550);ctx.strokeStyle=overallFg;ctx.fillStyle=overallFg;ctx.lineWidth=10;ctx.lineJoin='round';
- if(wins===dayItems.length){
-   ctx.beginPath();ctx.moveTo(-34,-32);ctx.lineTo(34,-32);ctx.lineTo(26,20);ctx.quadraticCurveTo(0,45,-26,20);ctx.closePath();ctx.fill();
-   ctx.beginPath();ctx.arc(-42,-15,22,Math.PI*.5,Math.PI*1.5);ctx.stroke();ctx.beginPath();ctx.arc(42,-15,-Math.PI*.5,Math.PI*.5);ctx.stroke();
-   ctx.fillRect(-8,22,16,22);ctx.fillRect(-25,44,50,9);
- }else if(losses===dayItems.length){
-   ctx.beginPath();ctx.arc(0,0,48,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=10;ctx.beginPath();ctx.moveTo(-20,-20);ctx.lineTo(20,20);ctx.moveTo(20,-20);ctx.lineTo(-20,20);ctx.stroke();
- }
- ctx.restore();
- ctx.fillStyle=overallFg;ctx.font='900 80px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(overall,590,555);
- ctx.font='900 27px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(wins===dayItems.length?'PRONOSTICO CENTRATO':losses===dayItems.length?'PRONOSTICO NON CENTRATO':'RISULTATI DELLA GIORNATA',540,603);
- const shown=dayItems.slice(0,3);
- if(shown.length===1){
-   const b=shown[0],win=b.status==='win',loss=b.status==='loss';
-   const accent=win?'#25b66a':loss?'#e54855':'#d49a17';
-   const soft=win?'#f0fbf4':loss?'#fff2f3':'#fff9ea';
-   // Card centrale più compatta e con gerarchia uguale al mockup.
-   ctx.fillStyle=soft;ctx.strokeStyle=accent+'70';ctx.lineWidth=3;roundRect(ctx,48,690,984,640,42);ctx.fill();ctx.stroke();
-   ctx.fillStyle=accent;roundRect(ctx,72,720,310,72,36);ctx.fill();ctx.fillStyle='#fff';ctx.font='900 32px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',227,768);
-   const homeImg=await loadImageSafe(b.homeLogo),awayImg=await loadImageSafe(b.awayLogo);
-   drawTeamBadge(ctx,homeImg,b.home,265,895,145);drawTeamBadge(ctx,awayImg,b.away,815,895,145);
-   ctx.fillStyle='#172334';ctx.font='900 43px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText('VS',540,905);
-   ctx.fillStyle='#172334';ctx.font='900 29px -apple-system,BlinkMacSystemFont,sans-serif';wrapCanvasText(ctx,b.home||'Casa',265,1045,370,35,2);wrapCanvasText(ctx,b.away||'Trasferta',815,1045,370,35,2);
-   const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?`${b.finalScoreHome} - ${b.finalScoreAway}`:'';
-   if(score){ctx.fillStyle='#172334';ctx.font='900 64px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText(score,540,1120);ctx.fillStyle='#65748a';ctx.font='800 19px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('RISULTATO FINALE',540,1150);}
-   ctx.strokeStyle='#d5dfe9';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(78,1180);ctx.lineTo(1002,1180);ctx.stroke();
-   ctx.textAlign='left';ctx.fillStyle='#65748a';ctx.font='800 21px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('MERCATO',95,1227);ctx.fillStyle='#172334';ctx.font='900 36px -apple-system,BlinkMacSystemFont,sans-serif';wrapCanvasText(ctx,String(b.market||'Giocata'),95,1270,410,40,2);
-   ctx.fillStyle='#65748a';ctx.font='800 21px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('QUOTA',600,1227);ctx.fillStyle='#172334';ctx.font='900 50px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2),600,1273);
- }else{
-   let y=665;
-   for(const b of shown){
-     const win=b.status==='win',loss=b.status==='loss',accent=win?'#25b66a':loss?'#e54855':'#d49a17',soft=win?'#f0fbf4':loss?'#fff2f3':'#fff9ea';
-     ctx.fillStyle=soft;ctx.strokeStyle=accent+'55';ctx.lineWidth=3;roundRect(ctx,55,y,970,260,30);ctx.fill();ctx.stroke();
-     ctx.fillStyle=accent;roundRect(ctx,82,y+25,220,58,29);ctx.fill();ctx.fillStyle='#fff';ctx.font='900 23px -apple-system,BlinkMacSystemFont,sans-serif';ctx.textAlign='center';ctx.fillText(win?'✓ VINTA':loss?'✕ PERSA':'↗ CASH OUT',192,y+62);
-     ctx.textAlign='left';ctx.fillStyle='#172334';ctx.font='900 28px -apple-system,BlinkMacSystemFont,sans-serif';wrapCanvasText(ctx,`${b.home||'Casa'} – ${b.away||'Trasferta'}`,82,y+130,650,34,2);
-     const score=(Number.isFinite(b.finalScoreHome)&&Number.isFinite(b.finalScoreAway))?`${b.finalScoreHome}-${b.finalScoreAway}`:'';if(score){ctx.fillStyle='#172334';ctx.font='900 38px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(score,82,y+205);}
-     ctx.textAlign='right';ctx.fillStyle='#65748a';ctx.font='700 19px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(String(b.market||'Giocata'),990,y+48);ctx.fillStyle='#172334';ctx.font='900 32px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(Number(b.realOdds)>0?Number(b.realOdds).toFixed(2):Number(b.odds||0).toFixed(2),990,y+92);y+=285;
-   }
-   if(dayItems.length>3){ctx.textAlign='center';ctx.fillStyle='#65748a';ctx.font='700 20px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(`+ ${dayItems.length-3} altri eventi`,540,y-12);}
- }
- // Statistiche.
- const statY=1370;
- const stat=(x,label,value,accent)=>{ctx.fillStyle='#ffffff';ctx.strokeStyle='#d9e2ec';ctx.lineWidth=2;roundRect(ctx,x,statY,285,145,26);ctx.fill();ctx.stroke();ctx.textAlign='center';ctx.fillStyle=accent;ctx.font='900 58px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(value,x+142.5,statY+70);ctx.fillStyle='#65748a';ctx.font='900 20px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(label,x+142.5,statY+110);};
- stat(48,'EVENTI ANALIZZATI',String(dayItems.length),'#172334');stat(397,'VITTORIE',String(wins),'#25b66a');stat(746,'PERSE',String(losses),'#e54855');
- ctx.textAlign='center';ctx.fillStyle='#172334';ctx.font='italic 900 39px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(decided?`${wins}/${decided} pronostici vincenti`:'Nessun esito definitivo',540,1570);
- ctx.fillStyle='#f04f92';ctx.font='900 28px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(wins>losses?'Analisi che fanno la differenza!':losses>wins?'Si impara anche da qui!':'Ogni giornata racconta una storia.',540,1625);
- // Richiamo grafico tipo mockup.
- ctx.fillStyle='rgba(240,79,146,.12)';roundRect(ctx,130,1660,700,105,30);ctx.fill();
- ctx.fillStyle='#172334';ctx.font='italic 900 32px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText(wins>losses?'Analizza. Sperimenta. Misura.':losses>wins?'Ogni errore migliora il modello.':'Ogni giornata racconta una storia.',480,1727);
- ctx.fillStyle='#172334';ctx.font='800 22px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('Dati di ieri, strategie per domani.',540,1805);
- ctx.fillStyle='#65748a';ctx.font='600 17px -apple-system,BlinkMacSystemFont,sans-serif';ctx.fillText('Statistiche del giorno · nessun importo economico',540,1845);
- canvas.toBlob(blob=>{if(!blob){alert('Non sono riuscito a generare l’immagine.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-giorno-precedente-social-${recapDate}-9x16.png`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)},'image/png');
-}
-async function sharePeriodResultsImage(type,mode='internal'){
- if(mode==='social') return shareSocialPeriodImage(type);
- const items=visibleArchive().filter(b=>settled(b)&&b.placed!==false);
- if(!items.length){alert('Non hai ancora giocate chiuse da riassumere.');return;}
- const now=new Date();
- let start,end,title,subtitle,stats;
- if(type==='week'){
-   start=mondayStart(now); end=sundayEnd(now); title='BILANCIO SETTIMANALE';
-   subtitle=`Da lunedì a domenica · ${start.toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit'})} – ${end.toLocaleDateString('it-IT',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
- }else{
-   start=new Date(now.getFullYear(),now.getMonth(),1); end=new Date(now.getFullYear(),now.getMonth()+1,0,23,59,59,999); title='BILANCIO MENSILE';
-   subtitle=now.toLocaleDateString('it-IT',{month:'long',year:'numeric'}).replace(/^./,c=>c.toUpperCase());
- }
- stats=calcPeriodStats(items,start,end);
- if(!stats.bets.length){alert('Nessuna giocata chiusa nel periodo selezionato.');return;}
- const W=1080,H=1350,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');
- const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#061321');bg.addColorStop(.55,'#10213a');bg.addColorStop(1,'#07111f');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
- ctx.fillStyle='rgba(245,196,70,.10)';ctx.beginPath();ctx.arc(540,1180,430,0,Math.PI*2);ctx.fill();
- const logo=await loadImageSafe(location.origin+'/logo-dritta-512.png'); if(logo)ctx.drawImage(logo,55,45,82,82);
- ctx.textAlign='left';ctx.fillStyle='#f7f9fc';ctx.font='900 42px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',160,84);ctx.fillStyle='#aebbd0';ctx.font='500 20px -apple-system,sans-serif';ctx.fillText('DATI · STATISTICHE · ANALISI',160,115);
- ctx.textAlign='right';ctx.fillStyle='#ff80ab';ctx.font='italic 700 25px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',1015,78);
- ctx.textAlign='left';ctx.fillStyle='#f5c446';ctx.font='900 42px -apple-system,sans-serif';ctx.fillText(title,55,190);ctx.fillStyle='#d8e2ee';ctx.font='500 23px -apple-system,sans-serif';ctx.fillText(subtitle,55,226);
- function box(x,y,w,h,label,value,cls){ctx.fillStyle='#0b1727';ctx.strokeStyle='#2a3b55';ctx.lineWidth=2;roundRect(ctx,x,y,w,h,20);ctx.fill();ctx.stroke();ctx.fillStyle='#9eabc0';ctx.font='700 18px -apple-system,sans-serif';ctx.fillText(label,x+20,y+34);ctx.fillStyle=cls;ctx.font='900 34px -apple-system,sans-serif';ctx.fillText(value,x+20,y+78)}
- const real=stats.profit, hypo=stats.noCashProfit;
- box(55,265,470,120,'💶 BILANCIO REALE',money(real),real>=0?'#43d17b':'#ff6b72');
- box(555,265,470,120,'📊 SENZA CASH OUT',money(hypo),hypo>=0?'#43d17b':'#ff6b72');
- box(55,415,300,105,'GIOCATE',String(stats.bets.length),'#f7f9fc');
- box(390,415,300,105,'VINTE',String(stats.wins),'#43d17b');
- box(725,415,300,105,'PERSE',String(stats.losses),'#ff6b72');
- ctx.fillStyle='#0b1727';ctx.strokeStyle='#2a3b55';roundRect(ctx,55,555,970,430,24);ctx.fill();ctx.stroke();
- ctx.fillStyle='#ff80ab';ctx.font='900 26px -apple-system,sans-serif';ctx.fillText('CONFRONTO DEI RISULTATI',80,600);
- const maxAbs=Math.max(5,Math.abs(real),Math.abs(hypo));
- const baseY=800, chartX=150, chartW=780;
- ctx.strokeStyle='#31445f';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(chartX,baseY);ctx.lineTo(chartX+chartW,baseY);ctx.stroke();
- const scale=250/maxAbs;
- for(const [label,val,y] of [['REALE',real,690],['SENZA CASH OUT',hypo,875]]){
-   ctx.fillStyle='#d8e2ee';ctx.font='800 22px -apple-system,sans-serif';ctx.fillText(label,80,y);
-   const bw=Math.max(4,Math.abs(val)*scale);const x=chartX;
-   ctx.fillStyle=val>=0?'#43d17b':'#ff6b72';roundRect(ctx,val>=0?x:x-bw,y-24,bw,40,10);ctx.fill();
-   ctx.fillStyle='#f7f9fc';ctx.font='900 25px -apple-system,sans-serif';ctx.fillText(money(val),chartX+chartW+15,y+5);
- }
- ctx.fillStyle='#9eabc0';ctx.font='500 18px -apple-system,sans-serif';ctx.fillText(`Cash out registrati: ${stats.cashouts} · confrontabili con risultato finale: ${stats.hypotheticalCashouts}`,80,950);
- ctx.textAlign='center';ctx.fillStyle='#ffffff';ctx.font='italic 800 29px -apple-system,sans-serif';ctx.fillText('Analizza. Sperimenta. Misura.',540,1080);ctx.fillStyle='#ff80ab';ctx.font='800 21px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',540,1120);ctx.fillStyle='#aebbd0';ctx.font='500 17px -apple-system,sans-serif';ctx.fillText('Contenuto statistico e sperimentale · gioco responsabile · vietato ai minori',540,1160);
- ctx.fillStyle='#ff80ab';ctx.font='italic 700 22px -apple-system,sans-serif';ctx.fillText(type==='week'?'Settimana: lunedì → domenica':'Mese: dal 1° all’ultimo giorno',540,1240);
- canvas.toBlob(blob=>{if(!blob){alert('Non sono riuscito a generare l’immagine.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-bilancio-${type}-${now.toISOString().slice(0,10)}-4x5.png`;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)},'image/png');
-}
-async function shareCandidateImage(i){
- const x=lastPicks[i];
- if(!x){alert('Pronostico non trovato, prova a rieseguire l’analisi.');return;}
- return shareCandidateImageData(x);
-}
-
-// Crea la card social 4:5 della giocata selezionata (1080×1350).
-// La grafica è volutamente più chiara e orientata alla lettura rapida:
-// match -> giocata -> valore -> motivazione breve -> numeri.
-async function shareCandidateImageData(x){
- try{
-   // Social card 4:5 (1080×1350): stile editoriale pulito, leggibile e adatto a Instagram.
-   const W=1080,H=1350,canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;
-   const ctx=canvas.getContext('2d');ctx.textBaseline='alphabetic';
-   const bg=ctx.createLinearGradient(0,0,W,H);bg.addColorStop(0,'#f8fafc');bg.addColorStop(.52,'#eef3f8');bg.addColorStop(1,'#e7edf5');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
-   const glow=ctx.createRadialGradient(850,160,20,850,160,520);glow.addColorStop(0,'rgba(245,196,70,.28)');glow.addColorStop(.45,'rgba(245,196,70,.08)');glow.addColorStop(1,'rgba(245,196,70,0)');ctx.fillStyle=glow;ctx.fillRect(0,0,W,H);
-   const pink=ctx.createRadialGradient(180,1160,10,180,1160,500);pink.addColorStop(0,'rgba(232,91,208,.13)');pink.addColorStop(1,'rgba(232,91,208,0)');ctx.fillStyle=pink;ctx.fillRect(0,0,W,H);
-
-   const logo=await loadImageSafe(location.origin+'/logo-social.png');
-   if(logo)ctx.drawImage(logo,58,44,72,72);
-   ctx.textAlign='left';ctx.fillStyle='#172235';ctx.font='900 38px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',148,75);
-   ctx.fillStyle='#66758a';ctx.font='600 18px -apple-system,sans-serif';ctx.fillText('ANALISI · DATI · STATISTICHE',148,102);
-   ctx.textAlign='right';ctx.fillStyle='#9a7615';ctx.font='800 19px -apple-system,sans-serif';ctx.fillText('ESPERIMENTO AI',1022,66);
-   ctx.fillStyle='#66758a';ctx.font='500 15px -apple-system,sans-serif';ctx.fillText('Prima della partita',1022,91);
-
-   let leagueLabel=x.leagueName||x.league||'CALCIO';
-   const leagueMap={SA:'SERIE A',SB:'SERIE B',PL:'PREMIER LEAGUE',PD:'LALIGA',BL1:'BUNDESLIGA',FL1:'LIGUE 1',CL:'CHAMPIONS LEAGUE',ELC:'CHAMPIONSHIP',DED:'EREDIVISIE',PPL:'PRIMEIRA LIGA'};
-   leagueLabel=leagueMap[x.leagueCode]||leagueLabel||'CALCIO';
-   let dateLabel='DATA DA ANALIZZARE';
-   if(x.kickoff){try{const d=new Date(x.kickoff);dateLabel=d.toLocaleDateString('it-IT',{day:'2-digit',month:'long'}).replace(/^./,c=>c.toUpperCase())+' · '+d.toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});}catch{}}
-
-   // Match header
-   ctx.fillStyle='#ffffff';ctx.strokeStyle='#d8e1eb';ctx.lineWidth=2;roundRect(ctx,48,142,984,330,28);ctx.fill();ctx.stroke();
-   ctx.textAlign='left';ctx.fillStyle='#245bc7';ctx.font='900 17px -apple-system,sans-serif';ctx.fillText(String(leagueLabel).toUpperCase(),80,180);
-   ctx.textAlign='right';ctx.fillStyle='#66758a';ctx.font='700 17px -apple-system,sans-serif';ctx.fillText(dateLabel,1000,180);
-   const homeImg=await loadImageSafe(x.homeLogo),awayImg=await loadImageSafe(x.awayLogo);
-   drawTeamBadge(ctx,homeImg,x.home,300,285,72);drawTeamBadge(ctx,awayImg,x.away,780,285,72);
-   ctx.textAlign='center';ctx.fillStyle='#8b98aa';ctx.font='900 25px -apple-system,sans-serif';ctx.fillText('VS',540,294);
-   ctx.fillStyle='#182230';ctx.font='850 24px -apple-system,sans-serif';wrapCanvasText(ctx,x.home,300,386,330,29,2);wrapCanvasText(ctx,x.away,780,386,330,29,2);
-
-   // Scenario card
-   ctx.fillStyle='#182230';roundRect(ctx,72,500,936,310,28);ctx.fill();
-   ctx.textAlign='center';ctx.fillStyle='#f5c446';ctx.font='900 18px -apple-system,sans-serif';ctx.fillText('SCENARIO INDICATO DALL’AI',540,540);
-   ctx.fillStyle='#ffffff';ctx.font='900 49px -apple-system,sans-serif';wrapCanvasText(ctx,String(x.market||'Scenario statistico'),540,612,820,55,2);
-   ctx.fillStyle='#aebbd0';ctx.font='700 17px -apple-system,sans-serif';ctx.fillText('PROBABILITÀ STIMATA',540,700);
-   ctx.fillStyle='#f5c446';ctx.font='900 70px -apple-system,sans-serif';ctx.fillText(`${Number(x.prob||0).toFixed(1)}%`,540,774);
-
-   // Quick metrics
-   function metricBox(x0,y0,w,label,value,accent){ctx.fillStyle='#ffffff';ctx.strokeStyle='#d8e1eb';ctx.lineWidth=1.5;roundRect(ctx,x0,y0,w,98,18);ctx.fill();ctx.stroke();ctx.textAlign='left';ctx.fillStyle='#66758a';ctx.font='700 15px -apple-system,sans-serif';ctx.fillText(label,x0+18,y0+29);ctx.fillStyle=accent||'#182230';ctx.font='900 28px -apple-system,sans-serif';ctx.fillText(value,x0+18,y0+68);}
-   const odds=Number(x.odds),analysis=Number(x.analysisSupport),prob=Number(x.prob);
-   metricBox(72,832,285,'QUOTA',Number.isFinite(odds)&&odds>0?odds.toFixed(2):'—','#9a7615');
-   metricBox(397,832,285,'PROBABILITA',Number.isFinite(prob)?`${prob.toFixed(1)}%`:'—','#245bc7');
-   metricBox(722,832,286,'ULTIME 3',Number(x.modelSample||0)>=3?'3/3':`${Number(x.modelSample||0)}/3`,'#245bc7');
-
-   // Reason
-   ctx.fillStyle='#ffffff';ctx.strokeStyle='#d8e1eb';ctx.lineWidth=1.5;roundRect(ctx,72,950,936,220,24);ctx.fill();ctx.stroke();
-   ctx.textAlign='left';ctx.fillStyle='#245bc7';ctx.font='900 18px -apple-system,sans-serif';ctx.fillText('PERCHÉ L’AI LO SEGNALA',98,988);
-   ctx.fillStyle='#334155';ctx.font='500 19px -apple-system,sans-serif';wrapCanvasText(ctx,x.reason||'Lo scenario è stato selezionato sulla base dei dati disponibili.',98,1030,880,28,4);
-   ctx.fillStyle='#7a8799';ctx.font='600 14px -apple-system,sans-serif';ctx.fillText('Analisi statistica · nessuna garanzia di risultato',98,1140);
-
-   ctx.textAlign='center';ctx.fillStyle='#182230';ctx.font='italic 800 23px -apple-system,sans-serif';ctx.fillText('Numeri, non emozioni.',540,1222);
-   ctx.fillStyle='#245bc7';ctx.font='900 18px -apple-system,sans-serif';ctx.fillText('AI DEL PALLONE',540,1252);
-   ctx.fillStyle='#7a8799';ctx.font='500 14px -apple-system,sans-serif';ctx.fillText('Esperimento statistico · gioco responsabile · vietato ai minori',540,1280);
-
-   await new Promise(resolve=>canvas.toBlob(blob=>{
-     if(!blob){alert('Non sono riuscito a generare l’immagine. Riprova.');resolve();return;}
-     const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;
-     a.download=`ai-del-pallone-${imageDateForPick(x)}-${safeImageFilePart(x.home)}-${safeImageFilePart(x.away)}-4x5.png`;
-     document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);resolve();
-   },'image/png'));
- }catch(e){console.error(e);alert('Non sono riuscito a generare l’immagine. Riprova tra poco.');}
-}
 function switchTab(tab){
  currentTab=tab;
  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
@@ -1246,7 +862,7 @@ function render(cs){
    const strength=topScore>=70?'Alta':topScore>=60?'Media':'Bassa';
    const analysisLevel=analysis>=70?'Forte':analysis>=55?'Discreta':'Limitata';
    const analysisClass=analysis>=70?'ok':analysis>=55?'warn':'muted';
-   const riskLabel={sicura:'🛡️ Sicura',equilibrata:'⚖️ Equilibrata',value:'🎯 Value'}[x.riskTier]||'';
+   const riskLabel={moltoSicura:'🔒 Molto sicura',sicura:'🛡️ Sicura',equilibrata:'⚖️ Equilibrata',value:'🎯 Value'}[x.riskTier]||'';
    const riskBadge=riskLabel?`<span class="risk-badge ${x.riskTier}">${riskLabel}</span>`:'';
    return `<div class="pick" style="margin-bottom:${i<picks.length-1?10:0}px"><div class="pick-head"><span class="tag">${['⭐ TOP 1','🥈 TOP 2','🥉 TOP 3','🏅 TOP 4','🏅 TOP 5'][i]||`#${i+1}`}</span>${kLabel?`<span class="bet-kickoff">📅 ${kLabel}</span>`:''}${riskBadge}<span class="confidence-badge ${strength.toLowerCase()}">${strength}</span></div><div class="matchup"><div class="team"><div class="logo-wrap">${logoHtml(x.homeLogo,x.home)}</div><b>${esc(x.home)}</b></div><div class="vs">VS</div><div class="team"><div class="logo-wrap">${logoHtml(x.awayLogo,x.away)}</div><b>${esc(x.away)}</b></div></div><div class="market-row"><div class="market">${esc(x.market)}</div><div class="odds-big">${x.odds.toFixed(2)} <small>${esc(x.bookmaker||'Betfair Exchange')}</small></div></div><div class="bet-actions pick-select-top"><button onclick='selectCandidate(${JSON.stringify(x).replace(/'/g,"&#39;")})'>➕ Seleziona</button></div><div class="reason"><b>Perché?</b> ${esc(x.reason||'La scelta nasce dalle caratteristiche della partita.')}</div>${x.fieldAnalysis?.tactical?`<div class="field-box"><div class="field-title">🧠 Lettura del match</div>${esc(x.fieldAnalysis.tactical)}</div>`:''}${x.fieldAnalysis?.warnings?.length?`<div class="warning-box"><div class="field-title">⚠️ Attenzione</div>${x.fieldAnalysis.warnings.map(w=>`<div>${esc(w)}</div>`).join('')}</div>`:''}${absenceHtml(x)}${analysis<45?`<div class="warning-box"><div class="field-title">⚠️ Qualità dell'analisi</div><div>Analisi ${analysis}/100 · ${analysisLevel}. I dati disponibili sono parziali: il modello lo mantiene solo quando non ci sono abbastanza scenari con analisi ≥45/100.</div></div>`:''}<div class="confidence-line"><span>Fiducia <b>${strength}</b></span><span>Prob. ${prob.toFixed(1)}% · Analisi ${analysis}/100 · ${analysisLevel}</span></div>${x.monteCarlo?`<div class="field-box" style="font-size:12px"><div class="field-title">📊 Modello locale</div>10.000 simulazioni Monte Carlo · ELO ${Number(x.eloHome||1500).toFixed(0)} vs ${Number(x.eloAway||1500).toFixed(0)} · dati storici: ${Number(x.monteCarlo.historicalSample||0)} gare</div>`:''}<div class="metrics"><div class="metric"><span>Probabilità</span><b>${prob.toFixed(1)}%</b></div><div class="metric"><span>Quota</span><b>${Number(x.odds||0)>1?Number(x.odds).toFixed(2):'—'}</b></div><div class="metric"><span>Ultime 3</span><b>${Number(x.modelSample||0)>=3?'3/3':String(Number(x.modelSample||0))+'/3'}</b></div></div><div class="betfair-panel" data-betfair-panel="${esc(x.home)}" data-away="${esc(x.away)}" data-market="${esc(x.market)}" data-odds-source="${esc(x.oddsSource||'Betfair Exchange')}"><div class="betfair-title">🎯 ${esc(x.oddsSource||'Quota')} · quota usata dall'AI <span class="betfair-state">caricamento…</span></div><div class="betfair-rows"><div class="small">Recupero quote reali BACK…</div></div></div></div>`;
  }).join('');
@@ -1551,15 +1167,6 @@ function commissionPaid(b){
  const gross=grossNet(b);
  return gross==null?0:commissionForProfit(gross);
 }
-function socialMetrics(bets){
- const decided=bets.filter(b=>b.status==='win'||b.status==='loss');
- const wins=decided.filter(b=>b.status==='win').length, losses=decided.filter(b=>b.status==='loss').length;
- const avgOdds=decided.length?decided.reduce((s,b)=>s+(Number(b.realOdds)>0?Number(b.realOdds):Number(b.odds)||0),0)/decided.length:0;
- const st=streakStats(bets);
- const withCLV=decided.map(b=>({b,clv:calcCLV(b)})).filter(x=>x.clv!=null);
- const avgCLV=withCLV.length?withCLV.reduce((s,x)=>s+x.clv,0)/withCLV.length:null;
- return {events:bets.length,decided:wins+losses,wins,losses,cashouts:bets.filter(b=>b.status==='cashout').length,winRate:decided.length?wins/decided.length*100:0,avgOdds,longWin:st.longWin,longLoss:st.longLoss,current:st.current,currentType:st.currentType,avgCLV};
-}
 function calcPeriodStats(items,start,end){
  const bets=items.filter(b=>settled(b)&&inRange(parseBetDate(b),start,end));
  const profit=bets.reduce((s,b)=>s+(actualNet(b)||0),0);
@@ -1568,7 +1175,7 @@ function calcPeriodStats(items,start,end){
  const cashouts=bets.filter(b=>b.status==='cashout').length;
  const hypotheticalCashouts=bets.filter(b=>b.status==='cashout'&&hypotheticalNet(b)!=null).length;
  const wins=bets.filter(b=>b.status==='win').length,losses=bets.filter(b=>b.status==='loss').length;
- return {bets,profit,noCashProfit,noCashBets,wins,losses,cashouts,hypotheticalCashouts,social:socialMetrics(bets)};
+ return {bets,profit,noCashProfit,noCashBets,wins,losses,cashouts,hypotheticalCashouts};
 }
 function streakStats(items){
  const settledItems=items.filter(closedRecord).sort((a,b)=>Number(a.updatedAt||a.createdAt)-Number(b.updatedAt||b.createdAt));
@@ -1741,8 +1348,8 @@ function renderCalibrationChart(calibRows){
 function exportArchiveCSV(){
  const items=visibleArchive();
  if(!items.length){alert('Non ci sono giocate da esportare.');return}
- const cols=['date','home','away','market','odds','realOdds','stake','status','riskTier','prob','edge','amount_netto','league'];
- const header=['Data','Casa','Trasferta','Mercato','Quota','Quota reale','Puntata','Stato','Fascia rischio','Probabilità %','Edge %','Risultato netto €','Campionato'];
+ const cols=['date','home','away','market','odds','realOdds','stake','status','riskTier','prob','edge','amount_netto','league','notes'];
+ const header=['Data','Casa','Trasferta','Mercato','Quota','Quota reale','Puntata','Stato','Fascia rischio','Probabilità %','Edge %','Risultato netto €','Campionato','Note'];
  const csvEsc=v=>{const s=v==null?'':String(v);return /[;"\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
  const rows=items.map(b=>[
    b.date||'',b.home||'',b.away||'',b.market||'',
@@ -1754,7 +1361,8 @@ function exportArchiveCSV(){
    b.prob!=null?Number(b.prob).toFixed(1).replace('.',','):'',
    b.edge!=null?Number(b.edge).toFixed(1).replace('.',','):'',
    settled(b)?Number(actualNet(b)||0).toFixed(2).replace('.',','):'',
-   b.league||''
+   b.league||'',
+   b.notes||''
  ].map(csvEsc).join(';'));
  const csv='\uFEFF'+header.join(';')+'\n'+rows.join('\n'); // BOM per far riconoscere UTF-8 a Excel
  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
@@ -1762,6 +1370,7 @@ function exportArchiveCSV(){
  const a=document.createElement('a');a.href=url;a.download=`ai-del-pallone-giocate-${new Date().toISOString().slice(0,10)}.csv`;
  document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
 }
+
 function normalizeLeague(value){
  const x=String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
  if(x==='sa'||x.includes('serie a'))return 'Serie A';
@@ -1783,10 +1392,6 @@ function renderLeagueBalance(placedItems){
   return `<div class="league-card ${cls}"><div class="league-name">${name}</div><div class="league-pl">${money(real)}</div><div class="league-meta"><b>${bets.length}</b> scommesse · <b>${wins}</b> vinte · <b>${losses}</b> perse${cashouts?` · <b>${cashouts}</b> cash out`:''}<br>Win rate: <b>${wr==null?'—':wr.toFixed(1)+'%'}</b> · ROI: <b>${stake?roi.toFixed(1)+'%':'—'}</b></div><div class="league-no">Senza cash out: <b>${money(noCash)}</b> · Differenza: <b>${money(diff)}</b></div></div>`;
  }).join('');
  host.innerHTML=`<div class="period-heading">🏆 Bilancio per gli 8 principali campionati europei</div><p class="small" style="margin:5px 0 9px">Solo giocate realmente piazzate e chiuse. Le cash out restano separate da vinte/perse; il confronto senza cash out usa l'esito finale quando disponibile.</p><div class="league-grid">${cards}</div>`;
-}
-function renderSocialPeriodCard(title,m){
- const streak=m.currentType==='win'?`${m.current} vittorie consecutive`:m.currentType==='loss'?`${m.current} sconfitte consecutive`:'—';
- return `<div class="period-card"><div class="period-title">${title}</div><div class="small"><b>${m.events}</b> eventi giocati · <b>${m.avgOdds?m.avgOdds.toFixed(2):'—'}</b> quota media · <b>${m.winRate.toFixed(1)}%</b> vittorie</div><div class="small">🏆 Serie vincente max: <b>${m.longWin}</b> · ❌ serie perdente max: <b>${m.longLoss}</b></div><div class="small">🔥 Serie attuale: <b>${streak}</b>${m.cashouts?` · ↗ ${m.cashouts} cash out`:''}</div><div class="small">CLV medio: <b>${m.avgCLV==null?'—':(m.avgCLV>=0?'+':'')+m.avgCLV.toFixed(1)+'%'}</b></div></div>`;
 }
 function betLogoHtml(url,name,betId,role){
  const initial=esc((name||'?').trim().slice(0,2).toUpperCase());
@@ -1939,7 +1544,7 @@ function renderArchive(){
    <div class="archive-stat"><span>Vincita media</span><b>${money(avgWin)}</b><small>solo giocate vinte</small></div>
    <div class="archive-stat"><span>Perdita media</span><b>${money(avgLoss)}</b><small>solo giocate perse</small></div>
    <div class="archive-stat"><span>CLV medio</span><b>${avgCLV==null?'—':(avgCLV>=0?'+':'')+avgCLV.toFixed(1)+'%'}</b><small>${withCLV.length?withCLV.length+' giocate (tutte, anche non piazzate)':'nessuna quota di chiusura ancora catturata'}</small></div>
-   <div class="periods"><div class="period-heading">📆 Bilanci interni</div>${renderPeriodCard('Settimana · lunedì → domenica',week)}${renderPeriodCard('Mese · '+now.toLocaleDateString('it-IT',{month:'long',year:'numeric'}),month)}</div><div class="periods"><div class="period-heading">📱 Statistiche social · nessun importo</div>${(()=>{const yd=new Date(now);yd.setDate(yd.getDate()-1);const ys=calcPeriodStats(placedItems,new Date(yd.getFullYear(),yd.getMonth(),yd.getDate(),0,0,0,0),new Date(yd.getFullYear(),yd.getMonth(),yd.getDate(),23,59,59,999));return renderSocialPeriodCard('Giorno precedente · '+yd.toLocaleDateString('it-IT',{weekday:'long',day:'2-digit',month:'2-digit'}),ys.social)})()}${renderSocialPeriodCard('Settimana · lunedì → domenica',week.social)}${renderSocialPeriodCard('Mese · '+now.toLocaleDateString('it-IT',{month:'long',year:'numeric'}),month.social)}</div>
+   <div class="periods"><div class="period-heading">📆 Bilanci interni</div>${renderPeriodCard('Settimana · lunedì → domenica',week)}${renderPeriodCard('Mese · '+now.toLocaleDateString('it-IT',{month:'long',year:'numeric'}),month)}</div>
    ${calibRows.length?`<div class="periods"><div class="period-heading">🎯 Calibrazione: probabilità stimata vs vittorie reali</div>${calibRows.map(r=>`<div class="period-card"><div class="period-title">${r.lo}–${r.hi}%</div><div class="period-profit">${r.winRate.toFixed(0)}%</div><div class="small">${r.count} giocate · stimata media ${r.avgProb.toFixed(0)}%</div></div>`).join('')}</div><div class="balance-chart" style="margin-top:10px"><h3>🎯 Stimata vs reale</h3><p>Barra chiara = probabilità media stimata dal modello in quella fascia. Barra piena = percentuale di vittorie reali. Se la barra piena è molto più bassa, il modello è troppo ottimista lì.</p><canvas id="calibrationChart"></canvas></div><div class="small" style="margin-top:6px">Servono almeno una decina di giocate per fascia per fidarsi del numero.</div>`:''}`;
  renderLeagueBalance(placedItems); renderWeeklyCharts(week.bets); renderCalibrationChart(calibRows); if(!items.length){$('archive').innerHTML='<div class="empty">Nessuna giocata archiviata.</div>';return}
  // Popolo il filtro mercato con quelli realmente presenti in archivio (non un elenco fisso).
@@ -1982,7 +1587,7 @@ function renderArchive(){
    const checkResultBtn=(b.status==='pending'||(b.status==='cashout'&&!b.actualResult))&&b.fixtureId&&Number.isFinite(kickoffMs)&&kickoffMs<Date.now()?`<button class="secondary" onclick="checkSettlementNow('${safeId}')">⚽ Controlla risultato</button>`:'';
    const sug=settlementSuggestions[b.id];
    const settlementBanner=sug?.result?`<div class="settle-suggestion">⚽ ${sug.homeGoals}-${sug.awayGoals} → <b>${sug.result==='win'?'Vinta':'Persa'}</b>. <button class="secondary" onclick="applySettlement('${safeId}')">Conferma</button> <button class="secondary" onclick="dismissSettlement('${safeId}')">Ignora</button></div>`:'';
-   const riskLabelArch={sicura:'🛡️ Sicura',equilibrata:'⚖️ Equilibrata',value:'🎯 Value'}[b.riskTier]||'';
+   const riskLabelArch={moltoSicura:'🔒 Molto sicura',sicura:'🛡️ Sicura',equilibrata:'⚖️ Equilibrata',value:'🎯 Value'}[b.riskTier]||'';
    const riskBadgeArch=riskLabelArch?`<span class="risk-badge ${b.riskTier}">${riskLabelArch}</span>`:'';
    return `<div class="bet-compact ${statusClass}">
      <div class="bet-compact-main">
@@ -1991,6 +1596,7 @@ function renderArchive(){
        <div class="bet-compact-outcome"><b>${esc(selected)}</b><span>${esc(selectedDesc)}</span>${riskBadgeArch}</div>
        <div class="bet-compact-odds"><b>${Number(b.realOdds||b.odds||0).toFixed(2)}</b><span>quota</span></div>
      </div>
+     ${b.notes?`<div class="bet-note-preview">📝 ${esc(b.notes.length>90?b.notes.slice(0,90)+'…':b.notes)}</div>`:''}
      <div class="bet-compact-status">
        <span class="bet-status-text ${statusClass}">${statusLabel}${amount!=null&&statusClass!=='pending'?` · ${amountText}`:''}${!isPlaced?' · non piazzata':''}</span>
        <button class="bet-edit-btn" type="button" onclick="toggleBetEdit('${safeId}')">Modifica ▾</button>
@@ -2003,6 +1609,7 @@ function renderArchive(){
          <div><label for="st-${esc(b.id)}">Stato</label><select id="st-${esc(b.id)}" onchange="toggleCashoutFields('${safeId}')"><option value="pending" ${b.status==='pending'?'selected':''}>Aperta</option><option value="win" ${b.status==='win'?'selected':''}>Vinta</option><option value="loss" ${b.status==='loss'?'selected':''}>Persa</option><option value="cashout" ${b.status==='cashout'?'selected':''}>Cash out</option></select></div>
          ${b.status==='cashout'?`<div class="full-mobile"><label for="co-${esc(b.id)}">Risultato cash out (+ / −)</label><input aria-label="Risultato cash out positivo o negativo" value="${b.cashoutResult!=null?Number(b.cashoutResult).toFixed(2).replace('.',','):''}" inputmode="decimal" id="co-${esc(b.id)}" placeholder="es. +0,80 oppure -0,37"></div>`:`<div class="full-mobile"><label for="amt-${esc(b.id)}">Risultato netto</label><input aria-label="Risultato netto" value="${amount==null?'0,00':Number(amount).toFixed(2).replace('.',',')}" inputmode="decimal" id="amt-${esc(b.id)}" readonly></div>`}
          <div class="full-mobile"><label>Giocata realmente piazzata</label><label class="bet-placed-row"><input type="checkbox" id="pl-${esc(b.id)}" ${isPlaced?'checked':''}><span class="placed-yes">Sì, giocata piazzata</span></label></div>
+         <div class="full-mobile"><label for="notes-${esc(b.id)}">Note (facoltative)</label><textarea id="notes-${esc(b.id)}" placeholder="Perché l'hai scelta, sensazioni, promemoria…">${esc(b.notes||'')}</textarea></div>
        </div>
        <div class="bet-edit-actions">${refreshBtn}${checkResultBtn}<button class="secondary" type="button" onclick="saveBetResult('${safeId}');toggleBetEdit('${safeId}')">💾 Salva</button><button class="secondary" type="button" onclick="deleteBet('${safeId}')">🗑️ Elimina</button></div>
      </div>
@@ -2029,7 +1636,7 @@ function toggleCashoutFields(id){
    autoFillAmount(id);
  }
 }
-function saveBetResult(id){const st=$(`st-${id}`),amt=$(`amt-${id}`),stake=$(`stake-${id}`),co=$(`co-${id}`),ro=$(`ro-${id}`),pl=$(`pl-${id}`);if(st&&stake)updateBet(id,st.value,amt?amt.value:'',ro?ro.value:null,pl?pl.checked:false,stake.value,co?co.value:null)}
+function saveBetResult(id){const st=$(`st-${id}`),amt=$(`amt-${id}`),stake=$(`stake-${id}`),co=$(`co-${id}`),ro=$(`ro-${id}`),pl=$(`pl-${id}`),nt=$(`notes-${id}`);if(st&&stake)updateBet(id,st.value,amt?amt.value:'',ro?ro.value:null,pl?pl.checked:false,stake.value,co?co.value:null,nt?nt.value:null)}
 function saveArchive(a){localSave(a)}
 // --- Coerenza tra mercati sulla stessa partita ------------------------------
 // Alcune coppie di mercati non possono verificarsi entrambe (es. 1 e 2),
@@ -2067,16 +1674,17 @@ function addBet(x){
    const msg=(hasHard?'⚠️ ':'ℹ️ ')+tensions.map(t=>t.message).join('\n')+'\n\nVuoi aggiungerla comunque?';
    if(!confirm(msg))return false;
  }
- const b={id:crypto.randomUUID?crypto.randomUUID():Date.now().toString(),createdAt:Date.now(),updatedAt:Date.now(),date:$("date").value,home:x.home,away:x.away,market:x.market,odds:Number(x.odds),realOdds:null,placed:true,prob:Number(x.prob),edge:Number(x.edge),score:Number(x.score),riskTier:x.riskTier||null,fixtureId:x.fixtureId,eventId:x.eventId||null,kickoff:x.kickoff||null,closeOdds:null,closeOddsAt:null,status:'pending',stake:STAKE,cashoutAmount:null,amount:0,placed:false,reason:x.reason||'',homeLogo:x.homeLogo||null,awayLogo:x.awayLogo||null,league:x.league||x.leagueName||x.leagueCode||null};
+ const b={id:crypto.randomUUID?crypto.randomUUID():Date.now().toString(),createdAt:Date.now(),updatedAt:Date.now(),date:$("date").value,home:x.home,away:x.away,market:x.market,odds:Number(x.odds),realOdds:null,placed:true,prob:Number(x.prob),edge:Number(x.edge),score:Number(x.score),riskTier:x.riskTier||null,fixtureId:x.fixtureId,eventId:x.eventId||null,kickoff:x.kickoff||null,closeOdds:null,closeOddsAt:null,status:'pending',stake:STAKE,cashoutAmount:null,amount:0,placed:false,reason:x.reason||'',notes:'',homeLogo:x.homeLogo||null,awayLogo:x.awayLogo||null,league:x.league||x.leagueName||x.leagueCode||null};
  a.unshift(b);saveArchive(a);cloudUpsert(b);alert(currentUser?'Giocata aggiunta e sincronizzata.':'Giocata aggiunta. Accedi per sincronizzarla tra dispositivi.');
  return true;
 }
-function updateBet(id,status,amount,realOdds,placed,stakeValue,cashoutValue){
+function updateBet(id,status,amount,realOdds,placed,stakeValue,cashoutValue,notesValue){
  const a=getArchive();const b=a.find(x=>String(x.id)===String(id));if(!b)return;
  b.status=status;b.updatedAt=Date.now();
  const roNum=Number(String(realOdds??'').replace(',','.')); b.realOdds=Number.isFinite(roNum)&&roNum>0?roNum:null;
  const stakeNum=Number(String(stakeValue??b.stake??STAKE).replace(',','.')); b.stake=Number.isFinite(stakeNum)&&stakeNum>0?stakeNum:STAKE;
  b.placed=placed===true;
+ if(notesValue!=null) b.notes=String(notesValue).slice(0,500);
  if(status==='cashout'){const co=Number(String(cashoutValue??'').replace(',','.'));b.cashoutResult=Number.isFinite(co)?co:null;b.cashoutAmount=b.cashoutResult!=null?b.cashoutResult+b.stake:null;b.amount=b.cashoutResult!=null?b.cashoutResult:0;}
  else {b.cashoutAmount=null;b.cashoutResult=null;let n=Number(String(amount??'').replace(',','.'))||0;if(status==='win')n=Math.abs(b.stake*(b.realOdds||b.odds)-b.stake);else if(status==='loss')n=-Math.abs(b.stake);else if(status==='pending')n=0;b.amount=n;}
  saveArchive(a);cloudUpsert(b);
