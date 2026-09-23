@@ -23,7 +23,7 @@ body{margin:0;background:#080d16;color:#e9eef7;font-family:-apple-system,BlinkMa
 input{background:#0b1220!important;color:#eef3fa!important;border-color:#2a3850!important;width:100%;padding:12px;border-radius:11px;border:1px solid #d6dce5;font:inherit;font-size:18px;min-height:44px;touch-action:manipulation}
 select{background:#0b1220!important;color:#eef3fa!important;border-color:#2a3850!important;width:100%;padding:12px;border-radius:11px;border:1px solid #d6dce5;font:inherit;font-size:18px;min-height:44px;touch-action:manipulation}
 .secondary{background:#1a2434!important;color:#eef3fa!important;border:1px solid #2a3850;border-color:#2a3850!important}
-.status{background:#142239!important;border:1px solid #263957;color:#d8e2ef!important;padding:11px;border-radius:12px;margin-bottom:11px;font-size:15px;border-color:#263957!important}
+.status{background:#142239!important;border:1px solid #263957;color:#d8e2ef!important;padding:11px;border-radius:12px;margin-bottom:11px;font-size:15px;border-color:#263957!important;transition:opacity .25s ease}
 .ok{background:#10251a!important;color:#c5e8cf!important}
 .err{background:#2a1518!important;color:#f2c7cc!important}
 .warn{background:#2a2110!important;color:#f1d998!important}
@@ -677,7 +677,11 @@ function switchTab(tab){
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
 
 function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
-function status(t,k=""){$("status").textContent=t;$("status").className="status "+k}
+function status(t,k=""){
+ const el=$("status");
+ el.style.opacity='0';
+ setTimeout(()=>{el.textContent=t;el.className="status "+k;el.style.opacity='1';},130);
+}
 function scoreCandidate(x){
   const score=Number.isFinite(x.topSelectionScore)?Number(x.topSelectionScore):Number(x.prob||0);
   return {...x, implied:null, edge:null, score, topSelectionScore:score};
@@ -718,7 +722,23 @@ async function run(){
    if(runBtn){runBtn.disabled=false;runBtn.textContent=oldRunText;} return;
  }
  if(cached) clearCurrentApiCache();
- status("🔄 Recupero quote e statistiche…");
+ // Messaggi in sequenza mentre si aspetta la risposta: non è un vero streaming dal server
+ // (una sola richiesta, una sola risposta), ma segue l'ordine reale con cui il backend
+ // prova le fonti — dà un'idea onesta di cosa sta succedendo invece di un'attesa a vuoto.
+ const progressSteps=[
+   "🔄 Controllo football-data.org…",
+   "🔄 Verifico classifiche e forma recente…",
+   "🔄 Cerco scontri diretti…",
+   "🔄 Confronto con le quote Betfair…",
+   "🔄 Calcolo probabilità e valore atteso…",
+   "🔄 Ancora un istante…"
+ ];
+ let stepIdx=0;
+ status(progressSteps[0]);
+ const progressTimer=setInterval(()=>{
+   stepIdx=Math.min(stepIdx+1,progressSteps.length-1);
+   status(progressSteps[stepIdx]);
+ },1600);
  try{
   const q=new URLSearchParams({date:$("date").value,leagues:$("leagueSelect").value,timeWindow:$("timeWindow").value || "all",market:$("market").value || "all"});
   const controller=new AbortController();
@@ -750,7 +770,7 @@ async function run(){
   // Salviamo solo risposte utili: così un secondo click non consuma API.
   if(Number(d.fixtures||0)>0 && (cs.length>0 || live.length>0)) writeApiCache(d);
  }catch(e){status("🔴 "+e.message,"err");$("pick").innerHTML='<div class="empty">Controlla la configurazione API.</div>'}
- finally{if(runBtn){runBtn.disabled=false;runBtn.textContent=oldRunText}}
+ finally{clearInterval(progressTimer);if(runBtn){runBtn.disabled=false;runBtn.textContent=oldRunText}}
 }
 function renderAIPicks(picks){
  const box=$('aiPicks'); const dateBox=$('aiDateLabel');
@@ -1343,6 +1363,38 @@ function renderCalibrationChart(calibRows){
  if(c)drawCalibrationChart(c,calibRows);
 }
 
+// Dati reali dal conto Betfair (saldo + storico). renderArchive() la richiama a ogni
+// render (anche a ogni tasto premuto nel filtro), quindi qui dentro NON si rifà mai la
+// fetch più spesso di ogni 20 secondi — altrimenti si spammerebbe l'endpoint a vuoto.
+let _betfairAccountLastFetch=0, _betfairAccountCache=null;
+async function loadBetfairAccount(force){
+ const box=document.getElementById('betfairAccountCard');
+ if(!box) return;
+ const now=Date.now();
+ if(!force && _betfairAccountCache && now-_betfairAccountLastFetch<20000){
+   renderBetfairAccountCard(box,_betfairAccountCache);
+   return;
+ }
+ try{
+   const r=await fetch('/api/betfair-account');
+   const data=await r.json();
+   if(!r.ok||data.error){box.innerHTML=`<div class="period-heading">💳 Conto Betfair reale</div><div class="small">Non ancora disponibile: lancia il bridge locale per sincronizzare saldo e storico. (${esc(data.error||'')})</div>`;return}
+   _betfairAccountCache=data; _betfairAccountLastFetch=now;
+   renderBetfairAccountCard(box,data);
+ }catch(e){
+   box.innerHTML=`<div class="period-heading">💳 Conto Betfair reale</div><div class="small">Errore di rete: ${esc(e?.message||String(e))}</div>`;
+ }
+}
+function renderBetfairAccountCard(box,data){
+ const f=data.funds;
+ const fundsHtml=f?`<div class="period-card"><div class="period-title">Saldo disponibile</div><div class="period-profit">${money(f.availableToBetBalance)}</div><div class="small">Esposizione: <b>${money(f.exposure)}</b></div></div>`:`<div class="period-card"><div class="period-title">Saldo</div><div class="small">Non ancora sincronizzato</div></div>`;
+ const co=data.clearedOrders||{count:0,wins:0,losses:0,totalProfit:0};
+ const clearedHtml=`<div class="period-card"><div class="period-title">Storico reale (90 gg)</div><div class="period-profit ${co.totalProfit>0?'pos':co.totalProfit<0?'neg':''}">${money(co.totalProfit)}</div><div class="small">${co.count} liquidate · ${co.wins} vinte · ${co.losses} perse</div></div>`;
+ const cur=data.currentOrders||{count:0};
+ const currentHtml=cur.count?`<div class="period-card"><div class="period-title">Aperte ora</div><div class="period-profit">${cur.count}</div><div class="small">Scommesse non ancora liquidate</div></div>`:'';
+ box.innerHTML=`<div class="period-heading">💳 Conto Betfair reale</div>${fundsHtml}${clearedHtml}${currentHtml}<div class="small" style="grid-column:1/-1;margin-top:4px">${esc(data.disclaimer||'')}</div>`;
+}
+
 // Esporta l'intero archivio (non filtrato) in CSV, per tenerlo altrove o aprirlo in un foglio
 // di calcolo. Uso il punto e virgola come separatore perché Excel in italiano lo preferisce.
 function exportArchiveCSV(){
@@ -1545,8 +1597,9 @@ function renderArchive(){
    <div class="archive-stat"><span>Perdita media</span><b>${money(avgLoss)}</b><small>solo giocate perse</small></div>
    <div class="archive-stat"><span>CLV medio</span><b>${avgCLV==null?'—':(avgCLV>=0?'+':'')+avgCLV.toFixed(1)+'%'}</b><small>${withCLV.length?withCLV.length+' giocate (tutte, anche non piazzate)':'nessuna quota di chiusura ancora catturata'}</small></div>
    <div class="periods"><div class="period-heading">📆 Bilanci interni</div>${renderPeriodCard('Settimana · lunedì → domenica',week)}${renderPeriodCard('Mese · '+now.toLocaleDateString('it-IT',{month:'long',year:'numeric'}),month)}</div>
+   <div id="betfairAccountCard" class="periods" style="margin-top:14px"><div class="period-heading">💳 Conto Betfair reale</div><div class="small">Caricamento…</div></div>
    ${calibRows.length?`<div class="periods"><div class="period-heading">🎯 Calibrazione: probabilità stimata vs vittorie reali</div>${calibRows.map(r=>`<div class="period-card"><div class="period-title">${r.lo}–${r.hi}%</div><div class="period-profit">${r.winRate.toFixed(0)}%</div><div class="small">${r.count} giocate · stimata media ${r.avgProb.toFixed(0)}%</div></div>`).join('')}</div><div class="balance-chart" style="margin-top:10px"><h3>🎯 Stimata vs reale</h3><p>Barra chiara = probabilità media stimata dal modello in quella fascia. Barra piena = percentuale di vittorie reali. Se la barra piena è molto più bassa, il modello è troppo ottimista lì.</p><canvas id="calibrationChart"></canvas></div><div class="small" style="margin-top:6px">Servono almeno una decina di giocate per fascia per fidarsi del numero.</div>`:''}`;
- renderLeagueBalance(placedItems); renderWeeklyCharts(week.bets); renderCalibrationChart(calibRows); if(!items.length){$('archive').innerHTML='<div class="empty">Nessuna giocata archiviata.</div>';return}
+ renderLeagueBalance(placedItems); renderWeeklyCharts(week.bets); renderCalibrationChart(calibRows); loadBetfairAccount(); if(!items.length){$('archive').innerHTML='<div class="empty">Nessuna giocata archiviata.</div>';return}
  // Popolo il filtro mercato con quelli realmente presenti in archivio (non un elenco fisso).
  const marketSel=$('archFilterMarket');
  if(marketSel){
