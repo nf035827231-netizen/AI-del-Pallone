@@ -1,4 +1,16 @@
 #!/bin/bash
+# ==============================================================================
+# PRIMO AVVIO SU UN MAC NUOVO O DOPO UN NUOVO DOWNLOAD: macOS blocca gli script
+# scaricati da internet non firmati (Gatekeeper). Serve farlo UNA SOLA VOLTA,
+# poi lo script si avvierà sempre normalmente con un doppio click.
+#
+# Apri il Terminale, vai nella cartella dove hai salvato questo file e lancia:
+#   chmod +x betfair-bridge.command
+#   xattr -d com.apple.quarantine betfair-bridge.command
+#
+# (il secondo comando può dare "No such xattr" se il flag non c'era già:
+# va bene così, significa che non serviva.)
+# ==============================================================================
 set -u
 CONFIG="$HOME/.ai-del-pallone/config"
 CACHE="$HOME/.ai-del-pallone/bridge-cache"
@@ -42,7 +54,32 @@ ACCOUNT_URL="https://api.betfair.com/exchange/account/json-rpc/v1"
 # Finestra: dal momento del lancio alle prossime 20 ore — copre in pratica l'intera
 # giornata "oggi" che l'app analizza (11:00-22:00), anche lanciando il bridge al mattino.
 FROM=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-TO=$(date -u -v+20H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '+20 hours' +"%Y-%m-%dT%H:%M:%SZ")
+
+echo
+echo "Quante ore di eventi vuoi scaricare da adesso?"
+echo "  1) Prossime 2 ore"
+echo "  2) Prossime 4 ore"
+echo "  3) Prossime 12 ore"
+echo "  4) Prossime 20 ore  (default — copre l'intera finestra 'oggi' 11:00-22:00)"
+echo "  5) Personalizzato (scrivi tu il numero di ore)"
+read -r -p "Scelta [4]: " HOURS_CHOICE
+case "${HOURS_CHOICE:-4}" in
+  1) HOURS=2 ;;
+  2) HOURS=4 ;;
+  3) HOURS=12 ;;
+  4) HOURS=20 ;;
+  5)
+    read -r -p "Quante ore (numero intero, es. 6): " HOURS
+    if ! [[ "$HOURS" =~ ^[0-9]+$ ]] || [ "$HOURS" -lt 1 ]; then
+      echo "Valore non valido, uso 20 ore di default."
+      HOURS=20
+    fi
+    ;;
+  *) echo "Scelta non riconosciuta, uso 20 ore di default."; HOURS=20 ;;
+esac
+echo "→ Recupero eventi nelle prossime $HOURS ore."
+
+TO=$(date -u -v+"${HOURS}"H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d "+${HOURS} hours" +"%Y-%m-%dT%H:%M:%SZ")
 
 echo
 echo "[1/4] Login Betfair..."
@@ -104,7 +141,7 @@ else
 fi
 
 echo
-echo "[3/4] Recupero mercati Betfair delle prossime 20 ore..."
+echo "[3/4] Recupero mercati Betfair delle prossime $HOURS ore..."
 Q='[{"jsonrpc":"2.0","method":"SportsAPING/v1.0/listMarketCatalogue","params":{"filter":{"eventTypeIds":["1"],"marketTypeCodes":["MATCH_ODDS","OVER_UNDER_25","OVER_UNDER_35","BOTH_TEAMS_TO_SCORE"],"marketStartTime":{"from":"'"$FROM"'","to":"'"$TO"'"}},"marketProjection":["EVENT","COMPETITION","MARKET_START_TIME","RUNNER_DESCRIPTION"],"sort":"FIRST_TO_START","maxResults":"1000"},"id":1}]'
 
 curl -sS --max-time 40 \
@@ -121,7 +158,7 @@ my $j=decode_json(join("",<>)); my $r=$j->[0]{result}||[]; print scalar(@$r);
 ' "$CAT" 2>/dev/null || echo 0)
 
 if [ "$COUNT" -eq 0 ]; then
-  echo "⚠️ Nessun mercato nelle prossime 20 ore."
+  echo "⚠️ Nessun mercato nelle prossime $HOURS ore."
   # Sincronizza comunque un catalogo vuoto/aggiornato, così il backend non usa il vecchio catalogo locale.
   BODY="{\"type\":\"catalogue\",\"payload\":$(cat "$CAT") }"
   H=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 -X POST \
@@ -207,7 +244,7 @@ echo
 echo "=============================================="
 echo " ✅ TUTTO COMPLETATO (mercati + conto reale)"
 echo "=============================================="
-echo " Finestra: prossime 20 ore dal lancio"
+echo " Finestra: prossime $HOURS ore dal lancio"
 echo " Mercati: 1X2 + O/U 2.5 + O/U 3.5 + Goal/No Goal"
 echo " Prezzi salvati: SOLO BACK"
 echo " Mercati aggiornati: $N"
