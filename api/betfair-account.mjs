@@ -1,100 +1,88 @@
-import https from "node:https";
+// Legge l'ultimo saldo + storico scommesse reali sincronizzati dal bridge e li restituisce
+// in un formato pulito, pronto per la pagina Bilancio. Sola lettura, nessuna scrittura qui.
 
-function required(name) {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} non configurata`);
-  return value;
-}
+const SUPA_URL = process.env.SUPABASE_URL || '';
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
-function certLogin() {
-  return new Promise((resolve, reject) => {
-    const username = required("BETFAIR_USERNAME");
-    const password = required("BETFAIR_PASSWORD");
-    const appKey = required("BETFAIR_APP_KEY");
-    const cert = required("BETFAIR_CERT").replace(/\\n/g, "\n");
-    const key = required("BETFAIR_KEY").replace(/\\n/g, "\n");
-    const body = new URLSearchParams({ username, password }).toString();
-    const req = https.request({
-      hostname: "identitysso-cert.betfair.it",
-      path: "/api/certlogin",
-      method: "POST",
-      cert, key,
-      headers: { "X-Application": appKey, "Content-Type": "application/x-www-form-urlencoded", "Content-Length": Buffer.byteLength(body) },
-      timeout: 15000,
-    }, res => {
-      let data = ""; res.setEncoding("utf8");
-      res.on("data", c => { data += c; });
-      res.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.loginStatus !== "SUCCESS" || !parsed.token) return reject(new Error(`Betfair login: ${parsed.loginStatus || "RISPOSTA_NON_VALIDA"}`));
-          resolve({ token: parsed.token, appKey });
-        } catch { reject(new Error("Risposta login Betfair non JSON")); }
-      });
-    });
-    req.on("timeout", () => req.destroy(new Error("Timeout login Betfair")));
-    req.on("error", reject); req.write(body); req.end();
+async function supaRead(path){
+  const r = await fetch(`${SUPA_URL}/rest/v1/${path}`, {
+    headers:{ apikey:SERVICE_KEY, Authorization:`Bearer ${SERVICE_KEY}` }
   });
+  const text = await r.text();
+  if(!r.ok) throw new Error(`Supabase ${r.status}: ${text.slice(0,300)}`);
+  return text ? JSON.parse(text) : [];
 }
 
-function rpc(token, appKey, method, params, area="account") {
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 });
-    const req = https.request({
-      hostname: "api.betfair.com", path: area === "betting" ? "/exchange/betting/json-rpc/v1" : "/exchange/account/json-rpc/v1", method: "POST",
-      headers: { "X-Application": appKey, "X-Authentication": token, "Accept": "application/json", "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
-      timeout: 15000,
-    }, res => {
-      let data = ""; res.setEncoding("utf8");
-      res.on("data", c => { data += c; });
-      res.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) return reject(new Error(parsed.error?.data?.APINGException?.errorCode || parsed.error?.message || "Betfair API error"));
-          resolve(parsed.result);
-        } catch { reject(new Error("Risposta API Betfair non JSON")); }
-      });
-    });
-    req.on("timeout", () => req.destroy(new Error(`Timeout ${method}`)));
-    req.on("error", reject); req.write(payload); req.end();
-  });
+function round2(x){ const n=Number(x); return Number.isFinite(n)?Math.round(n*100)/100:null; }
+
+// Un item di listClearedOrders ha (tra gli altri) questi campi principali:
+// betId, marketId, selectionId, betOutcome ('WON'|'LOST'), placedDate, settledDate,
+// priceMatched, sizeSettled, profit, itemDescription:{eventDesc, marketDesc, runnerDesc, ...}
+function adaptClearedOrder(o){
+  return {
+    betId:o.betId,
+    market:o.itemDescription?.marketDesc||o.marketDesc||null,
+    event:o.itemDescription?.eventDesc||null,
+    runner:o.itemDescription?.runnerDesc||null,
+    outcome:o.betOutcome||null, // 'WON' | 'LOST'
+    odds:round2(o.priceMatched),
+    stake:round2(o.sizeSettled),
+    profit:round2(o.profit),
+    placedDate:o.placedDate||null,
+    settledDate:o.settledDate||null
+  };
 }
 
-function n(v) { const x = Number(v); return Number.isFinite(x) ? x : 0; }
+function adaptCurrentOrder(o){
+  return {
+    betId:o.betId,
+    marketId:o.marketId,
+    selectionId:o.selectionId,
+    side:o.side||null, // 'BACK' | 'LAY'
+    status:o.status||null, // 'EXECUTION_COMPLETE' | 'EXECUTABLE'
+    odds:round2(o.priceSize?.price ?? o.averagePriceMatched),
+    stake:round2(o.priceSize?.size ?? o.sizeRemaining),
+    sizeMatched:round2(o.sizeMatched),
+    placedDate:o.placedDate||null
+  };
+}
 
-export default async function handler(req, res) {
-  res.setHeader("Cache-Control", "no-store");
-  if (req.method !== "GET") return res.status(405).json({ ok: false, error: "Metodo non consentito" });
-  try {
-    const session = await certLogin();
-    const now = new Date();
-    const from = new Date(now.getTime() - 31 * 86400000).toISOString();
-    const [funds, current, cleared] = await Promise.all([
-      rpc(session.token, session.appKey, "AccountAPING/v1.0/getAccountFunds", { wallet: "ITALIAN" }),
-      rpc(session.token, session.appKey, "SportsAPING/v1.0/listCurrentOrders", { orderProjection: "ALL", orderBy: "BY_BET", sortDir: "EARLIEST_TO_LATEST", fromRecord: 0, recordCount: 1000, includeItemDescription: true }, "betting"),
-      rpc(session.token, session.appKey, "SportsAPING/v1.0/listClearedOrders", { betStatus: "SETTLED", settledDateRange: { from, to: now.toISOString() }, groupBy: "BET", includeItemDescription: true, locale: "it", fromRecord: 0, recordCount: 1000 }, "betting")
-    ]);
+export default async function handler(req,res){
+  res.setHeader('Cache-Control','no-store');
+  if(!SUPA_URL || !SERVICE_KEY)
+    return res.status(500).json({error:'SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY non configurata'});
 
-    const settled = Array.isArray(cleared?.clearedOrders) ? cleared.clearedOrders : [];
-    const open = Array.isArray(current?.currentOrders) ? current.currentOrders : [];
-    const settledProfit = settled.reduce((sum, b) => sum + n(b.profit), 0);
+  try{
+    const rows = await supaRead('betfair_account?select=data_type,payload,received_at');
+    const byType = Object.fromEntries(rows.map(r=>[r.data_type,r]));
+
+    const fundsRow = byType.funds;
+    const funds = fundsRow ? {
+      availableToBetBalance: round2(fundsRow.payload?.availableToBetBalance),
+      exposure: round2(fundsRow.payload?.exposure),
+      retainedCommission: round2(fundsRow.payload?.retainedCommission),
+      exposureLimit: round2(fundsRow.payload?.exposureLimit),
+      receivedAt: fundsRow.received_at
+    } : null;
+
+    const clearedRow = byType.clearedOrders;
+    const clearedRaw = Array.isArray(clearedRow?.payload?.clearedOrders) ? clearedRow.payload.clearedOrders : [];
+    const clearedOrders = clearedRaw.map(adaptClearedOrder).sort((a,b)=>new Date(b.settledDate||0)-new Date(a.settledDate||0));
+    const wins = clearedOrders.filter(o=>o.outcome==='WON').length;
+    const losses = clearedOrders.filter(o=>o.outcome==='LOST').length;
+    const totalProfit = round2(clearedOrders.reduce((s,o)=>s+(o.profit||0),0));
+
+    const currentRow = byType.currentOrders;
+    const currentRaw = Array.isArray(currentRow?.payload?.currentOrders) ? currentRow.payload.currentOrders : [];
+    const currentOrders = currentRaw.map(adaptCurrentOrder);
 
     return res.status(200).json({
-      ok: true,
-      provider: "Betfair Exchange Italy",
-      updatedAt: new Date().toISOString(),
-      funds: {
-        availableToBetBalance: n(funds?.availableToBetBalance),
-        exposure: n(funds?.exposure),
-        balance: n(funds?.balance),
-        creditLimit: n(funds?.creditLimit),
-        pointsBalance: n(funds?.pointsBalance)
-      },
-      period: { from, to: now.toISOString(), days: 31 },
-      settled: { count: settled.length, profit: settledProfit, orders: settled.slice(0, 100) },
-      currentOrders: { count: open.length, orders: open.slice(0, 100) }
+      funds,
+      clearedOrders: { items:clearedOrders, count:clearedOrders.length, wins, losses, totalProfit, receivedAt:clearedRow?.received_at||null },
+      currentOrders: { items:currentOrders, count:currentOrders.length, receivedAt:currentRow?.received_at||null },
+      disclaimer:'Dati reali dal tuo conto Betfair, sincronizzati dal bridge locale. Lo storico copre gli ultimi 90 giorni.'
     });
-  } catch (error) {
-    return res.status(502).json({ ok: false, provider: "Betfair Exchange Italy", error: error?.message || String(error) });
+  }catch(e){
+    return res.status(500).json({error:e?.message||String(e)});
   }
 }

@@ -225,11 +225,19 @@ async function handler(req,res){
         const support=(hs&&as?50:30)+(modelSample>=3?50:25);
         const h2hNote=h2h.count?` Precedenti diretti: ${h2h.record}.`:'';
         const venueNote=(hVenue.venueOnly?` Forma casalinga ${f.home} sulle ultime ${hVenue.sample}.`:'')+(aVenue.venueOnly?` Forma in trasferta ${f.away} sulle ultime ${aVenue.sample}.`:'');
-        const reason=buildReason(o.value,blended,f.home,f.away,hs,as,hm,am)+` Valore atteso stimato: ${edge>=0?'+':''}${round(edge*100)}%.`+venueNote+h2hNote;
-        const warnings=[...(modelSample<3?['Campione gol/forma incompleto (meno di 3 partite recenti nel ruolo)']:[]),...(!hs||!as?['Classifica non disponibile per una delle due squadre']:[]),...(edge<0?['Valore atteso negativo secondo il modello: la quota non compensa il rischio stimato']:[]),...(!h2h.count?['Nessun precedente diretto trovato nel periodo analizzato']:[])];
+        // Movimento quota: segnale di mercato puro, indipendente dal nostro modello — nasce
+        // da come si muovono i soldi reali su Betfair nel tempo, non da un nostro calcolo.
+        // Piccolo correttivo (max ±10%) solo sull'ordinamento tra le proposte, mai sulla
+        // probabilità "ufficiale" mostrata. Serve una quota precedente di almeno 45 minuti
+        // fa (vedi loadBetfairSnapshot): sotto quella soglia non c'è correzione (driftFactor=1).
+        const driftFactor=o.drift!=null?clamp(1-o.drift*0.5,0.9,1.1):1;
+        const driftNote=o.drift!=null?` Quota Betfair ${o.drift<0?'in calo':o.drift>0?'in salita':'stabile'} rispetto a ${o.driftGapMin} minuti fa (${o.drift>=0?'+':''}${round(o.drift*100)}%).`:'';
+        const reason=buildReason(o.value,blended,f.home,f.away,hs,as,hm,am)+` Valore atteso stimato: ${edge>=0?'+':''}${round(edge*100)}%.`+venueNote+h2hNote+driftNote;
+        const warnings=[...(modelSample<3?['Campione gol/forma incompleto (meno di 3 partite recenti nel ruolo)']:[]),...(!hs||!as?['Classifica non disponibile per una delle due squadre']:[]),...(edge<0?['Valore atteso negativo secondo il modello: la quota non compensa il rischio stimato']:[]),...(!h2h.count?['Nessun precedente diretto trovato nel periodo analizzato']:[]),...(o.drift==null?['Movimento quota non disponibile: serve che il bridge sia stato lanciato più volte oggi con almeno 45 minuti di distanza']:[])];
         scenarios.push({
           home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,bookmaker:'Betfair Exchange',
           quoteAgeMin:o.quoteAgeMin??null,quoteFreshnessScore:null,liquidity:o.liquidity??null,
+          oddsDrift:o.drift!=null?round(o.drift*1000)/10:null,oddsDriftGapMin:o.driftGapMin??null,
           prob:round(blended),pStat:round(modelProb),pFreq:null,pMarket:round(marketImplied),pFair:round(blended),
           edge:round(edge*1000)/10,score:round(edge*1000)/10,topSelectionScore:round(blended),confidence:round(blended),
           analysisSupport:Math.round(clamp(support,0,100)),modelReady:true,topEligible:true,modelSample,
@@ -245,7 +253,7 @@ async function handler(req,res){
           // dati (poco supporto) conta meno di uno leggermente più basso ma ben supportato.
           // L'edge mostrato all'utente (sopra) resta quello vero e non cambia: cambia solo
           // come le proposte vengono messe in ordine tra loro.
-          qualityAdjustedEdge:edge*(0.5+0.5*clamp(support/100,0,1)),
+          qualityAdjustedEdge:edge*(0.5+0.5*clamp(support/100,0,1))*driftFactor,
           _homeMatches:hm,_awayMatches:am,
           fieldAnalysis:{reason,confidence:round(blended),confidenceLabel:blended>=70?'Alta':blended>=55?'Media':'Bassa',warnings}
         });
@@ -860,7 +868,51 @@ function walk(v,cb){if(!v||typeof v!=='object')return;cb(v);if(Array.isArray(v))
 async function supaRead(url,key,path){const r=await fetch(`${url}/rest/v1/${path}`,{headers:{apikey:key,Authorization:`Bearer ${key}`}});const text=await r.text();if(!r.ok)throw new Error(`Supabase ${r.status}: ${text.slice(0,400)}`);return text?JSON.parse(text):[];}
 function unwrapCatalogue(payload){const out=[];const walkCat=v=>{if(Array.isArray(v)){for(const x of v)walkCat(x);return;}if(v&&typeof v==='object'){if(Array.isArray(v.result)){for(const x of v.result)walkCat(x);return;}if(v.marketId)out.push(v);}};walkCat(payload);return out;}
 function bestBack(r){const p=Number(r?.backPrice);if(p>1&&Number.isFinite(p))return p;const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];return xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x)).sort((a,b)=>b-a)[0]??null;}
-async function loadBetfairSnapshot(url,key){try{const cat=await supaRead(url,key,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');const books=await supaRead(url,key,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=3000');const latest=new Map();for(const r of books){if(r?.market_id&&!latest.has(String(r.market_id)))latest.set(String(r.market_id),r);}const fixtures=new Map();for(const m of unwrapCatalogue(cat[0]?.payload)){const name=String(m.marketName||'');if(!/match odds|1x2|esito finale|over|under/i.test(name))continue;const b=latest.get(String(m.marketId));if(!b)continue;const runners=(Array.isArray(b.payload?.runners)?b.payload.runners:[]).map(r=>({selectionId:r.selectionId,status:r.status,backPrice:bestBack(r),backSize:r.backSize??null,layPrice:null,name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName:null)||String(r.selectionId)}));const item={marketId:String(m.marketId),marketName:name,event:m.event||null,competition:m.competition||null,receivedAt:b.received_at||m.received_at,runners};const en=String(m.event?.name||'');const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);if(p.length<2)continue;const keyPair=normalizePair(p[0],p.slice(1).join(' '));if(!fixtures.has(keyPair))fixtures.set(keyPair,[]);fixtures.get(keyPair).push(item);}return{fixtures,catalogueMarkets:unwrapCatalogue(cat[0]?.payload).length,bookMarkets:latest.size,error:null};}catch(e){return{fixtures:new Map(),catalogueMarkets:0,bookMarkets:0,error:e?.message||String(e)};}}
+async function loadBetfairSnapshot(url,key){
+  try{
+    const cat=await supaRead(url,key,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');
+    const books=await supaRead(url,key,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=3000');
+    // "latest": la sincronizzazione più recente per ogni mercato (prima incontrata, essendo
+    // l'elenco ordinato dal più recente). "earliest": la più vecchia ancora presente nella
+    // finestra scaricata — se il bridge è stato lanciato più volte oggi, permette di vedere
+    // come si è mossa la quota nel tempo (segnale di mercato indipendente dal nostro modello).
+    const latest=new Map(), earliest=new Map();
+    for(const r of books){
+      if(!r?.market_id) continue;
+      const mid=String(r.market_id);
+      if(!latest.has(mid)) latest.set(mid,r);
+      earliest.set(mid,r); // sovrascritto a ogni riga: l'ultimo assegnato è il più vecchio incontrato
+    }
+    const fixtures=new Map();
+    for(const m of unwrapCatalogue(cat[0]?.payload)){
+      const name=String(m.marketName||'');
+      if(!/match odds|1x2|esito finale|over|under/i.test(name))continue;
+      const b=latest.get(String(m.marketId));
+      if(!b)continue;
+      // La quota "precedente" conta solo se è di almeno 45 minuti più vecchia di quella
+      // attuale: altrimenti sarebbe solo rumore tra due batch della stessa sincronizzazione.
+      const eb=earliest.get(String(m.marketId));
+      const priorGapMin=eb?(new Date(b.received_at).getTime()-new Date(eb.received_at).getTime())/60000:0;
+      const priorRunners=(eb&&priorGapMin>=45)?(Array.isArray(eb.payload?.runners)?eb.payload.runners:[]):null;
+      const runners=(Array.isArray(b.payload?.runners)?b.payload.runners:[]).map(r=>{
+        const priorR=priorRunners?priorRunners.find(pr=>String(pr?.selectionId)===String(r.selectionId)):null;
+        return {
+          selectionId:r.selectionId,status:r.status,backPrice:bestBack(r),backSize:r.backSize??null,layPrice:null,
+          priorBackPrice:priorR?bestBack(priorR):null,priorGapMin:priorR?Math.round(priorGapMin):null,
+          name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName:null)||String(r.selectionId)
+        };
+      });
+      const item={marketId:String(m.marketId),marketName:name,event:m.event||null,competition:m.competition||null,receivedAt:b.received_at||m.received_at,runners};
+      const en=String(m.event?.name||'');
+      const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
+      if(p.length<2)continue;
+      const keyPair=normalizePair(p[0],p.slice(1).join(' '));
+      if(!fixtures.has(keyPair))fixtures.set(keyPair,[]);
+      fixtures.get(keyPair).push(item);
+    }
+    return{fixtures,catalogueMarkets:unwrapCatalogue(cat[0]?.payload).length,bookMarkets:latest.size,error:null};
+  }catch(e){return{fixtures:new Map(),catalogueMarkets:0,bookMarkets:0,error:e?.message||String(e)};}
+}
 function findBestBetfairFixture(home,away,fixtures){if(!home||!away)return null;const exact=fixtures.get(normalizePair(home,away));if(exact)return exact;const rev=fixtures.get(normalizePair(away,home));if(rev)return rev;let best=null,scoreBest=0;for(const [,ms] of fixtures){const en=String(ms?.[0]?.event?.name||'');const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);if(p.length<2)continue;const bh=p[0],ba=p.slice(1).join(' ');const a=teamSimilarity(home,bh),b=teamSimilarity(away,ba),c=teamSimilarity(home,ba),d=teamSimilarity(away,bh);const direct=(a+b)/2,reverse=(c+d)/2,score=Math.max(direct,reverse);if(Math.max(a,c)>=.50&&Math.max(b,d)>=.50&&score>scoreBest){best=ms;scoreBest=score;}}return best;}
 function extractBetfairOdds(markets,requestedMarket,home,away){
   const out=[];
@@ -894,7 +946,12 @@ function extractBetfairOdds(markets,requestedMarket,home,away){
       }
       if(value){
         const age=m.receivedAt?Math.max(0,(Date.now()-new Date(m.receivedAt).getTime())/60000):null;
-        out.push({value,odd,quoteAgeMin:age,liquidity:r.backSize??null});
+        // Movimento quota: se abbiamo una quota precedente abbastanza distanziata nel tempo,
+        // calcoliamo di quanto è cambiata in percentuale. Negativo = quota scesa (il mercato
+        // sta scommettendo di più su questo esito) = segnale indipendente dal nostro modello.
+        const priorOdd=Number(r.priorBackPrice);
+        const drift=(Number.isFinite(priorOdd)&&priorOdd>1)?(odd-priorOdd)/priorOdd:null;
+        out.push({value,odd,quoteAgeMin:age,liquidity:r.backSize??null,drift,driftGapMin:r.priorGapMin??null});
       }
     }
   }
