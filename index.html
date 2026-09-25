@@ -614,6 +614,7 @@ body[data-theme="light"] .archive-item .bet-match-card{background:#f7f9fc!import
 </section>
 
 <div class="today-layout">
+<section class="card tab-section active" data-section="today" id="systemStatusCard"><div style="display:flex;align-items:center;justify-content:space-between"><h2 style="margin-bottom:0">🩺 Stato del sistema</h2><button class="secondary" type="button" style="width:auto;padding:6px 10px;font-size:12px" onclick="loadSystemStatus(true)">↻</button></div><div id="systemStatusBody" style="margin-top:10px" class="small">Caricamento…</div></section>
 <section class="card tab-section active" data-section="today" style="display:none" aria-hidden="true"><h2>🌍 Campionato</h2><select id="leagueSelect" class="league-selector" aria-label="Seleziona campionato"></select><p class="small"><b>“Tutti i campionati selezionati”</b> usa il perimetro europeo di AI DEL PALLONE e le coppe UEFA. Le gare con calcio d’inizio fuori dalla finestra italiana 11:00–22:00 vengono escluse automaticamente. Puoi anche scegliere un singolo campionato dal menu.</p></section>
 
 <section class="card tab-section active" data-section="today"><h2>📅 Analisi giornaliera</h2><div class="row"><input id="date" type="date"><select id="timeWindow" aria-label="Finestra oraria"><option value="all">🕐 Tutto il giorno · 11:00–22:00</option><option value="afternoon1">☀️ Primo pomeriggio · 13:00–16:00</option><option value="afternoon2">🌤️ Tardo pomeriggio · 16:01–19:00</option><option value="evening">🌙 Sera · 19:01–22:00</option></select><select id="market"><option value="all">Tutti i mercati (1X2 + Under/Over 2.5-3.5 + Goal/No Goal)</option><option value="totals">Under / Over 2.5 · 3.5 + Goal/No Goal</option><option value="1x2">1X2</option></select></div><button id="run">🔎 Analizza dati + statistiche</button><div id="status" class="status" style="margin-top:11px">Pronto.</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="small">Il modello usa football-data.org come fonte primaria (calendario, classifica, forma casa/trasferta, scontri diretti sugli ultimi 60 giorni), con ESPN e API-Football come riserva automatica se una fonte non copre un campionato. Betfair Exchange è l'unica fonte delle quote. Mercati: 1X2, Under/Over 2.5-3.5 e Goal/No Goal, quota massima 4.00. Le 5 proposte sono scelte per valore atteso (stima del modello confrontata con la quota reale) e diversificate per fascia di rischio: ~2 sicure, ~2 equilibrate, ~1 value. Si privilegiano i migliori 8 campionati europei + Serie B + coppe UEFA; solo se non bastano per arrivare a 5 si allarga agli altri campionati. I risultati restano in cache.</span><button id="refresh" class="secondary" style="width:auto;padding:8px 11px">↻ Aggiorna API</button></div></section>
@@ -650,7 +651,7 @@ body[data-theme="light"] .archive-item .bet-match-card{background:#f7f9fc!import
 
 </div>
 </main>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><script>document.addEventListener('DOMContentLoaded',()=>switchTab('today'));</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><script>document.addEventListener('DOMContentLoaded',()=>{switchTab('today');loadSystemStatus();});</script>
 <script>
 let supabaseClient=null,currentUser=null,syncBusy=false;
 const $=id=>document.getElementById(id);
@@ -1367,6 +1368,39 @@ function renderCalibrationChart(calibRows){
 // render (anche a ogni tasto premuto nel filtro), quindi qui dentro NON si rifà mai la
 // fetch più spesso di ogni 20 secondi — altrimenti si spammerebbe l'endpoint a vuoto.
 let _betfairAccountLastFetch=0, _betfairAccountCache=null;
+// Pannello "salute del sistema": legge un riepilogo già pronto, zero chiamate esterne
+// nuove. Si carica una volta all'avvio dell'app; il pulsante ↻ forza un ricaricamento.
+async function loadSystemStatus(force){
+ const box=document.getElementById('systemStatusBody');
+ if(!box) return;
+ box.textContent='Caricamento…';
+ try{
+  const r=await fetch('/api/system-status'+(force?`?t=${Date.now()}`:''),{cache:'no-store'});
+  const d=await r.json();
+  if(!r.ok||d.error){box.innerHTML=`Non disponibile: ${esc(d.error||'errore sconosciuto')}`;return}
+  const dot=(v)=>v===true?'🟢':v===false?'🔴':'⚪️';
+  const label=(v)=>v===true?'OK':v===false?'Non risponde':'Non provato in questa analisi';
+  const la=d.lastAnalysis;
+  const rows=[];
+  if(la){
+   rows.push(`<div>${dot(la.footballDataWorking)} <b>football-data.org</b> — ${label(la.footballDataWorking)}</div>`);
+   rows.push(`<div>${dot(la.espnWorking)} <b>ESPN</b> — ${label(la.espnWorking)}</div>`);
+   rows.push(`<div>${dot(la.apiFootballWorking)} <b>API-Football</b> — ${label(la.apiFootballWorking)}</div>`);
+   rows.push(`<div style="margin-top:6px">Ultima analisi: ${la.minutesAgo!=null?la.minutesAgo+' minuti fa':'—'} · ${la.picksReturned??0} proposte · pool ${esc(la.poolUsed||'—')}</div>`);
+  }else{
+   rows.push(`<div>⚪️ Nessuna analisi ancora eseguita — premi "Analizza dati" qui sotto per vedere lo stato reale.</div>`);
+  }
+  const bf=d.betfairBridge;
+  rows.push(`<div style="margin-top:6px">${bf?.lastSync?(bf.stale?'🟠':'🟢'):'🔴'} <b>Bridge Betfair</b> — ${bf?.lastSync?(bf.minutesAgo+' minuti fa'+(bf.stale?' (probabilmente fuori finestra, rilancialo)':'')):'mai sincronizzato'}</div>`);
+  const af=d.apiFootballBudget;
+  if(af) rows.push(`<div>📊 <b>Budget API-Football oggi</b>: ${af.usedToday}/${af.limit} usate</div>`);
+  if(d.betfairFunds?.availableToBetBalance!=null) rows.push(`<div>💳 <b>Saldo Betfair</b>: ${Number(d.betfairFunds.availableToBetBalance).toFixed(2)} € (${d.betfairFunds.minutesAgo} minuti fa)</div>`);
+  box.innerHTML=rows.join('');
+ }catch(e){
+  box.innerHTML=`Errore di rete: ${esc(e?.message||String(e))}`;
+ }
+}
+
 async function loadBetfairAccount(force){
  const box=document.getElementById('betfairAccountCard');
  if(!box) return;
