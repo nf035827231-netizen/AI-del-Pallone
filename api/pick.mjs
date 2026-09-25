@@ -365,6 +365,24 @@ async function handler(req,res){
   const disclaimer=`Le probabilità e il "valore atteso" sono stime statistiche basate su gol recenti, classifica e quote di mercato (max ${MAX_ODDS.toFixed(2)}, mercati 1X2 e Over/Under 2.5-3.5). Non sono garanzie di vincita: nessun modello può assicurare un esito. Se in una giornata non ci sono abbastanza partite reali quotate nel pool privilegiato o in quello esteso, il sistema non ne inventa: completa con mercati alternativi sugli stessi incontri o restituisce meno di ${TARGET_PICKS} proposte.`;
   const finalPicks=candidates.slice(0,TARGET_PICKS);
   await logModelPredictions(supaUrl,serviceKey,date,finalPicks);
+
+  // Riepilogo di stato per il pannello "salute del sistema": salvato una volta per
+  // richiesta, a costo zero (nessuna nuova chiamata esterna, solo i risultati che
+  // abbiamo già ottenuto sopra). Il pannello lo legge senza mai testare le fonti dal vivo.
+  try{
+    const footballDataAttempts=diagnostics.filter(d=>d.provider==='football-data-org');
+    const espnAttempts=diagnostics.filter(d=>d.provider==='espn');
+    const apiFootballAttempts=diagnostics.filter(d=>d.provider==='api-football-fallback'&&d.league);
+    const footballDataWorking=footballDataAttempts.length?footballDataAttempts.some(d=>!d.matchesError&&!d.standingsError):null;
+    const espnWorking=espnAttempts.length?espnAttempts.some(d=>!d.scoreError&&!d.standingsError):null;
+    const apiFootballWorking=apiFootballAttempts.length?apiFootballAttempts.some(d=>!d.fixturesError&&!d.standingsError):null;
+    await supaWrite(supaUrl,serviceKey,'system_status?on_conflict=id',[{
+      id:'latest',checked_at:new Date().toISOString(),analyzed_date:date,
+      football_data_working:footballDataWorking,espn_working:espnWorking,api_football_working:apiFootballWorking,
+      picks_returned:candidates.length,pool_used:usedFallbackPool?'esteso':'privilegiato',calibration_factor:calibrationFactor
+    }]);
+  }catch{ /* il pannello di stato è un extra: non deve mai far fallire l'analisi principale */ }
+
   const data={date,fixtures:fixtures.length,analyzed:quoted.length,requests,requestBreakdown,candidates:candidates.slice(0,120),liveFixtures,diagnostics,disclaimer,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?120_000:600_000),data});
   res.setHeader('Cache-Control','no-store');
