@@ -803,7 +803,7 @@ async function hydrateBetfairPicks(picks){
     const rows=box.querySelector('.betfair-rows');
     try{
       const q=new URLSearchParams({home,away,market:marketWanted});
-      const r=await fetch('/api/betfair-odds?'+q,{cache:'no-store'});
+      const r=await fetch('/api/betfair-sync?'+q,{cache:'no-store'});
       const d=await r.json();
       if(!r.ok||!d.ok) throw new Error(d?.error||'Quote Betfair non disponibili');
       const markets=d.markets||[];
@@ -1375,7 +1375,7 @@ async function loadSystemStatus(force){
  if(!box) return;
  box.textContent='Caricamento…';
  try{
-  const r=await fetch('/api/system-status'+(force?`?t=${Date.now()}`:''),{cache:'no-store'});
+  const r=await fetch('/api/pick?status=1'+(force?`&t=${Date.now()}`:''),{cache:'no-store'});
   const d=await r.json();
   if(!r.ok||d.error){box.innerHTML=`Non disponibile: ${esc(d.error||'errore sconosciuto')}`;return}
   const dot=(v)=>v===true?'🟢':v===false?'🔴':'⚪️';
