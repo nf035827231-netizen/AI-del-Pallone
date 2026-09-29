@@ -50,6 +50,14 @@ async function handler(req,res){
   const supaUrl=process.env.SUPABASE_URL||'';
   const serviceKey=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
   const u=new URL(req.url,'https://vercel.local');
+
+  // Pannello "salute del sistema": era un file a parte (system-status.mjs), accorpato
+  // qui per restare sotto il limite di funzioni serverless del piano Vercel gratuito.
+  // Nessuna chiamata esterna: legge solo righe già scritte da un'analisi precedente.
+  if(u.searchParams.get('status')){
+    return handleSystemStatus(res,supaUrl,serviceKey);
+  }
+
   const date=u.searchParams.get('date');
   const raw=u.searchParams.get('leagues')||'';
   const requestedCodes=raw==='EUROPE'?DEFAULT_CODES:(raw?raw.split(',').map(normalizeLeague).filter(Boolean):DEFAULT_CODES);
@@ -976,4 +984,39 @@ function extractBetfairOdds(markets,requestedMarket,home,away){
   const best=new Map();
   for(const x of out){const old=best.get(x.value);if(!old||((x.quoteAgeMin??1e99)<(old.quoteAgeMin??1e99))||(x.quoteAgeMin===old.quoteAgeMin&&x.odd>old.odd))best.set(x.value,x);}
   return [...best.values()];
+}
+
+// Pannello di stato: aggrega dati già scritti altrove, zero chiamate esterne nuove
+// (era system-status.mjs, accorpato qui per il limite di funzioni Vercel).
+const API_FOOTBALL_DAILY_BUDGET_STATUS=85;
+function minutesAgo(iso){ if(!iso) return null; return Math.round((Date.now()-new Date(iso).getTime())/60000); }
+
+async function handleSystemStatus(res,supaUrl,serviceKey){
+  res.setHeader('Cache-Control','no-store');
+  if(!supaUrl||!serviceKey) return res.status(500).json({error:'SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY non configurata'});
+  try{
+    const today=new Date().toISOString().slice(0,10);
+    const [statusRows,catalogueRows,budgetRows,fundsRows]=await Promise.all([
+      supaRead(supaUrl,serviceKey,'system_status?select=*&id=eq.latest').catch(()=>[]),
+      supaRead(supaUrl,serviceKey,'betfair_quotes?select=received_at&data_type=eq.catalogue&order=received_at.desc&limit=1').catch(()=>[]),
+      supaRead(supaUrl,serviceKey,`api_football_daily?select=calls_used&usage_date=eq.${today}`).catch(()=>[]),
+      supaRead(supaUrl,serviceKey,'betfair_account?select=payload,received_at&data_type=eq.funds').catch(()=>[])
+    ]);
+    const status=statusRows?.[0]||null;
+    const bridgeLastSync=catalogueRows?.[0]?.received_at||null;
+    const apiFootballUsed=budgetRows?.[0]?.calls_used??0;
+    const fundsRow=fundsRows?.[0]||null;
+    return res.status(200).json({
+      lastAnalysis:status?{
+        checkedAt:status.checked_at,minutesAgo:minutesAgo(status.checked_at),analyzedDate:status.analyzed_date,
+        footballDataWorking:status.football_data_working,espnWorking:status.espn_working,apiFootballWorking:status.api_football_working,
+        picksReturned:status.picks_returned,poolUsed:status.pool_used,calibrationFactor:status.calibration_factor
+      }:null,
+      betfairBridge:{lastSync:bridgeLastSync,minutesAgo:minutesAgo(bridgeLastSync),stale:bridgeLastSync?minutesAgo(bridgeLastSync)>20*60:true},
+      apiFootballBudget:{usedToday:apiFootballUsed,limit:API_FOOTBALL_DAILY_BUDGET_STATUS,remaining:Math.max(0,API_FOOTBALL_DAILY_BUDGET_STATUS-apiFootballUsed)},
+      betfairFunds:fundsRow?{availableToBetBalance:fundsRow.payload?.availableToBetBalance??null,minutesAgo:minutesAgo(fundsRow.received_at)}:null
+    });
+  }catch(e){
+    return res.status(500).json({error:e?.message||String(e)});
+  }
 }
