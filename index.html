@@ -771,7 +771,7 @@ async function run(){
   // Salviamo solo risposte utili: così un secondo click non consuma API.
   if(Number(d.fixtures||0)>0 && (cs.length>0 || live.length>0)) writeApiCache(d);
  }catch(e){status("🔴 "+e.message,"err");$("pick").innerHTML='<div class="empty">Controlla la configurazione API.</div>'}
- finally{clearInterval(progressTimer);if(runBtn){runBtn.disabled=false;runBtn.textContent=oldRunText}}
+ finally{clearInterval(progressTimer);if(runBtn){runBtn.disabled=false;runBtn.textContent=oldRunText}loadSystemStatus(true);}
 }
 function renderAIPicks(picks){
  const box=$('aiPicks'); const dateBox=$('aiDateLabel');

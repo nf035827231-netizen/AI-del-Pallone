@@ -142,7 +142,7 @@ run_one_sync(){
     BODY="{\"type\":\"funds\",\"payload\":$(cat "$FUNDS_F") }"
     H=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 -X POST \
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-      --data "$BODY" "$BASE/api/betfair-account-sync")
+      --data "$BODY" "$BASE/api/betfair-account")
     [ "$H" = "200" ] && echo "  ✅ Saldo sincronizzato." || echo "  ⚠️ Saldo: Vercel HTTP $H."
   fi
 
@@ -156,7 +156,7 @@ run_one_sync(){
     BODY="{\"type\":\"clearedOrders\",\"payload\":$(cat "$CLEARED_F") }"
     H=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 -X POST \
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-      --data "$BODY" "$BASE/api/betfair-account-sync")
+      --data "$BODY" "$BASE/api/betfair-account")
     [ "$H" = "200" ] && echo "  ✅ Storico scommesse sincronizzato (ultimi 90 giorni)." || echo "  ⚠️ Storico: Vercel HTTP $H."
   fi
 
@@ -169,7 +169,7 @@ run_one_sync(){
     BODY="{\"type\":\"currentOrders\",\"payload\":$(cat "$CURRENT_F") }"
     H=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 -X POST \
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-      --data "$BODY" "$BASE/api/betfair-account-sync")
+      --data "$BODY" "$BASE/api/betfair-account")
     [ "$H" = "200" ] && echo "  ✅ Scommesse aperte sincronizzate." || echo "  ⚠️ Aperte: Vercel HTTP $H."
   fi
 
