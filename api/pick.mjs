@@ -240,8 +240,15 @@ async function handler(req,res){
         // fa (vedi loadBetfairSnapshot): sotto quella soglia non c'è correzione (driftFactor=1).
         const driftFactor=o.drift!=null?clamp(1-o.drift*0.5,0.9,1.1):1;
         const driftNote=o.drift!=null?` Quota Betfair ${o.drift<0?'in calo':o.drift>0?'in salita':'stabile'} rispetto a ${o.driftGapMin} minuti fa (${o.drift>=0?'+':''}${round(o.drift*100)}%).`:'';
-        const reason=buildReason(o.value,blended,f.home,f.away,hs,as,hm,am)+` Valore atteso stimato: ${edge>=0?'+':''}${round(edge*100)}%.`+venueNote+h2hNote+driftNote;
-        const warnings=[...(modelSample<3?['Campione gol/forma incompleto (meno di 3 partite recenti nel ruolo)']:[]),...(!hs||!as?['Classifica non disponibile per una delle due squadre']:[]),...(edge<0?['Valore atteso negativo secondo il modello: la quota non compensa il rischio stimato']:[]),...(!h2h.count?['Nessun precedente diretto trovato nel periodo analizzato']:[]),...(o.drift==null?['Movimento quota non disponibile: serve che il bridge sia stato lanciato più volte oggi con almeno 45 minuti di distanza']:[])];
+        // Liquidità: quanto denaro c'è realmente dietro la quota migliore. Una quota con
+        // pochissima liquidità è meno affidabile — rischi di non riuscire a piazzarla a
+        // quel prezzo esatto. Penalità fino al 15% sull'ordinamento (mai sulla probabilità
+        // mostrata), nulla sotto i 200€ di liquidità, nessuna penalità sopra quella soglia.
+        // Se il dato manca, nessuna penalità (mancanza di informazione ≠ segnale negativo).
+        const liquidityFactor=o.liquidity!=null?clamp(0.85+0.15*clamp(o.liquidity/200,0,1),0.85,1):1;
+        const liquidityNote=(o.liquidity!=null&&o.liquidity<200)?` Liquidità Betfair contenuta (${Math.round(o.liquidity)}€ disponibili al prezzo migliore).`:'';
+        const reason=buildReason(o.value,blended,f.home,f.away,hs,as,hm,am)+` Valore atteso stimato: ${edge>=0?'+':''}${round(edge*100)}%.`+venueNote+h2hNote+driftNote+liquidityNote;
+        const warnings=[...(modelSample<3?['Campione gol/forma incompleto (meno di 3 partite recenti nel ruolo)']:[]),...(!hs||!as?['Classifica non disponibile per una delle due squadre']:[]),...(edge<0?['Valore atteso negativo secondo il modello: la quota non compensa il rischio stimato']:[]),...(!h2h.count?['Nessun precedente diretto trovato nel periodo analizzato']:[]),...(o.drift==null?['Movimento quota non disponibile: serve che il bridge sia stato lanciato più volte oggi con almeno 45 minuti di distanza']:[]),...(o.liquidity!=null&&o.liquidity<50?["Liquidità molto bassa: la quota mostrata potrebbe non essere raggiungibile per l'intero importo"]:[])];
         scenarios.push({
           home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,bookmaker:'Betfair Exchange',
           quoteAgeMin:o.quoteAgeMin??null,quoteFreshnessScore:null,liquidity:o.liquidity??null,
@@ -261,7 +268,7 @@ async function handler(req,res){
           // dati (poco supporto) conta meno di uno leggermente più basso ma ben supportato.
           // L'edge mostrato all'utente (sopra) resta quello vero e non cambia: cambia solo
           // come le proposte vengono messe in ordine tra loro.
-          qualityAdjustedEdge:edge*(0.5+0.5*clamp(support/100,0,1))*driftFactor,
+          qualityAdjustedEdge:edge*(0.5+0.5*clamp(support/100,0,1))*driftFactor*liquidityFactor,
           _homeMatches:hm,_awayMatches:am,
           fieldAnalysis:{reason,confidence:round(blended),confidenceLabel:blended>=70?'Alta':blended>=55?'Media':'Bassa',warnings}
         });
@@ -374,6 +381,15 @@ async function handler(req,res){
   const finalPicks=candidates.slice(0,TARGET_PICKS);
   await logModelPredictions(supaUrl,serviceKey,date,finalPicks);
 
+  // Allerta "giornata da evitare": non il warning sulla singola card (quello c'è già),
+  // ma un avviso aggregato quando NESSUNA delle proposte mostrate ha un valore atteso
+  // positivo — cioè quando, secondo il modello, oggi il mercato prezza tutto correttamente
+  // o meglio di noi, su tutta la linea. Un segnale diverso da "una proposta debole in
+  // mezzo ad altre buone": qui è l'intera giornata a non offrire nessun vantaggio reale.
+  const positiveEdgeCount=finalPicks.filter(p=>Number(p.edge)>0).length;
+  const dayAlert=finalPicks.length>0 && positiveEdgeCount===0;
+  const dayAlertMessage=dayAlert?`Nessuna delle ${finalPicks.length} proposte di oggi ha un valore atteso positivo secondo il modello: il mercato sta prezzando tutto correttamente o meglio di noi. Non è un errore del sistema — è un'informazione in sé: oggi potrebbe essere una giornata da osservare soltanto, non da giocare.`:null;
+
   // Riepilogo di stato per il pannello "salute del sistema": salvato una volta per
   // richiesta, a costo zero (nessuna nuova chiamata esterna, solo i risultati che
   // abbiamo già ottenuto sopra). Il pannello lo legge senza mai testare le fonti dal vivo.
@@ -391,7 +407,7 @@ async function handler(req,res){
     }]);
   }catch{ /* il pannello di stato è un extra: non deve mai far fallire l'analisi principale */ }
 
-  const data={date,fixtures:fixtures.length,analyzed:quoted.length,requests,requestBreakdown,candidates:candidates.slice(0,120),liveFixtures,diagnostics,disclaimer,cached:false};
+  const data={date,fixtures:fixtures.length,analyzed:quoted.length,requests,requestBreakdown,candidates:candidates.slice(0,120),liveFixtures,diagnostics,disclaimer,dayAlert,dayAlertMessage,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?120_000:600_000),data});
   res.setHeader('Cache-Control','no-store');
   return res.status(200).json(data);
@@ -798,16 +814,32 @@ const LEAGUE_AVG_GOALS=1.35; // gol/squadra/partita, media plausibile per i camp
 const HOME_ADV=1.12;
 const MAX_GOALS_GRID=8;
 
+// Peso decrescente sulla forma recente: la partita più recente conta per intero, quella
+// prima conta 0.75, quella prima ancora 0.5625, e così via (decadimento geometrico).
+// Prima tutte e 3 le ultime partite pesavano uguale — questo rende il modello più
+// reattivo a un cambio di forma vero (es. nuovo allenatore, infortunio chiave rientrato)
+// invece di "diluirlo" su partite ormai meno rappresentative.
+// IMPORTANTE: "rows" arriva già in ordine cronologico (la più vecchia all'indice 0, la
+// più recente all'ultimo indice) — così la costruiscono recentByVenue/recentThreeForTeams.
+const FORM_DECAY=0.75;
 function goalStats(rows,name){
-  let gf=0,ga=0,n=0;
+  const valid=[];
   for(const m of rows){
     const isHome=teamSimilarity(m.home,name)>=.75;
     const g=isHome?Number(m.score.home):Number(m.score.away);
     const c=isHome?Number(m.score.away):Number(m.score.home);
     if(!Number.isFinite(g)||!Number.isFinite(c))continue;
-    gf+=g;ga+=c;n++;
+    valid.push({g,c});
   }
-  return n?{gf:gf/n,ga:ga/n,n}:null;
+  const n=valid.length;
+  if(!n) return null;
+  let gf=0,ga=0,wsum=0;
+  for(let i=0;i<n;i++){
+    const ageFromMostRecent=n-1-i; // 0 per la partita più recente, cresce andando indietro
+    const w=Math.pow(FORM_DECAY,ageFromMostRecent);
+    gf+=valid[i].g*w; ga+=valid[i].c*w; wsum+=w;
+  }
+  return {gf:gf/wsum,ga:ga/wsum,n};
 }
 
 function factorial(n){let r=1;for(let i=2;i<=n;i++)r*=i;return r;}
