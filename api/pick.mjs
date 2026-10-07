@@ -23,19 +23,18 @@ const ESPN_LEAGUES = {
   EUROQ:{slug:'uefa.euroq',name:'Qualificazioni Europei'}
 };
 
-// "Migliori 8" campionati europei + Serie B + le 3 coppe UEFA: questo è il perimetro
-// privilegiato di default, su richiesta esplicita (niente più nazionali: erano comunque la
-// parte con gli slug ESPN meno certi). Gli altri campionati (elenco sotto) restano come
-// riserva finale, usati solo se questo perimetro non basta per arrivare a 5 proposte.
+// "Migliori 8" campionati europei + le 3 coppe UEFA + le competizioni delle nazionali:
+// questo è il perimetro privilegiato di default. Gli altri campionati (elenco sotto)
+// vengono usati solo come seconda scelta, e solo se serve, per completare le 5 proposte.
 const TOP8=['SA','PL','PD','BL1','FL1','PPL','DED','BEL1'];
 const EURO_CUPS=['CL','EL','ECL'];
-const NATIONAL_CODES=['WCQ','NL','EURO','EUROQ']; // non più nel pool privilegiato; restano come riserva finale
-const PRIORITY_CODES=[...TOP8,'SB',...EURO_CUPS];
+const NATIONAL_CODES=['WCQ','NL','EURO','EUROQ'];
+const PRIORITY_CODES=[...TOP8,...EURO_CUPS,...NATIONAL_CODES];
 const FALLBACK_CODES=Object.keys(ESPN_LEAGUES).filter(c=>!PRIORITY_CODES.includes(c));
 const DEFAULT_CODES=PRIORITY_CODES;
 
-// Mercati che il prodotto vuole analizzare: 1X2, Over/Under 2.5-3.5, Goal/No Goal.
-const ALLOWED_MARKETS=new Set(['1','X','2','Over 2.5','Under 2.5','Over 3.5','Under 3.5','Goal','No Goal']);
+// Mercati che il prodotto vuole analizzare: 1X2 e Over/Under 2.5-3.5. Niente 1.5, 4.5, Goal/No Goal.
+const ALLOWED_MARKETS=new Set(['1','X','2','Over 2.5','Under 2.5','Over 3.5','Under 3.5']);
 // Quota massima 4.00, fissa: non si allarga oltre come si faceva prima con le quote più alte.
 const MAX_ODDS=4.0;
 
@@ -144,7 +143,7 @@ async function handler(req,res){
   }
 
   let {allFixtures,liveFixtures,fixtures}=assembleFixtures(sourceResults,tier1Codes);
-  diagnostics.push({provider:'prematch-gate',pool:'priorità (top8+serieB+coppe)',before:allFixtures.filter(f=>localDate(f.date)===date).length,remaining:fixtures.length,rule:'ESPN data + kickoff futuro; Betfair non decide se una gara è già iniziata'});
+  diagnostics.push({provider:'prematch-gate',pool:'priorità (top8+coppe+nazionali)',before:allFixtures.filter(f=>localDate(f.date)===date).length,remaining:fixtures.length,rule:'ESPN data + kickoff futuro; Betfair non decide se una gara è già iniziata'});
 
   const bf=await loadBetfairSnapshot(supaUrl,serviceKey);
   requests++; requestBreakdown.betfairSnapshot++;
@@ -219,7 +218,7 @@ async function handler(req,res){
         });
       }
     }
-    // Priorità ai migliori 8 campionati + Serie B + coppe UEFA: a parità circa di valore
+    // Priorità ai migliori 8 campionati + coppe UEFA + nazionali: a parità circa di valore
     // atteso, un incontro "prioritario" passa avanti a uno del pool di riserva.
     scenarios.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.edge)-Number(a.edge))||(Number(b.prob)-Number(a.prob)));
     return {quoted,scenarios};
@@ -251,7 +250,7 @@ async function handler(req,res){
 
   // Sempre 5 incontri quando i dati lo permettono, ma senza mai superare quota 4.00 e
   // restando sui mercati 1X2 / Over-Under 2.5-3.5. Prima si prova col pool "privilegiato"
-  // (migliori 8 campionati + Serie B + coppe UEFA); solo se non basta si allarga a tutti
+  // (migliori 8 campionati + coppe UEFA + nazionali); solo se non basta si allarga a tutti
   // i campionati disponibili (pool di riserva), rifacendo lo stesso identico procedimento.
   const TARGET_PICKS=5;
   function pickCandidates(){
@@ -295,7 +294,7 @@ async function handler(req,res){
   // pickCandidates() ha già provato a completare con mercati alternativi sullo stesso incontro,
   // etichettati chiaramente (alternateMarketNote). Qui restano solo se davvero non bastano i dati.
 
-  diagnostics.push({provider:'v157-model',scenarios:scenarios.length,returned:candidates.length,pool:usedFallbackPool?'esteso (tutti i campionati)':'privilegiato (top8+serieB+coppe)',maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],riskMix:candidates.reduce((acc,c)=>{acc[c.riskTier]=(acc[c.riskTier]||0)+1;return acc;},{}),rule:`TOP ${TARGET_PICKS} diversificate per fascia di rischio (≈40% sicure ≤1.80, 40% equilibrate 1.80-2.60, 20% value 2.60-4.00), a parità di fascia per valore atteso (Poisson con forma casa/trasferta + H2H, blended con quota Betfair reale); pool esteso solo se il perimetro privilegiato non basta per ${TARGET_PICKS} proposte`});
+  diagnostics.push({provider:'v157-model',scenarios:scenarios.length,returned:candidates.length,pool:usedFallbackPool?'esteso (tutti i campionati)':'privilegiato (top8+coppe+nazionali)',maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],riskMix:candidates.reduce((acc,c)=>{acc[c.riskTier]=(acc[c.riskTier]||0)+1;return acc;},{}),rule:`TOP ${TARGET_PICKS} diversificate per fascia di rischio (≈40% sicure ≤1.80, 40% equilibrate 1.80-2.60, 20% value 2.60-4.00), a parità di fascia per valore atteso (Poisson con forma casa/trasferta + H2H, blended con quota Betfair reale); pool esteso solo se il perimetro privilegiato non basta per ${TARGET_PICKS} proposte`});
 
   const disclaimer=`Le probabilità e il "valore atteso" sono stime statistiche basate su gol recenti, classifica e quote di mercato (max ${MAX_ODDS.toFixed(2)}, mercati 1X2 e Over/Under 2.5-3.5). Non sono garanzie di vincita: nessun modello può assicurare un esito. Se in una giornata non ci sono abbastanza partite reali quotate nel pool privilegiato o in quello esteso, il sistema non ne inventa: completa con mercati alternativi sugli stessi incontri o restituisce meno di ${TARGET_PICKS} proposte.`;
   const finalPicks=candidates.slice(0,TARGET_PICKS);
@@ -695,43 +694,4 @@ function unwrapCatalogue(payload){const out=[];const walkCat=v=>{if(Array.isArra
 function bestBack(r){const p=Number(r?.backPrice);if(p>1&&Number.isFinite(p))return p;const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];return xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x)).sort((a,b)=>b-a)[0]??null;}
 async function loadBetfairSnapshot(url,key){try{const cat=await supaRead(url,key,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');const books=await supaRead(url,key,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=3000');const latest=new Map();for(const r of books){if(r?.market_id&&!latest.has(String(r.market_id)))latest.set(String(r.market_id),r);}const fixtures=new Map();for(const m of unwrapCatalogue(cat[0]?.payload)){const name=String(m.marketName||'');if(!/match odds|1x2|esito finale|over|under/i.test(name))continue;const b=latest.get(String(m.marketId));if(!b)continue;const runners=(Array.isArray(b.payload?.runners)?b.payload.runners:[]).map(r=>({selectionId:r.selectionId,status:r.status,backPrice:bestBack(r),backSize:r.backSize??null,layPrice:null,name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName:null)||String(r.selectionId)}));const item={marketId:String(m.marketId),marketName:name,event:m.event||null,competition:m.competition||null,receivedAt:b.received_at||m.received_at,runners};const en=String(m.event?.name||'');const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);if(p.length<2)continue;const keyPair=normalizePair(p[0],p.slice(1).join(' '));if(!fixtures.has(keyPair))fixtures.set(keyPair,[]);fixtures.get(keyPair).push(item);}return{fixtures,catalogueMarkets:unwrapCatalogue(cat[0]?.payload).length,bookMarkets:latest.size,error:null};}catch(e){return{fixtures:new Map(),catalogueMarkets:0,bookMarkets:0,error:e?.message||String(e)};}}
 function findBestBetfairFixture(home,away,fixtures){if(!home||!away)return null;const exact=fixtures.get(normalizePair(home,away));if(exact)return exact;const rev=fixtures.get(normalizePair(away,home));if(rev)return rev;let best=null,scoreBest=0;for(const [,ms] of fixtures){const en=String(ms?.[0]?.event?.name||'');const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);if(p.length<2)continue;const bh=p[0],ba=p.slice(1).join(' ');const a=teamSimilarity(home,bh),b=teamSimilarity(away,ba),c=teamSimilarity(home,ba),d=teamSimilarity(away,bh);const direct=(a+b)/2,reverse=(c+d)/2,score=Math.max(direct,reverse);if(Math.max(a,c)>=.50&&Math.max(b,d)>=.50&&score>scoreBest){best=ms;scoreBest=score;}}return best;}
-function extractBetfairOdds(markets,requestedMarket,home,away){
-  const out=[];
-  const totals=requestedMarket==='all'||requestedMarket==='totals';
-  const one=requestedMarket==='all'||requestedMarket==='1x2';
-  const hn=normalize(home),an=normalize(away);
-  for(const m of(Array.isArray(markets)?markets:[])){
-    const name=String(m.marketName||'');
-    const isMatch=/match odds|1x2|esito finale/i.test(name);
-    const isBtts=/both teams to score|goal.*no.?goal|gg.*ng/i.test(name);
-    const lm=name.match(/(?:under.*over|over.*under|under\s*\/\s*over|over\s*\/\s*under)[^0-9]*(1\.5|2\.5|3\.5|4\.5)/i);
-    const line=lm?Number(lm[1]):null;
-    if(!isMatch&&!isBtts&&!(totals&&line))continue;
-    if(isMatch&&!one)continue;
-    if(isBtts&&!totals)continue; // Goal/No Goal viaggia insieme ai mercati "goal" (totals/all)
-    for(const r of(Array.isArray(m.runners)?m.runners:[])){
-      const odd=Number(r.backPrice);
-      if(!(odd>1&&Number.isFinite(odd)))continue;
-      const label=normalize(r.name);
-      let value=null;
-      if(isMatch){
-        if(label==='1'||label==='home'||label==='casa'||label===hn||label.includes(hn))value='1';
-        else if(['x','draw','pareggio','tie','the draw'].includes(label))value='X';
-        else if(label==='2'||label==='away'||label==='trasferta'||label===an||label.includes(an))value='2';
-      }else if(isBtts){
-        if(['yes','si','sì','gol','goal'].includes(label))value='Goal';
-        else if(['no','nogol','no goal'].includes(label))value='No Goal';
-      }else{
-        if(/\bover\b/i.test(r.name))value=`Over ${line.toFixed(1)}`;
-        else if(/\bunder\b/i.test(r.name))value=`Under ${line.toFixed(1)}`;
-      }
-      if(value){
-        const age=m.receivedAt?Math.max(0,(Date.now()-new Date(m.receivedAt).getTime())/60000):null;
-        out.push({value,odd,quoteAgeMin:age,liquidity:r.backSize??null});
-      }
-    }
-  }
-  const best=new Map();
-  for(const x of out){const old=best.get(x.value);if(!old||((x.quoteAgeMin??1e99)<(old.quoteAgeMin??1e99))||(x.quoteAgeMin===old.quoteAgeMin&&x.odd>old.odd))best.set(x.value,x);}
-  return [...best.values()];
-}
+function extractBetfairOdds(markets,requestedMarket,home,away){const out=[];const totals=requestedMarket==='all'||requestedMarket==='totals',one=requestedMarket==='all'||requestedMarket==='1x2';const hn=normalize(home),an=normalize(away);for(const m of(Array.isArray(markets)?markets:[])){const name=String(m.marketName||'');const isMatch=/match odds|1x2|esito finale/i.test(name);const lm=name.match(/(?:under.*over|over.*under|under\s*\/\s*over|over\s*\/\s*under)[^0-9]*(1\.5|2\.5|3\.5|4\.5)/i);const line=lm?Number(lm[1]):null;if(!isMatch&&!(totals&&line))continue;if(isMatch&&!one)continue;for(const r of(Array.isArray(m.runners)?m.runners:[])){const odd=Number(r.backPrice);if(!(odd>1&&Number.isFinite(odd)))continue;const label=normalize(r.name);let value=null;if(isMatch){if(label==='1'||label==='home'||label==='casa'||label===hn||label.includes(hn))value='1';else if(['x','draw','pareggio','tie','the draw'].includes(label))value='X';else if(label==='2'||label==='away'||label==='trasferta'||label===an||label.includes(an))value='2';}else{if(/\bover\b/i.test(r.name))value=`Over ${line.toFixed(1)}`;else if(/\bunder\b/i.test(r.name))value=`Under ${line.toFixed(1)}`;}if(value){const age=m.receivedAt?Math.max(0,(Date.now()-new Date(m.receivedAt).getTime())/60000):null;out.push({value,odd,quoteAgeMin:age,liquidity:r.backSize??null});}}}const best=new Map();for(const x of out){const old=best.get(x.value);if(!old||((x.quoteAgeMin??1e99)<(old.quoteAgeMin??1e99))||(x.quoteAgeMin===old.quoteAgeMin&&x.odd>old.odd))best.set(x.value,x);}return [...best.values()];}
