@@ -55,7 +55,7 @@ La sincronizzazione è volutamente manuale in questa prima integrazione: esegui 
 ## 5) Endpoint per recuperare un match
 
 Dopo il deploy:
-`/api/betfair-sync?home=FC%20Ashdod&away=Hapoel%20Rishon%20Lezion`
+`/api/betfair-odds?home=FC%20Ashdod&away=Hapoel%20Rishon%20Lezion`
 
 L'endpoint cerca il market Betfair corrispondente e restituisce il MarketBook più recente.
 
