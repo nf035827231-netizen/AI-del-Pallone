@@ -944,7 +944,7 @@ async function loadBetfairSnapshot(url,key){
     const fixtures=new Map();
     for(const m of unwrapCatalogue(cat[0]?.payload)){
       const name=String(m.marketName||'');
-      if(!/match odds|1x2|esito finale|over|under/i.test(name))continue;
+      if(!/match odds|1x2|esito finale|over|under|both teams to score|goal.*no.?goal|gg.*ng/i.test(name))continue;
       const b=latest.get(String(m.marketId));
       if(!b)continue;
       // La quota "precedente" conta solo se è di almeno 45 minuti più vecchia di quella
@@ -992,9 +992,9 @@ function extractBetfairOdds(markets,requestedMarket,home,away){
       const label=normalize(r.name);
       let value=null;
       if(isMatch){
-        if(label==='1'||label==='home'||label==='casa'||label===hn||label.includes(hn))value='1';
+        if(label==='1'||label==='home'||label==='casa'||label===hn||label.includes(hn)||(teamSimilarity(r.name,home)>=.4&&teamSimilarity(r.name,home)>teamSimilarity(r.name,away)))value='1';
         else if(['x','draw','pareggio','tie','the draw'].includes(label))value='X';
-        else if(label==='2'||label==='away'||label==='trasferta'||label===an||label.includes(an))value='2';
+        else if(label==='2'||label==='away'||label==='trasferta'||label===an||label.includes(an)||(teamSimilarity(r.name,away)>=.4&&teamSimilarity(r.name,away)>teamSimilarity(r.name,home)))value='2';
       }else if(isBtts){
         if(['yes','si','sì','gol','goal'].includes(label))value='Goal';
         else if(['no','nogol','no goal'].includes(label))value='No Goal';
