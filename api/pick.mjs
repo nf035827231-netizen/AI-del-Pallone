@@ -50,14 +50,6 @@ async function handler(req,res){
   const supaUrl=process.env.SUPABASE_URL||'';
   const serviceKey=process.env.SUPABASE_SERVICE_ROLE_KEY||'';
   const u=new URL(req.url,'https://vercel.local');
-
-  // Pannello "salute del sistema": era un file a parte (system-status.mjs), accorpato
-  // qui per restare sotto il limite di funzioni serverless del piano Vercel gratuito.
-  // Nessuna chiamata esterna: legge solo righe già scritte da un'analisi precedente.
-  if(u.searchParams.get('status')){
-    return handleSystemStatus(res,supaUrl,serviceKey);
-  }
-
   const date=u.searchParams.get('date');
   const raw=u.searchParams.get('leagues')||'';
   const requestedCodes=raw==='EUROPE'?DEFAULT_CODES:(raw?raw.split(',').map(normalizeLeague).filter(Boolean):DEFAULT_CODES);
@@ -87,16 +79,6 @@ async function handler(req,res){
   const daysBack=60, daysForward=7;
   const from=shiftDate(date,-daysBack), to=shiftDate(date,daysForward);
   const apiFootballCircuitBreaker={disabled:false}; // per questa sola richiesta
-  const espnCircuitBreaker={disabled:false,checked:false}; // per questa sola richiesta
-  // Fattore di calibrazione (calcolato da /api/stats sulle giocate reali passate, quando
-  // ce ne sono abbastanza): 1.0 = nessuna correzione (default prudente se non c'è ancora
-  // storico, o se Supabase non risponde). Una sola lettura leggera per richiesta.
-  let calibrationFactor=1;
-  try{
-    const calRows=await supaRead(supaUrl,serviceKey,'model_calibration?select=factor&id=eq.global');
-    const f=Number(calRows?.[0]?.factor);
-    if(Number.isFinite(f)) calibrationFactor=clamp(f,0.6,1.3);
-  }catch{ /* nessuno storico ancora, o Supabase momentaneamente irraggiungibile: resta 1.0 */ }
 
   async function fetchPool(codeList){
     const codes=[...new Set(codeList)].filter(c=>ESPN_LEAGUES[c]);
@@ -105,10 +87,7 @@ async function handler(req,res){
     // Leggo entrambi i nomi: FOOTBALL_DATA_TOKEN è quello che avevi già impostato su Vercel,
     // FOOTBALL_DATA_KEY resta come alias di riserva se in futuro la rinomini.
     const footballDataKey=process.env.FOOTBALL_DATA_TOKEN||process.env.FOOTBALL_DATA_KEY||'';
-    // Concorrenza 6 invece di 4: durante le pause nazionali il pool privilegiato è vuoto e
-    // si allarga a tutti i campionati insieme, quindi più campionati vengono provati in
-    // parallelo — aiuta a restare sotto i tempi limite del server.
-    const results=await mapLimit(codes,6,async code=>{
+    const results=await mapLimit(codes,4,async code=>{
       const cfg=ESPN_LEAGUES[code];
       let fixtures=[],standings=new Map();
 
@@ -119,24 +98,13 @@ async function handler(req,res){
 
       // 2) ESPN, per completare quello che manca (non solo se ENTRAMBE le cose mancano: se
       //    football-data.org ha dato le partite ma non la classifica, proviamo comunque a
-      //    recuperare la classifica da ESPN, e viceversa). Interruttore automatico: se ESPN
-      //    fallisce (403/errore) alla prima chiamata di questa richiesta, non lo riproviamo
-      //    più per il resto della richiesta — risparmia tempo prezioso quando serve
-      //    allargarsi a molti campionati insieme (es. pausa nazionali). Se in futuro ESPN
-      //    torna a rispondere, il controllo lo rileva da solo alla richiesta successiva.
-      if((!fixtures.length||!standings.size)&&!espnCircuitBreaker.disabled){
+      //    recuperare la classifica da ESPN, e viceversa).
+      if(!fixtures.length||!standings.size){
         const [score,table]=await Promise.all([
           espn(`/apis/site/v2/sports/soccer/${cfg.slug}/scoreboard?dates=${from.replaceAll('-','')}-${to.replaceAll('-','')}`),
           espn(`/apis/v2/sports/soccer/${cfg.slug}/standings`)
         ]);
         requests+=2; requestBreakdown.espnScoreboards++; requestBreakdown.espnStandings++;
-        if(!espnCircuitBreaker.checked){
-          espnCircuitBreaker.checked=true;
-          if(score?.__error&&table?.__error){
-            espnCircuitBreaker.disabled=true;
-            diagnostics.push({provider:'espn-circuit-breaker',note:`ESPN disattivato per il resto di questa richiesta dopo il primo fallimento (${score.__error}).`});
-          }
-        }
         const events=Array.isArray(score?.events)?score.events:[];
         const espnFixtures=events.map(e=>adaptEspnEvent(e,code,cfg)).filter(Boolean);
         const espnStandings=parseEspnStandings(table,code);
@@ -147,7 +115,7 @@ async function handler(req,res){
 
       // 3) API-Football, per completare quello che manca ancora dopo i primi due.
       if(!fixtures.length||!standings.size){
-        const fb=await tryApiFootballFallback(code,cfg,date,diagnostics,apiFootballCircuitBreaker,supaUrl,serviceKey);
+        const fb=await tryApiFootballFallback(code,cfg,date,diagnostics,apiFootballCircuitBreaker);
         if(!fixtures.length&&fb.fixtures.length) fixtures=fb.fixtures;
         if(!standings.size&&fb.standings.size) standings=fb.standings;
       }
@@ -219,10 +187,7 @@ async function handler(req,res){
       const probMap=matchProbabilities(expHome,expAway);
       const modelSample=Math.min(hmv.length>=3?3:(hs?.last3?.length||0),amv.length>=3?3:(as?.last3?.length||0));
       const sampleWeight=clamp((hmv.length+amv.length)/6,0,1);
-      // Il peso base dipende da quanti dati abbiamo per QUESTA partita; il fattore di
-      // calibrazione corregge in base a quanto il modello si è dimostrato affidabile in
-      // generale, storicamente, su tutte le giocate passate.
-      const modelWeight=clamp((0.35+0.35*sampleWeight)*calibrationFactor,0.15,0.65);
+      const modelWeight=0.35+0.35*sampleWeight;
       for(const o of q.odds){
         if(!ALLOWED_MARKETS.has(o.value)) continue; // solo 1X2 e Over/Under 2.5-3.5
         const modelProb=probMap[o.value];
@@ -233,26 +198,11 @@ async function handler(req,res){
         const support=(hs&&as?50:30)+(modelSample>=3?50:25);
         const h2hNote=h2h.count?` Precedenti diretti: ${h2h.record}.`:'';
         const venueNote=(hVenue.venueOnly?` Forma casalinga ${f.home} sulle ultime ${hVenue.sample}.`:'')+(aVenue.venueOnly?` Forma in trasferta ${f.away} sulle ultime ${aVenue.sample}.`:'');
-        // Movimento quota: segnale di mercato puro, indipendente dal nostro modello — nasce
-        // da come si muovono i soldi reali su Betfair nel tempo, non da un nostro calcolo.
-        // Piccolo correttivo (max ±10%) solo sull'ordinamento tra le proposte, mai sulla
-        // probabilità "ufficiale" mostrata. Serve una quota precedente di almeno 45 minuti
-        // fa (vedi loadBetfairSnapshot): sotto quella soglia non c'è correzione (driftFactor=1).
-        const driftFactor=o.drift!=null?clamp(1-o.drift*0.5,0.9,1.1):1;
-        const driftNote=o.drift!=null?` Quota Betfair ${o.drift<0?'in calo':o.drift>0?'in salita':'stabile'} rispetto a ${o.driftGapMin} minuti fa (${o.drift>=0?'+':''}${round(o.drift*100)}%).`:'';
-        // Liquidità: quanto denaro c'è realmente dietro la quota migliore. Una quota con
-        // pochissima liquidità è meno affidabile — rischi di non riuscire a piazzarla a
-        // quel prezzo esatto. Penalità fino al 15% sull'ordinamento (mai sulla probabilità
-        // mostrata), nulla sotto i 200€ di liquidità, nessuna penalità sopra quella soglia.
-        // Se il dato manca, nessuna penalità (mancanza di informazione ≠ segnale negativo).
-        const liquidityFactor=o.liquidity!=null?clamp(0.85+0.15*clamp(o.liquidity/200,0,1),0.85,1):1;
-        const liquidityNote=(o.liquidity!=null&&o.liquidity<200)?` Liquidità Betfair contenuta (${Math.round(o.liquidity)}€ disponibili al prezzo migliore).`:'';
-        const reason=buildReason(o.value,blended,f.home,f.away,hs,as,hm,am)+` Valore atteso stimato: ${edge>=0?'+':''}${round(edge*100)}%.`+venueNote+h2hNote+driftNote+liquidityNote;
-        const warnings=[...(modelSample<3?['Campione gol/forma incompleto (meno di 3 partite recenti nel ruolo)']:[]),...(!hs||!as?['Classifica non disponibile per una delle due squadre']:[]),...(edge<0?['Valore atteso negativo secondo il modello: la quota non compensa il rischio stimato']:[]),...(!h2h.count?['Nessun precedente diretto trovato nel periodo analizzato']:[]),...(o.drift==null?['Movimento quota non disponibile: serve che il bridge sia stato lanciato più volte oggi con almeno 45 minuti di distanza']:[]),...(o.liquidity!=null&&o.liquidity<50?["Liquidità molto bassa: la quota mostrata potrebbe non essere raggiungibile per l'intero importo"]:[])];
+        const reason=buildReason(o.value,blended,f.home,f.away,hs,as,hm,am)+` Valore atteso stimato: ${edge>=0?'+':''}${round(edge*100)}%.`+venueNote+h2hNote;
+        const warnings=[...(modelSample<3?['Campione gol/forma incompleto (meno di 3 partite recenti nel ruolo)']:[]),...(!hs||!as?['Classifica non disponibile per una delle due squadre']:[]),...(edge<0?['Valore atteso negativo secondo il modello: la quota non compensa il rischio stimato']:[]),...(!h2h.count?['Nessun precedente diretto trovato nel periodo analizzato']:[])];
         scenarios.push({
           home:f.home,away:f.away,market:marketLabel(o.value),odds:o.odd,bookmaker:'Betfair Exchange',
           quoteAgeMin:o.quoteAgeMin??null,quoteFreshnessScore:null,liquidity:o.liquidity??null,
-          oddsDrift:o.drift!=null?round(o.drift*1000)/10:null,oddsDriftGapMin:o.driftGapMin??null,
           prob:round(blended),pStat:round(modelProb),pFreq:null,pMarket:round(marketImplied),pFair:round(blended),
           edge:round(edge*1000)/10,score:round(edge*1000)/10,topSelectionScore:round(blended),confidence:round(blended),
           analysisSupport:Math.round(clamp(support,0,100)),modelReady:true,topEligible:true,modelSample,
@@ -261,14 +211,9 @@ async function handler(req,res){
           headToHead:h2h.count?{count:h2h.count,record:h2h.record,recent:h2h.meetings}:null,
           recentForm:{home:hf,away:af,homeMatches:hm.length,awayMatches:am.length,homeVenueSpecific:hVenue.venueOnly,awayVenueSpecific:aVenue.venueOnly,homeVenueSample:hVenue.sample,awayVenueSample:aVenue.sample},
           expectedGoals:{home:round(expHome),away:round(expAway)},reason,
-          oddsSource:'Betfair Exchange',statsSource:String(f.id).startsWith('fd-')?'football-data.org':String(f.id).startsWith('af-')?'API-Football':'ESPN',fixtureId:(String(f.id).startsWith('fd-')||String(f.id).startsWith('af-'))?String(f.id):`espn-${f.id}`,eventId:f.id,kickoff:f.date,
+          oddsSource:'Betfair Exchange',statsSource:'ESPN',fixtureId:`espn-${f.id}`,eventId:f.id,kickoff:f.date,
           league:f.league,leagueCode:f.leagueCode,priorityLeague:PRIORITY_CODES.includes(f.leagueCode),homeLogo:f.homeLogo||null,awayLogo:f.awayLogo||null,
-          riskTier:o.odd<=1.5?'moltoSicura':o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',
-          // Edge "scontato" per l'ordinamento: un valore atteso alto calcolato su pochissimi
-          // dati (poco supporto) conta meno di uno leggermente più basso ma ben supportato.
-          // L'edge mostrato all'utente (sopra) resta quello vero e non cambia: cambia solo
-          // come le proposte vengono messe in ordine tra loro.
-          qualityAdjustedEdge:edge*(0.5+0.5*clamp(support/100,0,1))*driftFactor*liquidityFactor,
+          riskTier:o.odd<=1.8?'sicura':o.odd<=2.6?'equilibrata':'value',
           _homeMatches:hm,_awayMatches:am,
           fieldAnalysis:{reason,confidence:round(blended),confidenceLabel:blended>=70?'Alta':blended>=55?'Media':'Bassa',warnings}
         });
@@ -276,7 +221,7 @@ async function handler(req,res){
     }
     // Priorità ai migliori 8 campionati + Serie B + coppe UEFA: a parità circa di valore
     // atteso, un incontro "prioritario" passa avanti a uno del pool di riserva.
-    scenarios.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.qualityAdjustedEdge)-Number(a.qualityAdjustedEdge))||(Number(b.prob)-Number(a.prob)));
+    scenarios.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.edge)-Number(a.edge))||(Number(b.prob)-Number(a.prob)));
     return {quoted,scenarios};
   }
 
@@ -285,20 +230,11 @@ async function handler(req,res){
   // dentro ogni fascia scelgo comunque sempre le migliori per valore atteso.
   function diversifySelection(pool,target){
     if(pool.length<=target) return [...pool];
-    // Per target=5 (il caso normale) uso quote fisse: 1 molto sicura, 1 sicura, 2
-    // equilibrate, 1 value. Per qualunque altro target (di sicurezza, se in futuro
-    // cambiasse) torno al calcolo proporzionale su 3 fasce come prima.
-    const quotas=target===5
-      ? {moltoSicura:1,sicura:1,equilibrata:2,value:1}
-      : (()=>{const lowQ=Math.round(target*0.4),midQ=Math.round(target*0.4);return {moltoSicura:0,sicura:lowQ,equilibrata:midQ,value:target-lowQ-midQ};})();
-    const byTier={
-      moltoSicura:pool.filter(c=>c.riskTier==='moltoSicura'),
-      sicura:pool.filter(c=>c.riskTier==='sicura'),
-      equilibrata:pool.filter(c=>c.riskTier==='equilibrata'),
-      value:pool.filter(c=>c.riskTier==='value')
-    };
+    const lowQ=Math.round(target*0.4), midQ=Math.round(target*0.4), highQ=target-lowQ-midQ;
+    const byTier={sicura:pool.filter(c=>c.riskTier==='sicura'),equilibrata:pool.filter(c=>c.riskTier==='equilibrata'),value:pool.filter(c=>c.riskTier==='value')};
+    const quotas={sicura:lowQ,equilibrata:midQ,value:highQ};
     const selected=[];
-    for(const tier of ['moltoSicura','sicura','equilibrata','value']){
+    for(const tier of ['sicura','equilibrata','value']){
       for(const c of byTier[tier].slice(0,quotas[tier])) selected.push(c);
     }
     // Se una fascia non aveva abbastanza candidati, riempio gli slot avanzati con i migliori
@@ -310,7 +246,7 @@ async function handler(req,res){
         selected.push(c);
       }
     }
-    return selected.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.qualityAdjustedEdge)-Number(a.qualityAdjustedEdge)));
+    return selected.sort((a,b)=>(Number(b.priorityLeague)-Number(a.priorityLeague))||(Number(b.edge)-Number(a.edge)));
   }
 
   // Sempre 5 incontri quando i dati lo permettono, ma senza mai superare quota 4.00 e
@@ -322,29 +258,13 @@ async function handler(req,res){
     const built=buildScenarios(MAX_ODDS);
     const uniqueByMatch=[]; const usedMatches=new Set();
     for(const s of built.scenarios){const key=normalizePair(s.home,s.away);if(usedMatches.has(key))continue;usedMatches.add(key);uniqueByMatch.push(s);}
-    let candidates=diversifySelection(uniqueByMatch,TARGET_PICKS);
+    const candidates=diversifySelection(uniqueByMatch,TARGET_PICKS);
     if(candidates.length<TARGET_PICKS && built.scenarios.length>candidates.length){
       for(const s of built.scenarios){
         if(candidates.length>=TARGET_PICKS) break;
         if(candidates.includes(s)) continue;
         candidates.push({...s,alternateMarketNote:`Mercato alternativo sullo stesso incontro (${s.home} - ${s.away}): oggi non ci sono abbastanza partite distinte quotate nel pool selezionato.`});
       }
-    }
-    // Filtro di qualità finale: se una delle proposte scelte ha zero dati recenti nel ruolo
-    // (modelSample=0) e classifica non disponibile — il caso peggiore possibile — provo a
-    // sostituirla con la migliore alternativa rimasta che abbia più dati, purché non tocchi
-    // una partita già presente tra le altre proposte. Se non c'è niente di meglio disponibile,
-    // resta lei: meglio 5 proposte con un warning chiaro che scendere sotto 5.
-    const isThin=c=>c.modelSample===0 && !(c.homeStanding&&c.awayStanding);
-    if(candidates.some(isThin)){
-      const usedKeys=new Set(candidates.map(c=>normalizePair(c.home,c.away)));
-      const betterPool=built.scenarios.filter(c=>!isThin(c)&&!usedKeys.has(normalizePair(c.home,c.away)));
-      candidates=candidates.map(c=>{
-        if(!isThin(c)||!betterPool.length) return c;
-        const replacement=betterPool.shift();
-        usedKeys.add(normalizePair(replacement.home,replacement.away));
-        return {...replacement,qualityFloorNote:`Sostituita una proposta con dati troppo scarsi (nessuna partita recente nel ruolo, classifica non disponibile) con una alternativa meglio supportata.`};
-      });
     }
     return {quoted:built.quoted,scenarios:built.scenarios,candidates};
   }
@@ -375,39 +295,12 @@ async function handler(req,res){
   // pickCandidates() ha già provato a completare con mercati alternativi sullo stesso incontro,
   // etichettati chiaramente (alternateMarketNote). Qui restano solo se davvero non bastano i dati.
 
-  diagnostics.push({provider:'v157-model',scenarios:scenarios.length,returned:candidates.length,pool:usedFallbackPool?'esteso (tutti i campionati)':'privilegiato (top8+serieB+coppe)',maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],calibrationFactor:Math.round(calibrationFactor*1000)/1000,riskMix:candidates.reduce((acc,c)=>{acc[c.riskTier]=(acc[c.riskTier]||0)+1;return acc;},{}),rule:`TOP ${TARGET_PICKS} diversificate per fascia di rischio (1 molto sicura ≤1.50, 1 sicura 1.50-1.80, 2 equilibrate 1.80-2.60, 1 value 2.60-4.00), a parità di fascia per valore atteso (Poisson con forma casa/trasferta + H2H, blended con quota Betfair reale e con il fattore di calibrazione storico); pool esteso solo se il perimetro privilegiato non basta per ${TARGET_PICKS} proposte`});
+  diagnostics.push({provider:'v157-model',scenarios:scenarios.length,returned:candidates.length,pool:usedFallbackPool?'esteso (tutti i campionati)':'privilegiato (top8+serieB+coppe)',maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],riskMix:candidates.reduce((acc,c)=>{acc[c.riskTier]=(acc[c.riskTier]||0)+1;return acc;},{}),rule:`TOP ${TARGET_PICKS} diversificate per fascia di rischio (≈40% sicure ≤1.80, 40% equilibrate 1.80-2.60, 20% value 2.60-4.00), a parità di fascia per valore atteso (Poisson con forma casa/trasferta + H2H, blended con quota Betfair reale); pool esteso solo se il perimetro privilegiato non basta per ${TARGET_PICKS} proposte`});
 
   const disclaimer=`Le probabilità e il "valore atteso" sono stime statistiche basate su gol recenti, classifica e quote di mercato (max ${MAX_ODDS.toFixed(2)}, mercati 1X2 e Over/Under 2.5-3.5). Non sono garanzie di vincita: nessun modello può assicurare un esito. Se in una giornata non ci sono abbastanza partite reali quotate nel pool privilegiato o in quello esteso, il sistema non ne inventa: completa con mercati alternativi sugli stessi incontri o restituisce meno di ${TARGET_PICKS} proposte.`;
   const finalPicks=candidates.slice(0,TARGET_PICKS);
   await logModelPredictions(supaUrl,serviceKey,date,finalPicks);
-
-  // Allerta "giornata da evitare": non il warning sulla singola card (quello c'è già),
-  // ma un avviso aggregato quando NESSUNA delle proposte mostrate ha un valore atteso
-  // positivo — cioè quando, secondo il modello, oggi il mercato prezza tutto correttamente
-  // o meglio di noi, su tutta la linea. Un segnale diverso da "una proposta debole in
-  // mezzo ad altre buone": qui è l'intera giornata a non offrire nessun vantaggio reale.
-  const positiveEdgeCount=finalPicks.filter(p=>Number(p.edge)>0).length;
-  const dayAlert=finalPicks.length>0 && positiveEdgeCount===0;
-  const dayAlertMessage=dayAlert?`Nessuna delle ${finalPicks.length} proposte di oggi ha un valore atteso positivo secondo il modello: il mercato sta prezzando tutto correttamente o meglio di noi. Non è un errore del sistema — è un'informazione in sé: oggi potrebbe essere una giornata da osservare soltanto, non da giocare.`:null;
-
-  // Riepilogo di stato per il pannello "salute del sistema": salvato una volta per
-  // richiesta, a costo zero (nessuna nuova chiamata esterna, solo i risultati che
-  // abbiamo già ottenuto sopra). Il pannello lo legge senza mai testare le fonti dal vivo.
-  try{
-    const footballDataAttempts=diagnostics.filter(d=>d.provider==='football-data-org');
-    const espnAttempts=diagnostics.filter(d=>d.provider==='espn');
-    const apiFootballAttempts=diagnostics.filter(d=>d.provider==='api-football-fallback'&&d.league);
-    const footballDataWorking=footballDataAttempts.length?footballDataAttempts.some(d=>!d.matchesError&&!d.standingsError):null;
-    const espnWorking=espnAttempts.length?espnAttempts.some(d=>!d.scoreError&&!d.standingsError):null;
-    const apiFootballWorking=apiFootballAttempts.length?apiFootballAttempts.some(d=>!d.fixturesError&&!d.standingsError):null;
-    await supaWrite(supaUrl,serviceKey,'system_status?on_conflict=id',[{
-      id:'latest',checked_at:new Date().toISOString(),analyzed_date:date,
-      football_data_working:footballDataWorking,espn_working:espnWorking,api_football_working:apiFootballWorking,
-      picks_returned:candidates.length,pool_used:usedFallbackPool?'esteso':'privilegiato',calibration_factor:calibrationFactor
-    }]);
-  }catch{ /* il pannello di stato è un extra: non deve mai far fallire l'analisi principale */ }
-
-  const data={date,fixtures:fixtures.length,analyzed:quoted.length,requests,requestBreakdown,candidates:candidates.slice(0,120),liveFixtures,diagnostics,disclaimer,dayAlert,dayAlertMessage,cached:false};
+  const data={date,fixtures:fixtures.length,analyzed:quoted.length,requests,requestBreakdown,candidates:candidates.slice(0,120),liveFixtures,diagnostics,disclaimer,cached:false};
   RESPONSE_CACHE.set(cacheKey,{expires:Date.now()+(date===localTodayRome()?120_000:600_000),data});
   res.setHeader('Cache-Control','no-store');
   return res.status(200).json(data);
@@ -451,7 +344,7 @@ const FOOTBALL_DATA_CODES={SA:'SA',PL:'PL',PD:'PD',BL1:'BL1',FL1:'FL1',PPL:'PPL'
 async function footballData(path,key){
   for(let attempt=0;attempt<2;attempt++){
     try{
-      const r=await fetchTimeout(`https://api.football-data.org/v4${path}`,{headers:{'X-Auth-Token':key,Accept:'application/json'},cache:'no-store'});
+      const r=await fetch(`https://api.football-data.org/v4${path}`,{headers:{'X-Auth-Token':key,Accept:'application/json'},cache:'no-store'});
       const text=await r.text();let body={};try{body=text?JSON.parse(text):{};}catch{body={};}
       if(r.ok)return body;
       if(r.status===429&&attempt===0){await sleep(6500);continue;} // 10 richieste/minuto sul piano free
@@ -523,15 +416,10 @@ async function espn(path){
   };
   for(let attempt=0;attempt<3;attempt++){
     try{
-      const r=await fetchTimeout(base+path,{headers,cache:'no-store'});
+      const r=await fetch(base+path,{headers,cache:'no-store'});
       const text=await r.text();let body={};try{body=text?JSON.parse(text):{};}catch{body={};}
       if(r.ok)return body;
-      // 429 = "troppe richieste", ha senso aspettare e ritentare. 403 invece è quasi sempre
-      // un blocco persistente (IP), non un limite temporaneo: ritentarlo triplica solo
-      // l'attesa senza cambiare l'esito, ed è quello che stava causando i timeout durante
-      // la pausa nazionali (tante leghe minori tentate in fallback, ognuna con 3 tentativi
-      // inutili). Sul 403 si fallisce subito.
-      if(r.status===429&&attempt<2){await sleep(700*(attempt+1));continue;}
+      if((r.status===429||r.status===403)&&attempt<2){await sleep(700*(attempt+1));continue;}
       return {...body,__error:`HTTP ${r.status}`};
     }catch(e){if(attempt===2)return{__error:e?.message||String(e)};await sleep(300*(attempt+1));}
   }
@@ -550,26 +438,7 @@ const API_FOOTBALL_LEAGUE_IDS={
   WCQ:32,  // World Cup - Qualification Europe
   NL:5,    // UEFA Nations League
   EURO:4,  // Euro Championship
-  EUROQ:960, // Euro Championship - Qualification (meno certo: verificare in diagnostics)
-  // Campionati "minori" (pool di riserva finale): ID dedotti dalla documentazione generale
-  // della community API-Football, MAI verificati dal vivo da qui. Grazie alla cache+budget
-  // appena introdotta, un ID sbagliato costa al massimo 2 chiamate sprecate una volta al
-  // giorno (non ripetute) — controlla i diagnostics per vedere quali funzionano davvero.
-  SB:136,     // Serie B (Italia)
-  SCO1:179,   // Scottish Premiership
-  AUT1:218,   // Austrian Bundesliga
-  TUR1:203,   // Turkish Süper Lig
-  DEN1:119,   // Danish Superliga
-  SWE1:113,   // Allsvenskan
-  NOR1:103,   // Eliteserien
-  POL1:106,   // Ekstraklasa
-  GRE1:197,   // Greek Super League
-  ROU1:283,   // Liga I (Romania)
-  UKR1:333,   // Ukrainian Premier League
-  SUI1:207,   // Swiss Super League
-  BRA1:71,    // Brasileirão Série A
-  MLS1:253,   // MLS
-  JPN1:98     // J1 League
+  EUROQ:960 // Euro Championship - Qualification (meno certo: verificare in diagnostics)
 };
 
 function apiFootballSeason(dateIso){
@@ -583,7 +452,7 @@ async function apiFootball(path,params){
   if(!key) return {__error:'API_FOOTBALL_KEY non configurata',__skip:true};
   const qs=new URLSearchParams(params).toString();
   try{
-    const r=await fetchTimeout(`https://v3.football.api-sports.io${path}?${qs}`,{
+    const r=await fetch(`https://v3.football.api-sports.io${path}?${qs}`,{
       headers:{'x-apisports-key':key,Accept:'application/json'},cache:'no-store'
     });
     const text=await r.text();let body={};try{body=text?JSON.parse(text):{};}catch{body={};}
@@ -638,71 +507,15 @@ function parseApiFootballStandings(payload,code){
 // di utilizzabile. Non blocca mai: se manca la chiave, se il campionato non è mappato,
 // o se la chiamata fallisce (rete, quota esaurita), ritorna fixtures/standings vuoti e
 // si continua semplicemente senza quel campionato per oggi.
-//
-// Uso "furbo" per restare dentro un budget di chiamate/giorno molto stretto (es. piano
-// da 100/giorno):
-// 1) CACHE: se per questo campionato+data abbiamo già chiamato API-Football oggi, il
-//    risultato è salvato su Supabase (tabella api_football_cache) — lo riuso, zero nuove
-//    chiamate, anche se l'utente rilancia l'analisi venti volte nello stesso giorno.
-// 2) BUDGET: un contatore giornaliero (tabella api_football_daily) tiene traccia di
-//    quante chiamate sono state fatte oggi. Sotto una soglia di sicurezza (lasciamo un
-//    margine, non arriviamo al limite esatto del piano) si procede; sopra, si salta
-//    del tutto senza nemmeno provare — meglio niente dati che sforare il piano.
-const API_FOOTBALL_DAILY_BUDGET=85; // margine di sicurezza sotto un piano da 100/giorno
-const apiFootballDayState={date:null,used:null}; // cache in memoria per questa sola richiesta
-
-async function apiFootballDailyUsed(supaUrl,serviceKey,date){
-  if(!supaUrl||!serviceKey) return null; // senza Supabase non possiamo contare: meglio non rischiare (vedi chiamante)
-  if(apiFootballDayState.date===date) return apiFootballDayState.used;
-  try{
-    const rows=await supaRead(supaUrl,serviceKey,`api_football_daily?select=calls_used&usage_date=eq.${date}`);
-    const used=rows?.[0]?.calls_used??0;
-    apiFootballDayState.date=date; apiFootballDayState.used=used;
-    return used;
-  }catch{ return null; }
-}
-
-async function apiFootballRecordCalls(supaUrl,serviceKey,date,n){
-  if(!supaUrl||!serviceKey||!n) return;
-  const current=(apiFootballDayState.date===date?apiFootballDayState.used:0)||0;
-  const next=current+n;
-  apiFootballDayState.date=date; apiFootballDayState.used=next;
-  try{ await supaWrite(supaUrl,serviceKey,'api_football_daily?on_conflict=usage_date',[{usage_date:date,calls_used:next}]); }catch{ /* non blocca: il conteggio in memoria di questa richiesta resta comunque corretto */ }
-}
-
-async function apiFootballCacheGet(supaUrl,serviceKey,cacheKey){
-  if(!supaUrl||!serviceKey) return null;
-  try{
-    const rows=await supaRead(supaUrl,serviceKey,`api_football_cache?select=payload&cache_key=eq.${encodeURIComponent(cacheKey)}`);
-    return rows?.[0]?.payload||null;
-  }catch{ return null; }
-}
-
-async function apiFootballCacheSet(supaUrl,serviceKey,cacheKey,payload){
-  if(!supaUrl||!serviceKey) return;
-  try{ await supaWrite(supaUrl,serviceKey,'api_football_cache?on_conflict=cache_key',[{cache_key:cacheKey,payload}]); }catch{ /* cache mancata non blocca nulla */ }
-}
-
-async function tryApiFootballFallback(code,cfg,date,diagnostics,circuitBreaker,supaUrl,serviceKey){
+// Se il piano API-Football in uso non copre la stagione corrente (o siamo a corto di
+// chiamate/minuto), non ha senso ritentare per ogni singolo campionato nella stessa
+// richiesta: dopo il primo errore di questo tipo, la riserva si disattiva per il resto
+// di QUESTA richiesta (il flag arriva da fuori, non è globale: su un container "a caldo"
+// riusato tra richieste diverse, un module-level flag resterebbe true per sempre).
+async function tryApiFootballFallback(code,cfg,date,diagnostics,circuitBreaker){
   if(circuitBreaker.disabled) return {fixtures:[],standings:new Map()};
   const leagueId=API_FOOTBALL_LEAGUE_IDS[code];
   if(!leagueId) return {fixtures:[],standings:new Map()};
-
-  const cacheKey=`${code}-${date}`;
-  const cached=await apiFootballCacheGet(supaUrl,serviceKey,cacheKey);
-  if(cached){
-    diagnostics.push({provider:'api-football-fallback',league:cfg.name,code,fromCache:true,fixtures:Array.isArray(cached.fixtures)?cached.fixtures.length:0,standingsFound:Array.isArray(cached.standings)&&cached.standings.length>0,role:'riuso della cache di oggi, nessuna nuova chiamata'});
-    const fixtures=(Array.isArray(cached.fixtures)?cached.fixtures:[]).map(x=>adaptApiFootballFixture(x,code,cfg)).filter(Boolean);
-    const standings=Array.isArray(cached.standings)&&cached.standings.length?parseApiFootballStandings({response:[{league:{standings:[cached.standings]}}]},code):new Map();
-    return {fixtures,standings};
-  }
-
-  const used=await apiFootballDailyUsed(supaUrl,serviceKey,date);
-  if(used==null || used+2>API_FOOTBALL_DAILY_BUDGET){
-    diagnostics.push({provider:'api-football-fallback',league:cfg.name,code,skipped:true,reason:used==null?'Impossibile leggere il contatore giornaliero (Supabase non raggiungibile): salto per prudenza.':`Budget giornaliero quasi esaurito (${used}/${API_FOOTBALL_DAILY_BUDGET} usate): salto per restare dentro il piano.`});
-    return {fixtures:[],standings:new Map()};
-  }
-
   const season=apiFootballSeason(date);
   const from=shiftDate(date,-21), to=shiftDate(date,7);
   const [fx,st]=await Promise.all([
@@ -710,21 +523,13 @@ async function tryApiFootballFallback(code,cfg,date,diagnostics,circuitBreaker,s
     apiFootball('/standings',{league:leagueId,season})
   ]);
   const skip=fx.__skip||st.__skip;
-  if(!skip) await apiFootballRecordCalls(supaUrl,serviceKey,date,2); // le due chiamate sono state fatte comunque, anche se falliscono per errore
   const planOrRateIssue=[fx,st].some(r=>/plan|rateLimit/i.test(r?.__error||''));
   if(planOrRateIssue){
     circuitBreaker.disabled=true;
     if(!skip) diagnostics.push({provider:'api-football-fallback',note:'Disattivata per il resto di questa richiesta: piano non compatibile con la stagione corrente o limite chiamate/minuto raggiunto.'});
   }
   if(!skip) diagnostics.push({provider:'api-football-fallback',league:cfg.name,code,leagueId,season,fixtures:Array.isArray(fx?.response)?fx.response.length:0,standingsFound:!!st?.response?.[0],fixturesError:fx.__error||null,standingsError:st.__error||null,quotaLikely:Boolean(fx.__quotaLikely||st.__quotaLikely),role:'fallback quando ESPN non risponde'});
-
-  const rawFixtures=Array.isArray(fx?.response)?fx.response:[];
-  const rawStandingsTable=st?.response?.[0]?.league?.standings?.flat?.()||[];
-  if(!skip&&(rawFixtures.length||rawStandingsTable.length)){
-    await apiFootballCacheSet(supaUrl,serviceKey,cacheKey,{fixtures:rawFixtures,standings:rawStandingsTable});
-  }
-
-  const fixtures=rawFixtures.map(x=>adaptApiFootballFixture(x,code,cfg)).filter(Boolean);
+  const fixtures=(Array.isArray(fx?.response)?fx.response:[]).map(x=>adaptApiFootballFixture(x,code,cfg)).filter(Boolean);
   const standings=st?.response?.[0]?parseApiFootballStandings(st,code):new Map();
   return {fixtures,standings};
 }
@@ -814,32 +619,16 @@ const LEAGUE_AVG_GOALS=1.35; // gol/squadra/partita, media plausibile per i camp
 const HOME_ADV=1.12;
 const MAX_GOALS_GRID=8;
 
-// Peso decrescente sulla forma recente: la partita più recente conta per intero, quella
-// prima conta 0.75, quella prima ancora 0.5625, e così via (decadimento geometrico).
-// Prima tutte e 3 le ultime partite pesavano uguale — questo rende il modello più
-// reattivo a un cambio di forma vero (es. nuovo allenatore, infortunio chiave rientrato)
-// invece di "diluirlo" su partite ormai meno rappresentative.
-// IMPORTANTE: "rows" arriva già in ordine cronologico (la più vecchia all'indice 0, la
-// più recente all'ultimo indice) — così la costruiscono recentByVenue/recentThreeForTeams.
-const FORM_DECAY=0.75;
 function goalStats(rows,name){
-  const valid=[];
+  let gf=0,ga=0,n=0;
   for(const m of rows){
     const isHome=teamSimilarity(m.home,name)>=.75;
     const g=isHome?Number(m.score.home):Number(m.score.away);
     const c=isHome?Number(m.score.away):Number(m.score.home);
     if(!Number.isFinite(g)||!Number.isFinite(c))continue;
-    valid.push({g,c});
+    gf+=g;ga+=c;n++;
   }
-  const n=valid.length;
-  if(!n) return null;
-  let gf=0,ga=0,wsum=0;
-  for(let i=0;i<n;i++){
-    const ageFromMostRecent=n-1-i; // 0 per la partita più recente, cresce andando indietro
-    const w=Math.pow(FORM_DECAY,ageFromMostRecent);
-    gf+=valid[i].g*w; ga+=valid[i].c*w; wsum+=w;
-  }
-  return {gf:gf/wsum,ga:ga/wsum,n};
+  return n?{gf:gf/n,ga:ga/n,n}:null;
 }
 
 function factorial(n){let r=1;for(let i=2;i<=n;i++)r*=i;return r;}
@@ -857,39 +646,25 @@ function expectedGoals(homeGS,awayGS,hs,as){
   return {expHome:clamp(expHome,0.2,4.5),expAway:clamp(expAway,0.2,4.5)};
 }
 
-// Correzione Dixon-Coles (1997): il Poisson puro assume che i gol di casa e trasferta
-// siano completamente indipendenti, ma nella realtà i risultati bassi (0-0, 1-0, 0-1, 1-1)
-// sono leggermente più o meno frequenti di quanto il Poisson da solo prevederebbe. Questa
-// correzione standard nel betting quantitativo aggiusta solo queste 4 caselle. Rho è il
-// parametro di correlazione: uso il valore storico del paper originale (-0.13), non avendo
-// dati sufficienti nostri per stimarlo da zero.
-const DIXON_COLES_RHO=-0.13;
-function dixonColesTau(hg,ag,expHome,expAway,rho){
-  if(hg===0&&ag===0) return 1-expHome*expAway*rho;
-  if(hg===0&&ag===1) return 1+expHome*rho;
-  if(hg===1&&ag===0) return 1+expAway*rho;
-  if(hg===1&&ag===1) return 1-rho;
-  return 1;
-}
 function matchProbabilities(expHome,expAway){
   let pHome=0,pDraw=0,pAway=0,over15=0,over25=0,over35=0,over45=0,btts=0;
   for(let hg=0;hg<=MAX_GOALS_GRID;hg++){
     for(let ag=0;ag<=MAX_GOALS_GRID;ag++){
-      const p=poissonPMF(hg,expHome)*poissonPMF(ag,expAway)*dixonColesTau(hg,ag,expHome,expAway,DIXON_COLES_RHO);
+      const p=poissonPMF(hg,expHome)*poissonPMF(ag,expAway);
       if(hg>ag)pHome+=p;else if(hg===ag)pDraw+=p;else pAway+=p;
       const total=hg+ag;
       if(total>1.5)over15+=p; if(total>2.5)over25+=p; if(total>3.5)over35+=p; if(total>4.5)over45+=p;
       if(hg>0&&ag>0)btts+=p;
     }
   }
-  const sum1x2=pHome+pDraw+pAway||1; // normalizza la coda troncata oltre MAX_GOALS_GRID e la correzione Dixon-Coles
+  const sum1x2=pHome+pDraw+pAway||1; // normalizza la coda troncata oltre MAX_GOALS_GRID
   return {
     '1':pHome/sum1x2*100,'X':pDraw/sum1x2*100,'2':pAway/sum1x2*100,
-    'Over 1.5':over15/sum1x2*100,'Under 1.5':(1-over15/sum1x2)*100,
-    'Over 2.5':over25/sum1x2*100,'Under 2.5':(1-over25/sum1x2)*100,
-    'Over 3.5':over35/sum1x2*100,'Under 3.5':(1-over35/sum1x2)*100,
-    'Over 4.5':over45/sum1x2*100,'Under 4.5':(1-over45/sum1x2)*100,
-    'Goal':btts/sum1x2*100,'No Goal':(1-btts/sum1x2)*100
+    'Over 1.5':over15*100,'Under 1.5':(1-over15)*100,
+    'Over 2.5':over25*100,'Under 2.5':(1-over25)*100,
+    'Over 3.5':over35*100,'Under 3.5':(1-over35)*100,
+    'Over 4.5':over45*100,'Under 4.5':(1-over45)*100,
+    'Goal':btts*100,'No Goal':(1-btts)*100
   };
 }
 function standingNote(home,hs,away,as){const x=[];if(hs?.position&&hs?.totalTeams)x.push(`${home} è ${hs.position}ª su ${hs.totalTeams}`);if(as?.position&&as?.totalTeams)x.push(`${away} è ${as.position}º su ${as.totalTeams}`);return x.length?x.join('; '):null;}
@@ -912,65 +687,13 @@ function localTodayRome(){return localDate(new Date().toISOString());}
 function timeWindowAllows(iso,w){try{const p=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Rome',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date(iso));const m=Number(p.find(x=>x.type==='hour')?.value)*60+Number(p.find(x=>x.type==='minute')?.value);if(w==='afternoon1')return m>=780&&m<=960;if(w==='afternoon2')return m>=961&&m<=1140;if(w==='evening')return m>=1141&&m<=1320;return m>=660&&m<=1320;}catch{return false;}}
 function shiftDate(iso,delta){const d=new Date(`${iso}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+delta);return d.toISOString().slice(0,10);}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
-// Timeout massimo per singola chiamata esterna: evita che una richiesta lenta/appesa
-// (rete instabile, provider che non risponde) blocchi tutta l'analisi fino al timeout
-// generale del server. 6 secondi per chiamata è abbondante per un endpoint JSON normale.
-function fetchTimeout(url,opts={},ms=6000){
-  const ctrl=new AbortController();
-  const timer=setTimeout(()=>ctrl.abort(),ms);
-  return fetch(url,{...opts,signal:ctrl.signal}).finally(()=>clearTimeout(timer));
-}
 async function mapLimit(items,limit,fn){const out=new Array(items.length);let next=0;async function worker(){while(true){const i=next++;if(i>=items.length)return;out[i]=await fn(items[i],i);}}await Promise.all(Array.from({length:Math.min(limit,items.length)},worker));return out;}
 function walk(v,cb){if(!v||typeof v!=='object')return;cb(v);if(Array.isArray(v)){for(const x of v)walk(x,cb);}else{for(const x of Object.values(v))walk(x,cb);}}
 
 async function supaRead(url,key,path){const r=await fetch(`${url}/rest/v1/${path}`,{headers:{apikey:key,Authorization:`Bearer ${key}`}});const text=await r.text();if(!r.ok)throw new Error(`Supabase ${r.status}: ${text.slice(0,400)}`);return text?JSON.parse(text):[];}
 function unwrapCatalogue(payload){const out=[];const walkCat=v=>{if(Array.isArray(v)){for(const x of v)walkCat(x);return;}if(v&&typeof v==='object'){if(Array.isArray(v.result)){for(const x of v.result)walkCat(x);return;}if(v.marketId)out.push(v);}};walkCat(payload);return out;}
 function bestBack(r){const p=Number(r?.backPrice);if(p>1&&Number.isFinite(p))return p;const xs=Array.isArray(r?.ex?.availableToBack)?r.ex.availableToBack:[];return xs.map(x=>Number(x?.price)).filter(x=>x>1&&Number.isFinite(x)).sort((a,b)=>b-a)[0]??null;}
-async function loadBetfairSnapshot(url,key){
-  try{
-    const cat=await supaRead(url,key,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');
-    const books=await supaRead(url,key,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=3000');
-    // "latest": la sincronizzazione più recente per ogni mercato (prima incontrata, essendo
-    // l'elenco ordinato dal più recente). "earliest": la più vecchia ancora presente nella
-    // finestra scaricata — se il bridge è stato lanciato più volte oggi, permette di vedere
-    // come si è mossa la quota nel tempo (segnale di mercato indipendente dal nostro modello).
-    const latest=new Map(), earliest=new Map();
-    for(const r of books){
-      if(!r?.market_id) continue;
-      const mid=String(r.market_id);
-      if(!latest.has(mid)) latest.set(mid,r);
-      earliest.set(mid,r); // sovrascritto a ogni riga: l'ultimo assegnato è il più vecchio incontrato
-    }
-    const fixtures=new Map();
-    for(const m of unwrapCatalogue(cat[0]?.payload)){
-      const name=String(m.marketName||'');
-      if(!/match odds|1x2|esito finale|over|under|both teams to score|goal.*no.?goal|gg.*ng/i.test(name))continue;
-      const b=latest.get(String(m.marketId));
-      if(!b)continue;
-      // La quota "precedente" conta solo se è di almeno 45 minuti più vecchia di quella
-      // attuale: altrimenti sarebbe solo rumore tra due batch della stessa sincronizzazione.
-      const eb=earliest.get(String(m.marketId));
-      const priorGapMin=eb?(new Date(b.received_at).getTime()-new Date(eb.received_at).getTime())/60000:0;
-      const priorRunners=(eb&&priorGapMin>=45)?(Array.isArray(eb.payload?.runners)?eb.payload.runners:[]):null;
-      const runners=(Array.isArray(b.payload?.runners)?b.payload.runners:[]).map(r=>{
-        const priorR=priorRunners?priorRunners.find(pr=>String(pr?.selectionId)===String(r.selectionId)):null;
-        return {
-          selectionId:r.selectionId,status:r.status,backPrice:bestBack(r),backSize:r.backSize??null,layPrice:null,
-          priorBackPrice:priorR?bestBack(priorR):null,priorGapMin:priorR?Math.round(priorGapMin):null,
-          name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName:null)||String(r.selectionId)
-        };
-      });
-      const item={marketId:String(m.marketId),marketName:name,event:m.event||null,competition:m.competition||null,receivedAt:b.received_at||m.received_at,runners};
-      const en=String(m.event?.name||'');
-      const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);
-      if(p.length<2)continue;
-      const keyPair=normalizePair(p[0],p.slice(1).join(' '));
-      if(!fixtures.has(keyPair))fixtures.set(keyPair,[]);
-      fixtures.get(keyPair).push(item);
-    }
-    return{fixtures,catalogueMarkets:unwrapCatalogue(cat[0]?.payload).length,bookMarkets:latest.size,error:null};
-  }catch(e){return{fixtures:new Map(),catalogueMarkets:0,bookMarkets:0,error:e?.message||String(e)};}
-}
+async function loadBetfairSnapshot(url,key){try{const cat=await supaRead(url,key,'betfair_quotes?select=payload,received_at&data_type=eq.catalogue&order=received_at.desc&limit=1');const books=await supaRead(url,key,'betfair_quotes?select=market_id,payload,received_at&data_type=eq.book&order=received_at.desc&limit=3000');const latest=new Map();for(const r of books){if(r?.market_id&&!latest.has(String(r.market_id)))latest.set(String(r.market_id),r);}const fixtures=new Map();for(const m of unwrapCatalogue(cat[0]?.payload)){const name=String(m.marketName||'');if(!/match odds|1x2|esito finale|over|under/i.test(name))continue;const b=latest.get(String(m.marketId));if(!b)continue;const runners=(Array.isArray(b.payload?.runners)?b.payload.runners:[]).map(r=>({selectionId:r.selectionId,status:r.status,backPrice:bestBack(r),backSize:r.backSize??null,layPrice:null,name:(Array.isArray(m.runners)?m.runners.find(x=>String(x?.selectionId)===String(r.selectionId))?.runnerName:null)||String(r.selectionId)}));const item={marketId:String(m.marketId),marketName:name,event:m.event||null,competition:m.competition||null,receivedAt:b.received_at||m.received_at,runners};const en=String(m.event?.name||'');const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);if(p.length<2)continue;const keyPair=normalizePair(p[0],p.slice(1).join(' '));if(!fixtures.has(keyPair))fixtures.set(keyPair,[]);fixtures.get(keyPair).push(item);}return{fixtures,catalogueMarkets:unwrapCatalogue(cat[0]?.payload).length,bookMarkets:latest.size,error:null};}catch(e){return{fixtures:new Map(),catalogueMarkets:0,bookMarkets:0,error:e?.message||String(e)};}}
 function findBestBetfairFixture(home,away,fixtures){if(!home||!away)return null;const exact=fixtures.get(normalizePair(home,away));if(exact)return exact;const rev=fixtures.get(normalizePair(away,home));if(rev)return rev;let best=null,scoreBest=0;for(const [,ms] of fixtures){const en=String(ms?.[0]?.event?.name||'');const p=en.split(/\s+v\s+|\s+vs\.?\s+|\s+-\s+/i);if(p.length<2)continue;const bh=p[0],ba=p.slice(1).join(' ');const a=teamSimilarity(home,bh),b=teamSimilarity(away,ba),c=teamSimilarity(home,ba),d=teamSimilarity(away,bh);const direct=(a+b)/2,reverse=(c+d)/2,score=Math.max(direct,reverse);if(Math.max(a,c)>=.50&&Math.max(b,d)>=.50&&score>scoreBest){best=ms;scoreBest=score;}}return best;}
 function extractBetfairOdds(markets,requestedMarket,home,away){
   const out=[];
@@ -992,9 +715,9 @@ function extractBetfairOdds(markets,requestedMarket,home,away){
       const label=normalize(r.name);
       let value=null;
       if(isMatch){
-        if(label==='1'||label==='home'||label==='casa'||label===hn||label.includes(hn)||(teamSimilarity(r.name,home)>=.4&&teamSimilarity(r.name,home)>teamSimilarity(r.name,away)))value='1';
+        if(label==='1'||label==='home'||label==='casa'||label===hn||label.includes(hn))value='1';
         else if(['x','draw','pareggio','tie','the draw'].includes(label))value='X';
-        else if(label==='2'||label==='away'||label==='trasferta'||label===an||label.includes(an)||(teamSimilarity(r.name,away)>=.4&&teamSimilarity(r.name,away)>teamSimilarity(r.name,home)))value='2';
+        else if(label==='2'||label==='away'||label==='trasferta'||label===an||label.includes(an))value='2';
       }else if(isBtts){
         if(['yes','si','sì','gol','goal'].includes(label))value='Goal';
         else if(['no','nogol','no goal'].includes(label))value='No Goal';
@@ -1004,51 +727,11 @@ function extractBetfairOdds(markets,requestedMarket,home,away){
       }
       if(value){
         const age=m.receivedAt?Math.max(0,(Date.now()-new Date(m.receivedAt).getTime())/60000):null;
-        // Movimento quota: se abbiamo una quota precedente abbastanza distanziata nel tempo,
-        // calcoliamo di quanto è cambiata in percentuale. Negativo = quota scesa (il mercato
-        // sta scommettendo di più su questo esito) = segnale indipendente dal nostro modello.
-        const priorOdd=Number(r.priorBackPrice);
-        const drift=(Number.isFinite(priorOdd)&&priorOdd>1)?(odd-priorOdd)/priorOdd:null;
-        out.push({value,odd,quoteAgeMin:age,liquidity:r.backSize??null,drift,driftGapMin:r.priorGapMin??null});
+        out.push({value,odd,quoteAgeMin:age,liquidity:r.backSize??null});
       }
     }
   }
   const best=new Map();
   for(const x of out){const old=best.get(x.value);if(!old||((x.quoteAgeMin??1e99)<(old.quoteAgeMin??1e99))||(x.quoteAgeMin===old.quoteAgeMin&&x.odd>old.odd))best.set(x.value,x);}
   return [...best.values()];
-}
-
-// Pannello di stato: aggrega dati già scritti altrove, zero chiamate esterne nuove
-// (era system-status.mjs, accorpato qui per il limite di funzioni Vercel).
-const API_FOOTBALL_DAILY_BUDGET_STATUS=85;
-function minutesAgo(iso){ if(!iso) return null; return Math.round((Date.now()-new Date(iso).getTime())/60000); }
-
-async function handleSystemStatus(res,supaUrl,serviceKey){
-  res.setHeader('Cache-Control','no-store');
-  if(!supaUrl||!serviceKey) return res.status(500).json({error:'SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY non configurata'});
-  try{
-    const today=new Date().toISOString().slice(0,10);
-    const [statusRows,catalogueRows,budgetRows,fundsRows]=await Promise.all([
-      supaRead(supaUrl,serviceKey,'system_status?select=*&id=eq.latest').catch(()=>[]),
-      supaRead(supaUrl,serviceKey,'betfair_quotes?select=received_at&data_type=eq.catalogue&order=received_at.desc&limit=1').catch(()=>[]),
-      supaRead(supaUrl,serviceKey,`api_football_daily?select=calls_used&usage_date=eq.${today}`).catch(()=>[]),
-      supaRead(supaUrl,serviceKey,'betfair_account?select=payload,received_at&data_type=eq.funds').catch(()=>[])
-    ]);
-    const status=statusRows?.[0]||null;
-    const bridgeLastSync=catalogueRows?.[0]?.received_at||null;
-    const apiFootballUsed=budgetRows?.[0]?.calls_used??0;
-    const fundsRow=fundsRows?.[0]||null;
-    return res.status(200).json({
-      lastAnalysis:status?{
-        checkedAt:status.checked_at,minutesAgo:minutesAgo(status.checked_at),analyzedDate:status.analyzed_date,
-        footballDataWorking:status.football_data_working,espnWorking:status.espn_working,apiFootballWorking:status.api_football_working,
-        picksReturned:status.picks_returned,poolUsed:status.pool_used,calibrationFactor:status.calibration_factor
-      }:null,
-      betfairBridge:{lastSync:bridgeLastSync,minutesAgo:minutesAgo(bridgeLastSync),stale:bridgeLastSync?minutesAgo(bridgeLastSync)>20*60:true},
-      apiFootballBudget:{usedToday:apiFootballUsed,limit:API_FOOTBALL_DAILY_BUDGET_STATUS,remaining:Math.max(0,API_FOOTBALL_DAILY_BUDGET_STATUS-apiFootballUsed)},
-      betfairFunds:fundsRow?{availableToBetBalance:fundsRow.payload?.availableToBetBalance??null,minutesAgo:minutesAgo(fundsRow.received_at)}:null
-    });
-  }catch(e){
-    return res.status(500).json({error:e?.message||String(e)});
-  }
 }
