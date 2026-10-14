@@ -24,7 +24,6 @@ echo "=============================================="
 echo " Mercati:"
 echo "  • 1X2 (MATCH_ODDS)"
 echo "  • OVER/UNDER 2.5"
-echo "  • OVER/UNDER 3.5"
 echo "  • GOAL/NO GOAL"
 echo "  • SOLO quote BACK"
 echo
@@ -175,7 +174,7 @@ run_one_sync(){
 
   echo
   echo "[3/4] Recupero mercati Betfair delle prossime $HOURS ore..."
-  Q='[{"jsonrpc":"2.0","method":"SportsAPING/v1.0/listMarketCatalogue","params":{"filter":{"eventTypeIds":["1"],"marketTypeCodes":["MATCH_ODDS","OVER_UNDER_25","OVER_UNDER_35","BOTH_TEAMS_TO_SCORE"],"marketStartTime":{"from":"'"$FROM"'","to":"'"$TO"'"}},"marketProjection":["EVENT","COMPETITION","MARKET_START_TIME","RUNNER_DESCRIPTION"],"sort":"FIRST_TO_START","maxResults":"1000"},"id":1}]'
+  Q='[{"jsonrpc":"2.0","method":"SportsAPING/v1.0/listMarketCatalogue","params":{"filter":{"eventTypeIds":["1"],"marketTypeCodes":["MATCH_ODDS","OVER_UNDER_25","BOTH_TEAMS_TO_SCORE"],"marketStartTime":{"from":"'"$FROM"'","to":"'"$TO"'"}},"marketProjection":["EVENT","COMPETITION","MARKET_START_TIME","RUNNER_DESCRIPTION"],"sort":"FIRST_TO_START","maxResults":"1000"},"id":1}]'
 
   curl -sS --max-time 40 \
    -H "X-Application: $APPKEY" -H "X-Authentication: $SESSION" \
