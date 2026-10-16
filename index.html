@@ -1381,21 +1381,23 @@ async function loadSystemStatus(force){
   if(!r.ok||d.error){box.innerHTML=`Non disponibile: ${esc(d.error||'errore sconosciuto')}`;return}
   const dot=(v)=>v===true?'🟢':v===false?'🔴':'⚪️';
   const label=(v)=>v===true?'OK':v===false?'Non risponde':'Non provato in questa analisi';
+  const ago=(m)=>{if(m==null)return '—';if(m<1)return 'meno di un minuto fa';if(m<60)return m===1?'1 minuto fa':m+' minuti fa';
+   const h=Math.round(m/60);if(h<24)return h===1?'1 ora fa':h+' ore fa';const g=Math.round(h/24);return g===1?'1 giorno fa':g+' giorni fa';};
   const la=d.lastAnalysis;
   const rows=[];
   if(la){
    rows.push(`<div>${dot(la.footballDataWorking)} <b>football-data.org</b> — ${label(la.footballDataWorking)}</div>`);
    rows.push(`<div>${dot(la.espnWorking)} <b>ESPN</b> — ${label(la.espnWorking)}</div>`);
-   rows.push(`<div>${dot(la.apiFootballWorking)} <b>API-Football</b> — ${label(la.apiFootballWorking)}</div>`);
-   rows.push(`<div style="margin-top:6px">Ultima analisi: ${la.minutesAgo!=null?la.minutesAgo+' minuti fa':'—'} · ${la.picksReturned??0} proposte · pool ${esc(la.poolUsed||'—')}</div>`);
+   rows.push(`<div>${dot(la.apiFootballWorking)} <b>API-Football</b> — ${la.apiFootballWorking===false?'Non disponibile (di solito: piano gratuito senza stagione corrente)':label(la.apiFootballWorking)}</div>`);
+   rows.push(`<div style="margin-top:6px">Ultima analisi: ${ago(la.minutesAgo)} · ${la.picksReturned??0} proposte · pool ${esc(la.poolUsed||'—')}</div>`);
   }else{
    rows.push(`<div>⚪️ Nessuna analisi ancora eseguita — premi "Analizza dati" qui sotto per vedere lo stato reale.</div>`);
   }
   const bf=d.betfairBridge;
-  rows.push(`<div style="margin-top:6px">${bf?.lastSync?(bf.stale?'🟠':'🟢'):'🔴'} <b>Bridge Betfair</b> — ${bf?.lastSync?(bf.minutesAgo+' minuti fa'+(bf.stale?' (probabilmente fuori finestra, rilancialo)':'')):'mai sincronizzato'}</div>`);
+  rows.push(`<div style="margin-top:6px">${bf?.lastSync?(bf.stale?'🟠':'🟢'):'🔴'} <b>Bridge Betfair</b> — ${bf?.lastSync?(ago(bf.minutesAgo)+(bf.stale?' (probabilmente fuori finestra, rilancialo)':'')):'mai sincronizzato'}</div>`);
   const af=d.apiFootballBudget;
   if(af) rows.push(`<div>📊 <b>Budget API-Football oggi</b>: ${af.usedToday}/${af.limit} usate</div>`);
-  if(d.betfairFunds?.availableToBetBalance!=null) rows.push(`<div>💳 <b>Saldo Betfair</b>: ${Number(d.betfairFunds.availableToBetBalance).toFixed(2)} € (${d.betfairFunds.minutesAgo} minuti fa)</div>`);
+  if(d.betfairFunds?.availableToBetBalance!=null) rows.push(`<div>💳 <b>Saldo Betfair</b>: ${Number(d.betfairFunds.availableToBetBalance).toFixed(2)} € (${ago(d.betfairFunds.minutesAgo)})</div>`);
   box.innerHTML=rows.join('');
  }catch(e){
   box.innerHTML=`Errore di rete: ${esc(e?.message||String(e))}`;
