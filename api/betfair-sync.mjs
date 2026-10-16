@@ -168,19 +168,19 @@ async function handleGetOdds(req,res){
     const allowed=selected.filter(m=>{
       const name=String(m.marketName||'');
       if(/under.*over|over.*under/i.test(name)){
-        return /(?:2\.5|3\.5)/.test(name);
+        return /2\.5/.test(name);
       }
       if(/both teams to score|goal.*no.?goal|gg.*ng/i.test(name)) return true;
       return /match odds|1x2|esito finale/i.test(name);
     });
 
     if(!allowed.length)
-      return res.status(404).json({ok:false,error:'Nessun mercato 1X2, Under/Over 2.5-3.5 o Goal/No Goal trovato',home,away});
+      return res.status(404).json({ok:false,error:'Nessun mercato 1X2, Under/Over 2.5 o Goal/No Goal trovato',home,away});
 
     const marketParam=String(u.searchParams.get('market')||'').trim();
     let narrowed=allowed;
     if(marketParam){
-      const lineMatch=marketParam.match(/(Over|Under)\s+(2\.5|3\.5)/i);
+      const lineMatch=marketParam.match(/(Over|Under)\s+(2\.5)/i);
       const is1x2=/^[12x]\b/i.test(marketParam)||/casa|trasferta|pareggio/i.test(marketParam);
       const isBtts=/^goal$|^no goal$/i.test(marketParam);
       if(lineMatch){

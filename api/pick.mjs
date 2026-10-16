@@ -34,8 +34,8 @@ const PRIORITY_CODES=[...TOP8,'SB',...EURO_CUPS];
 const FALLBACK_CODES=Object.keys(ESPN_LEAGUES).filter(c=>!PRIORITY_CODES.includes(c));
 const DEFAULT_CODES=PRIORITY_CODES;
 
-// Mercati che il prodotto vuole analizzare: 1X2, Over/Under 2.5-3.5, Goal/No Goal.
-const ALLOWED_MARKETS=new Set(['1','X','2','Over 2.5','Under 2.5','Over 3.5','Under 3.5','Goal','No Goal']);
+// Mercati che il prodotto vuole analizzare: 1X2, Over/Under 2.5, Goal/No Goal.
+const ALLOWED_MARKETS=new Set(['1','X','2','Over 2.5','Under 2.5','Goal','No Goal']);
 // Quota massima 4.00, fissa: non si allarga oltre come si faceva prima con le quote più alte.
 const MAX_ODDS=4.0;
 
@@ -224,7 +224,7 @@ async function handler(req,res){
       // generale, storicamente, su tutte le giocate passate.
       const modelWeight=clamp((0.35+0.35*sampleWeight)*calibrationFactor,0.15,0.65);
       for(const o of q.odds){
-        if(!ALLOWED_MARKETS.has(o.value)) continue; // solo 1X2 e Over/Under 2.5-3.5
+        if(!ALLOWED_MARKETS.has(o.value)) continue; // solo 1X2, Over/Under 2.5 e Goal/No Goal
         const modelProb=probMap[o.value];
         if(!Number.isFinite(modelProb)) continue;
         const marketImplied=clamp(100/o.odd,1,99);
@@ -355,7 +355,7 @@ async function handler(req,res){
 
   diagnostics.push({provider:'v157-model',scenarios:scenarios.length,returned:candidates.length,pool:usedFallbackPool?'esteso (tutti i campionati)':'privilegiato (top8+serieB+coppe)',maxOdds:MAX_ODDS,markets:[...ALLOWED_MARKETS],calibrationFactor:Math.round(calibrationFactor*1000)/1000,riskMix:candidates.reduce((acc,c)=>{acc[c.riskTier]=(acc[c.riskTier]||0)+1;return acc;},{}),rule:`TOP ${TARGET_PICKS} per valore atteso (Poisson con forma casa/trasferta + H2H, blended con quota Betfair reale e con il fattore di calibrazione storico). Unico vincolo rigido: quota massima ${MAX_ODDS.toFixed(2)}. Pool esteso solo se il perimetro privilegiato non basta per ${TARGET_PICKS} proposte`});
 
-  const disclaimer=`Le probabilità e il "valore atteso" sono stime statistiche basate su gol recenti, classifica e quote di mercato (max ${MAX_ODDS.toFixed(2)}, mercati 1X2 e Over/Under 2.5-3.5). Non sono garanzie di vincita: nessun modello può assicurare un esito. Se in una giornata non ci sono abbastanza partite reali quotate nel pool privilegiato o in quello esteso, il sistema non ne inventa: completa con mercati alternativi sugli stessi incontri o restituisce meno di ${TARGET_PICKS} proposte.`;
+  const disclaimer=`Le probabilità e il "valore atteso" sono stime statistiche basate su gol recenti, classifica e quote di mercato (max ${MAX_ODDS.toFixed(2)}, mercati 1X2, Over/Under 2.5 e Goal/No Goal). Non sono garanzie di vincita: nessun modello può assicurare un esito. Se in una giornata non ci sono abbastanza partite reali quotate nel pool privilegiato o in quello esteso, il sistema non ne inventa: completa con mercati alternativi sugli stessi incontri o restituisce meno di ${TARGET_PICKS} proposte.`;
   const finalPicks=candidates.slice(0,TARGET_PICKS);
   await logModelPredictions(supaUrl,serviceKey,date,finalPicks);
 
